@@ -1,0 +1,197 @@
+{
+  "date": "2026-03-22",
+  "phase": 2,
+  "build_information": {
+    "date": "2026-03-22 01:25:16",
+    "rust_vx_build": "success",
+    "rust_vx_simd_feature": "not_available",
+    "cts_version": "1.1-20170301",
+    "cts_git_commit": "45722c3"
+  },
+  "api_coverage": {
+    "exported": 50,
+    "target": 300,
+    "percentage": 16.7
+  },
+  "exported_functions": [
+    "vxAssignNodeCallback",
+    "vxCopyConvolutionCoefficients",
+    "vxCopyLUT",
+    "vxCopyMatrix",
+    "vxCreateContext",
+    "vxCreateConvolution",
+    "vxCreateGenericNode",
+    "vxCreateGraph",
+    "vxCreateImage",
+    "vxCreateImageFromHandle",
+    "vxCreateLUT",
+    "vxCreateMatrix",
+    "vxCreatePyramid",
+    "vxCreateScalar",
+    "vxCreateThreshold",
+    "vxCreateVirtualImage",
+    "vxGetContext",
+    "vxGetKernelByEnum",
+    "vxGetKernelByName",
+    "vxGetKernelParameterByIndex",
+    "vxGetPyramidLevel",
+    "vxGetStatus",
+    "vxLoadKernels",
+    "vxMapImagePatch",
+    "vxQueryImage",
+    "vxQueryKernel",
+    "vxQueryNode",
+    "vxQueryParameter",
+    "vxQueryScalar",
+    "vxReleaseContext",
+    "vxReleaseConvolution",
+    "vxReleaseGraph",
+    "vxReleaseImage",
+    "vxReleaseKernel",
+    "vxReleaseLUT",
+    "vxReleaseMatrix",
+    "vxReleaseNode",
+    "vxReleaseParameter",
+    "vxReleasePyramid",
+    "vxReleaseScalar",
+    "vxReleaseThreshold",
+    "vxRemoveNode",
+    "vxRetainReference",
+    "vxSetImageAttribute",
+    "vxSetNodeAttribute",
+    "vxSetParameterByIndex",
+    "vxSetParameterByReference",
+    "vxSetThresholdAttribute",
+    "vxUnloadKernels",
+    "vxUnmapImagePatch"
+  ],
+  "cts_build": {
+    "cmake": "success",
+    "compile": "success",
+    "link": "failed",
+    "link_errors": {
+      "undefined_references": [
+        "vxQueryContext",
+        "vxSetContextAttribute",
+        "vxQueryReference",
+        "vxReleaseReference",
+        "vxSetReferenceName",
+        "vxVerifyGraph",
+        "vxProcessGraph",
+        "vxQueryGraph",
+        "vxWaitGraph",
+        "vxScheduleGraph",
+        "vxIsGraphVerified",
+        "vxReplicateNode",
+        "vxAddUserKernel",
+        "vxAllocateUserKernelId",
+        "vxAllocateUserKernelLibraryId",
+        "vxQueryArray",
+        "vxMapArrayRange",
+        "vxUnmapArrayRange",
+        "vxFormatImagePatchAddress2d",
+        "vxCopyScalar",
+        "vxRegisterLogCallback",
+        "vxAddLogEntry",
+        "vxDirective",
+        "vxRegisterUserStructWithName",
+        "vxGetUserStructNameByEnum",
+        "vxGetUserStructEnumByName",
+        "vxSetNodeTarget"
+      ]
+    }
+  },
+  "test_results": {
+    "note": "Tests were not run due to link errors",
+    "base": {
+      "status": "not_run",
+      "total": 0,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "pass_rate": 0
+    },
+    "vision": {
+      "status": "not_run",
+      "total": 0,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "pass_rate": 0
+    },
+    "image_formats": {
+      "status": "not_run",
+      "total": 0,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "pass_rate": 0
+    },
+    "graph": {
+      "status": "not_run",
+      "total": 0,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "pass_rate": 0
+    }
+  },
+  "missing_functions_by_category": {
+    "context_management": [
+      "vxQueryContext",
+      "vxSetContextAttribute"
+    ],
+    "reference_management": [
+      "vxQueryReference",
+      "vxReleaseReference",
+      "vxSetReferenceName"
+    ],
+    "graph_operations": [
+      "vxVerifyGraph",
+      "vxProcessGraph",
+      "vxQueryGraph",
+      "vxWaitGraph",
+      "vxScheduleGraph",
+      "vxIsGraphVerified",
+      "vxReplicateNode"
+    ],
+    "user_kernel_support": [
+      "vxAddUserKernel",
+      "vxAllocateUserKernelId",
+      "vxAllocateUserKernelLibraryId"
+    ],
+    "array_operations": [
+      "vxQueryArray",
+      "vxMapArrayRange",
+      "vxUnmapArrayRange"
+    ],
+    "image_utilities": [
+      "vxFormatImagePatchAddress2d"
+    ],
+    "scalar_operations": [
+      "vxCopyScalar"
+    ],
+    "logging": [
+      "vxRegisterLogCallback",
+      "vxAddLogEntry",
+      "vxDirective"
+    ],
+    "user_struct": [
+      "vxRegisterUserStructWithName",
+      "vxGetUserStructNameByEnum",
+      "vxGetUserStructEnumByName"
+    ],
+    "node_target": [
+      "vxSetNodeTarget"
+    ]
+  },
+  "conformance_status": "NOT_CONFORMANT",
+  "critical_blockers": [
+    "Missing core context/query functions",
+    "Missing graph execution functions (verify, process)",
+    "Missing reference management functions",
+    "Missing array access functions",
+    "Missing user kernel support"
+  ],
+  "estimated_time_to_conformance_weeks": 10
+}

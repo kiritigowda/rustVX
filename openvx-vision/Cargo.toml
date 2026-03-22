@@ -1,0 +1,29 @@
+[package]
+name = "openvx-vision"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+simd = []
+sse2 = ["simd"]
+avx2 = ["simd"]
+neon = ["simd"]
+parallel = ["rayon"]
+
+[dependencies]
+openvx-core = { path = "../openvx-core" }
+openvx-image = { path = "../openvx-image" }
+openvx-buffer = { path = "../openvx-buffer" }
+rayon = { version = "1.8", optional = true }
+
+[dev-dependencies]
+assert_approx_eq = "1.1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "vision_kernels"
+path = "benches/vision_kernels.rs"
+harness = false

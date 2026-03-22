@@ -1,0 +1,453 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling libc v0.2.183
+   Compiling parking_lot_core v0.9.12
+   Compiling equivalent v1.0.2
+   Compiling scopeguard v1.2.0
+   Compiling smallvec v1.15.1
+   Compiling thiserror v1.0.69
+   Compiling cfg-if v1.0.4
+   Compiling hashbrown v0.16.1
+   Compiling fixedbitset v0.4.2
+   Compiling log v0.4.29
+   Compiling once_cell v1.21.4
+   Compiling lock_api v0.4.14
+   Compiling syn v2.0.117
+   Compiling indexmap v2.13.0
+   Compiling parking_lot v0.12.5
+   Compiling petgraph v0.6.5
+   Compiling thiserror-impl v1.0.69
+   Compiling openvx-core v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-core)
+warning: unused import: `crate::types::VxStatus`
+ --> openvx-core/src/c_api.rs:7:5
+  |
+7 | use crate::types::VxStatus;
+  |     ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type `vx_status` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:14:10
+   |
+14 | pub type vx_status = i32;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxStatus`
+   |
+   = note: `#[warn(non_camel_case_types)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: type `vx_enum` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:15:10
+   |
+15 | pub type vx_enum = i32;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxEnum`
+
+warning: type `vx_uint32` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:16:10
+   |
+16 | pub type vx_uint32 = u32;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxUint32`
+
+warning: type `vx_size` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:17:10
+   |
+17 | pub type vx_size = usize;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxSize`
+
+warning: type `vx_char` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:18:10
+   |
+18 | pub type vx_char = i8;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxChar`
+
+warning: type `vx_bool` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:19:10
+   |
+19 | pub type vx_bool = i32;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxBool`
+
+warning: type `vx_df_image` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:20:10
+   |
+20 | pub type vx_df_image = u32;
+   |          ^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxDfImage`
+
+warning: type `vx_uint64` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:21:10
+   |
+21 | pub type vx_uint64 = u64;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxUint64`
+
+warning: type `vx_int32` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:22:10
+   |
+22 | pub type vx_int32 = i32;
+   |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxInt32`
+
+warning: type `vx_float32` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:23:10
+   |
+23 | pub type vx_float32 = f32;
+   |          ^^^^^^^^^^ help: convert the identifier to upper camel case: `VxFloat32`
+
+warning: type `vx_map_id` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:24:10
+   |
+24 | pub type vx_map_id = usize;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxMapId`
+
+warning: type `vx_context` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:32:10
+   |
+32 | pub type vx_context = *mut VxContext;
+   |          ^^^^^^^^^^ help: convert the identifier to upper camel case: `VxContext`
+
+warning: type `vx_graph` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:36:10
+   |
+36 | pub type vx_graph = *mut VxGraph;
+   |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxGraph`
+
+warning: type `vx_node` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:40:10
+   |
+40 | pub type vx_node = *mut VxNode;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxNode`
+
+warning: type `vx_kernel` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:44:10
+   |
+44 | pub type vx_kernel = *mut VxKernel;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxKernel`
+
+warning: type `vx_parameter` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:48:10
+   |
+48 | pub type vx_parameter = *mut VxParameter;
+   |          ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxParameter`
+
+warning: type `vx_scalar` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:52:10
+   |
+52 | pub type vx_scalar = *mut VxScalar;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxScalar`
+
+warning: type `vx_convolution` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:56:10
+   |
+56 | pub type vx_convolution = *mut VxConvolution;
+   |          ^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxConvolution`
+
+warning: type `vx_matrix` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:60:10
+   |
+60 | pub type vx_matrix = *mut VxMatrix;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxMatrix`
+
+warning: type `vx_lut` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:64:10
+   |
+64 | pub type vx_lut = *mut VxLUT;
+   |          ^^^^^^ help: convert the identifier to upper camel case: `VxLut`
+
+warning: type `vx_threshold` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:68:10
+   |
+68 | pub type vx_threshold = *mut VxThreshold;
+   |          ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxThreshold`
+
+warning: type `vx_pyramid` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:72:10
+   |
+72 | pub type vx_pyramid = *mut VxPyramid;
+   |          ^^^^^^^^^^ help: convert the identifier to upper camel case: `VxPyramid`
+
+warning: type `vx_image` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:76:10
+   |
+76 | pub type vx_image = *mut VxImage;
+   |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxImage`
+
+warning: type `vx_reference` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:80:10
+   |
+80 | pub type vx_reference = *mut VxReference;
+   |          ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxReference`
+
+warning: type `vx_nodecomplete_f` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:83:10
+   |
+83 | pub type vx_nodecomplete_f = Option<extern "C" fn(vx_node) -> vx_action>;
+   |          ^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxNodecompleteF`
+
+warning: variant `VX_ACTION_CONTINUE` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:89:5
+   |
+89 |     VX_ACTION_CONTINUE = 0,
+   |     ^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxActionContinue`
+
+warning: variant `VX_ACTION_ABANDON` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:90:5
+   |
+90 |     VX_ACTION_ABANDON = 1,
+   |     ^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxActionAbandon`
+
+warning: type `vx_array` should have an upper camel case name
+    --> openvx-core/src/c_api.rs:1019:10
+     |
+1019 | pub type vx_array = *mut VxArray;
+     |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxArray`
+
+warning: unnecessary `unsafe` block
+   --> openvx-core/src/c_api.rs:233:5
+    |
+233 |     unsafe {
+    |     ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `vendor_id`, `version`, and `implementation` are never read
+  --> openvx-core/src/context.rs:12:5
+   |
+ 9 | pub struct Context {
+   |            ------- fields in this struct
+...
+12 |     vendor_id: u32,
+   |     ^^^^^^^^^
+13 |     version: (u32, u32),
+   |     ^^^^^^^
+14 |     implementation: String,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `id` is never read
+  --> openvx-core/src/c_api.rs:99:5
+   |
+98 | struct GraphData {
+   |        --------- field in this struct
+99 |     id: u64,
+   |     ^^
+
+warning: fields `id` and `kernel_id` are never read
+   --> openvx-core/src/c_api.rs:106:5
+    |
+105 | struct NodeData {
+    |        -------- fields in this struct
+106 |     id: u64,
+    |     ^^
+...
+109 |     kernel_id: u64,
+    |     ^^^^^^^^^
+
+warning: field `id` is never read
+   --> openvx-core/src/c_api.rs:118:5
+    |
+117 | struct KernelData {
+    |        ---------- field in this struct
+118 |     id: u64,
+    |     ^^
+
+warning: fields `id`, `context_id`, `kernel_id`, and `state` are never read
+   --> openvx-core/src/c_api.rs:128:5
+    |
+127 | struct ParameterData {
+    |        ------------- fields in this struct
+128 |     id: u64,
+    |     ^^
+129 |     context_id: u32,
+    |     ^^^^^^^^^^
+130 |     kernel_id: u64,
+    |     ^^^^^^^^^
+...
+134 |     state: vx_enum,
+    |     ^^^^^
+
+warning: fields `data` and `context` are never read
+  --> openvx-core/src/c_api_data.rs:14:5
+   |
+12 | pub struct VxCScalarData {
+   |            ------------- fields in this struct
+13 |     data_type: vx_enum,
+14 |     data: Vec<u8>,
+   |     ^^^^
+15 |     context: vx_context,
+   |     ^^^^^^^
+
+warning: fields `scale` and `context` are never read
+   --> openvx-core/src/c_api_data.rs:116:5
+    |
+113 | pub struct VxCConvolutionData {
+    |            ------------------ fields in this struct
+...
+116 |     scale: vx_uint32,
+    |     ^^^^^
+117 |     data: RwLock<Vec<i16>>,
+118 |     context: vx_context,
+    |     ^^^^^^^
+
+warning: field `context` is never read
+   --> openvx-core/src/c_api_data.rs:215:5
+    |
+210 | pub struct VxCMatrixData {
+    |            ------------- field in this struct
+...
+215 |     context: vx_context,
+    |     ^^^^^^^
+
+warning: fields `offset` and `context` are never read
+   --> openvx-core/src/c_api_data.rs:325:5
+    |
+322 | pub struct VxCLUTData {
+    |            ---------- fields in this struct
+...
+325 |     offset: vx_int32,
+    |     ^^^^^^
+326 |     data: RwLock<Vec<u8>>,
+327 |     context: vx_context,
+    |     ^^^^^^^
+
+warning: fields `thresh_type`, `data_type`, and `context` are never read
+   --> openvx-core/src/c_api_data.rs:432:5
+    |
+431 | pub struct VxCThresholdData {
+    |            ---------------- fields in this struct
+432 |     thresh_type: vx_enum,
+    |     ^^^^^^^^^^^
+433 |     data_type: vx_enum,
+    |     ^^^^^^^^^
+...
+439 |     context: vx_context,
+    |     ^^^^^^^
+
+warning: fields `width` and `height` are never read
+   --> openvx-core/src/c_api_data.rs:546:5
+    |
+545 | pub struct VxCPyramidLevel {
+    |            --------------- fields in this struct
+546 |     width: vx_uint32,
+    |     ^^^^^
+547 |     height: vx_uint32,
+    |     ^^^^^^
+
+warning: fields `scale`, `format`, and `context` are never read
+   --> openvx-core/src/c_api_data.rs:554:5
+    |
+552 | pub struct VxCPyramidData {
+    |            -------------- fields in this struct
+553 |     levels: vx_size,
+554 |     scale: vx_float32,
+    |     ^^^^^
+555 |     format: vx_df_image,
+    |     ^^^^^^
+556 |     images: Vec<VxCPyramidLevel>,
+557 |     context: vx_context,
+    |     ^^^^^^^
+
+   Compiling openvx-buffer v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-buffer)
+   Compiling openvx-image v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-image)
+warning: unused imports: `VX_MEMORY_TYPE_HOST`, `VX_READ_ONLY`, `VX_WRITE_ONLY`, and `vx_uint32`
+  --> openvx-buffer/src/c_api.rs:6:56
+   |
+ 6 |     vx_context, vx_array, vx_status, vx_enum, vx_size, vx_uint32,
+   |                                                        ^^^^^^^^^
+...
+12 |     VX_READ_ONLY, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST,
+   |     ^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Ordering`
+  --> openvx-buffer/src/c_api.rs:38:38
+   |
+38 | use std::sync::atomic::{AtomicUsize, Ordering};
+   |                                      ^^^^^^^^
+
+warning: unused import: `Arc`
+ --> openvx-image/src/c_api.rs:4:17
+  |
+4 | use std::sync::{Arc, RwLock};
+  |                 ^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `VX_DF_IMAGE_VIRT`, `VX_ERROR_INVALID_FORMAT`, `VX_MEMORY_TYPE_NONE`, and `vx_float32`
+  --> openvx-image/src/c_api.rs:8:5
+   |
+ 8 |     vx_float32,
+   |     ^^^^^^^^^^
+ 9 |     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
+10 |     VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+...
+14 |     VX_DF_IMAGE_U32, VX_DF_IMAGE_S32, VX_DF_IMAGE_VIRT,
+   |                                       ^^^^^^^^^^^^^^^^
+15 |     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
+16 |     VX_READ_ONLY, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
+   |                                                       ^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `plane_index`
+   --> openvx-image/src/c_api.rs:204:5
+    |
+204 |     plane_index: vx_uint32,
+    |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_plane_index`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `is_virtual`, `context`, and `mapped_patches` are never read
+  --> openvx-image/src/c_api.rs:24:5
+   |
+20 | pub struct VxCImage {
+   |            -------- fields in this struct
+...
+24 |     is_virtual: bool,
+   |     ^^^^^^^^^^
+25 |     context: vx_context,
+   |     ^^^^^^^
+26 |     data: RwLock<Vec<u8>>,
+27 |     mapped_patches: RwLock<Vec<(vx_map_id, Vec<u8>)>>,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `context` is never read
+  --> openvx-buffer/src/c_api.rs:22:5
+   |
+16 | pub struct VxCArray {
+   |            -------- field in this struct
+...
+22 |     context: vx_context,
+   |     ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: static `ARRAY_ID_COUNTER` is never used
+  --> openvx-buffer/src/c_api.rs:39:8
+   |
+39 | static ARRAY_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
+   |        ^^^^^^^^^^^^^^^^
+
+   Compiling openvx-vision v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-vision)
+warning: unused import: `KernelTrait`
+  --> openvx-vision/src/lib.rs:13:5
+   |
+13 |     KernelTrait,
+   |     ^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `openvx-buffer` (lib) generated 4 warnings (run `cargo fix --lib -p openvx-buffer` to apply 2 suggestions)
+warning: variable does not need to be mutable
+  --> openvx-vision/src/utils.rs:63:13
+   |
+63 |         let mut pivot_index = partition(arr, left, right);
+   |             ----^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `openvx-image` (lib) generated 4 warnings (run `cargo fix --lib -p openvx-image` to apply 3 suggestions)
+warning: `openvx-core` (lib) generated 42 warnings (run `cargo fix --lib -p openvx-core` to apply 1 suggestion)
+warning: `openvx-vision` (lib) generated 2 warnings (run `cargo fix --lib -p openvx-vision` to apply 2 suggestions)
+   Compiling openvx-ffi v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-ffi)
+    Finished `release` profile [optimized] target(s) in 3.32s

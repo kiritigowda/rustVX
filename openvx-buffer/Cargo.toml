@@ -1,0 +1,9 @@
+[package]
+name = "openvx-buffer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+openvx-core = { path = "../openvx-core" }

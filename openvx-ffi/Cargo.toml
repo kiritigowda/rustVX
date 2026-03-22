@@ -1,0 +1,13 @@
+[package]
+name = "openvx-ffi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+openvx-core = { path = "../openvx-core" }
+openvx-vision = { path = "../openvx-vision" }
+openvx-buffer = { path = "../openvx-buffer" }
+openvx-image = { path = "../openvx-image" }

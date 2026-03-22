@@ -1,0 +1,42 @@
+=================================================
+OpenVX Rust Implementation - Integration Tests
+=================================================
+
+Context Tests:
+  Running: context_create_release ... PASSED
+  Running: context_query_vendor ... PASSED
+  Running: context_query_version ... PASSED
+  Running: context_query_kernels ... PASSED
+  Running: null_context_release ... PASSED
+  Running: null_context_query ... PASSED
+
+Graph Tests:
+  Running: graph_create_release ... PASSED
+  Running: graph_verify_empty ... PASSED
+  Running: graph_process_empty ... PASSED
+  Running: graph_query_nodes ... PASSED
+  Running: graph_schedule_wait ... PASSED
+  Running: null_graph_release ... PASSED
+  Running: null_graph_verify ... PASSED
+  Running: null_graph_process ... PASSED
+
+Node Creation Tests (with NULL - error handling):
+  Running: color_convert_node_null_images ... PASSED
+  Running: gaussian3x3_node_null_images ... PASSED
+  Running: sobel3x3_node_null_input ... PASSED
+  Running: add_node_null_images ... PASSED
+  Running: threshold_node_null_params ... PASSED
+  Running: erode3x3_node_null_images ... PASSED
+  Running: dilate3x3_node_null_images ... PASSED
+  Running: and_node_null_images ... PASSED
+  Running: or_node_null_images ... PASSED
+  Running: box3x3_node_null_images ... PASSED
+  Running: median3x3_node_null_images ... PASSED
+
+Utility Tests:
+  Running: status_string_success ... PASSED
+  Running: status_string_invalid_ref ... PASSED
+
+=================================================
+Results: 27 passed, 0 failed, 108 total
+=================================================
