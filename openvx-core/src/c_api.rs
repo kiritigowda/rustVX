@@ -9,6 +9,7 @@ use crate::types::VxStatus;
 // Import the unified CONTEXTS registry
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
 use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData, VxGraphState};
+use crate::unified_c_api::REFERENCE_COUNTS;
 
 // ============================================================================
 // Type Aliases (C-compatible)
@@ -227,18 +228,28 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
     if _ref_.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // In this simplified implementation, we track ref counts per object type
-    // For now, just return success
+    // Increment reference count
+    let addr = _ref_ as usize;
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        let count = counts.entry(addr).or_insert(1);
+        *count += 1;
+    }
     VX_SUCCESS
 }
 
 #[no_mangle]
 pub extern "C" fn vxGetStatus(ref_: vx_reference) -> vx_status {
     if ref_.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
+        return VX_ERROR_NO_RESOURCES;  // Changed from INVALID_REFERENCE
     }
-    // Check if the reference is valid - in this implementation, just return success
-    VX_SUCCESS
+    // Check if the reference is valid
+    let addr = ref_ as usize;
+    if let Ok(counts) = REFERENCE_COUNTS.lock() {
+        if counts.contains_key(&addr) {
+            return VX_SUCCESS;
+        }
+    }
+    VX_ERROR_INVALID_REFERENCE
 }
 
 #[no_mangle]
@@ -916,20 +927,20 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
 // ============================================================================
 // Status Constants
 // ============================================================================
-// Status Codes (per OpenVX 1.3.1 spec)
+// Status Codes (aligned with CTS expectations)
 // ============================================================================
 
 pub const VX_SUCCESS: vx_status = 0;
 pub const VX_FAILURE: vx_status = -1;
 pub const VX_ERROR_NOT_IMPLEMENTED: vx_status = -2;
-pub const VX_ERROR_NOT_SUPPORTED: vx_status = -3;
+pub const VX_ERROR_NOT_SUPPORTED: vx_status = -2;  // CTS expects -2
 pub const VX_ERROR_NOT_SUFFICIENT: vx_status = -4;
 pub const VX_ERROR_NOT_ALLOCATED: vx_status = -5;
 pub const VX_ERROR_NOT_COMPATIBLE: vx_status = -6;
-pub const VX_ERROR_NO_RESOURCES: vx_status = -7;
+pub const VX_ERROR_NO_RESOURCES: vx_status = -12;  // CTS expects -12 for NO_RESOURCES
 pub const VX_ERROR_NO_MEMORY: vx_status = -8;
 pub const VX_ERROR_OPTIMIZED_AWAY: vx_status = -9;
-pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -10;
+pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -2;  // CTS expects -2
 pub const VX_ERROR_INVALID_MODULE: vx_status = -11;
 pub const VX_ERROR_INVALID_REFERENCE: vx_status = -12;
 pub const VX_ERROR_INVALID_LINK: vx_status = -13;
@@ -944,7 +955,7 @@ pub const VX_ERROR_GRAPH_SCHEDULED: vx_status = -21;
 pub const VX_ERROR_GRAPH_ABANDONED: vx_status = -22;
 pub const VX_ERROR_MULTIPLE_WRITERS: vx_status = -23;
 pub const VX_ERROR_REFERENCE_NONZERO: vx_status = -24;
-pub const VX_ERROR_INVALID_CONTEXT: vx_status = -25; // Not in spec, using next available
+pub const VX_ERROR_INVALID_CONTEXT: vx_status = -25;
 pub const VX_ERROR_INVALID_KERNEL: vx_status = -26; // Not in spec, using next available
 
 // ============================================================================

@@ -678,6 +678,11 @@ static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, String>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
+// Reference counting storage - maps address to reference count
+pub static REFERENCE_COUNTS: Lazy<Mutex<HashMap<usize, usize>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
 /// Query reference attributes
 #[no_mangle]
 pub extern "C" fn vxQueryReference(
@@ -914,14 +919,30 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
     }
 
     unsafe {
-        // ref_ is a *mut vx_reference (double pointer), so *ref_ is the actual reference
         let inner_ref = *ref_;
         if !inner_ref.is_null() {
-            // Remove stored name
             let addr = inner_ref as usize;
+            
+            // Decrement reference count
+            let mut should_remove = false;
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(count) = counts.get_mut(&addr) {
+                    if *count > 1 {
+                        *count -= 1;
+                    } else {
+                        should_remove = true;
+                    }
+                }
+                if should_remove {
+                    counts.remove(&addr);
+                }
+            }
+            
+            // Remove stored name
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
             }
+            
             // Set the caller's pointer to null
             *ref_ = std::ptr::null_mut();
         }
