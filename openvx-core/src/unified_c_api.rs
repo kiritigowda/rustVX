@@ -883,19 +883,21 @@ pub extern "C" fn vxQueryReference(
             }
             VX_REFERENCE_ATTRIBUTE_NAME => {
                 let addr = ref_ as usize;
+                if size != std::mem::size_of::<*const vx_char>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
                 if let Ok(names) = REFERENCE_NAMES.lock() {
                     if let Some(name) = names.get(&addr) {
-                        let name_bytes = name.as_bytes();
-                        let copy_len = name_bytes.len().min(size);
-                        std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr as *mut u8, copy_len);
-                        if copy_len < size {
-                            *((ptr as *mut u8).add(copy_len)) = 0; // Null terminate
+                        // Return pointer to internal storage
+                        unsafe {
+                            *(ptr as *mut *const vx_char) = name.as_ptr() as *const vx_char;
                         }
-                    } else {
-                        if size > 0 {
-                            *(ptr as *mut u8) = 0;
-                        }
+                        return VX_SUCCESS;
                     }
+                }
+                // No name set - return NULL pointer
+                unsafe {
+                    *(ptr as *mut *const vx_char) = std::ptr::null();
                 }
                 VX_SUCCESS
             }
