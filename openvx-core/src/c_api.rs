@@ -619,7 +619,7 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
             let test_kernel_id = generate_id();
             let test_kernel = Arc::new(KernelData {
                 id: test_kernel_id,
-                context_id: context as u64,
+                context_id: context as u32,
                 name: "org.khronos.test.testmodule".to_string(),
                 kernel_enum: 0x100000, // VX_KERNEL_BASE(VX_ID_USER, 0)
                 num_params: 0,
