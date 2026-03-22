@@ -492,7 +492,6 @@ pub extern "C" fn vxQueryContext(
                         user_kernels.len() as u32
                     } else { 0 };
                     count = unified_count + c_api_count + user_count;
-                    eprintln!("DEBUG vxQueryContext: unified={}, c_api={}, user={}, total={}", unified_count, c_api_count, user_count, count);
                     *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS
                 } else {

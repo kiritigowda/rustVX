@@ -239,8 +239,6 @@ fn register_standard_kernels(context_id: u32) {
             });
             kernels.insert(kernel_id, kernel);
         }
-        // Debug: print kernel count
-        eprintln!("DEBUG: Registered {} standard kernels for context {}", kernels.len(), context_id);
     }
 }
 
@@ -663,9 +661,8 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
         }
         
         // Parse module name and register kernels
-        // Handle test module or built-in kernels
-        if module_name == "openvx-core" || module_name == "openvx-vision" || module_name.is_empty() 
-            || module_name == "test-testmodule" || module_name == "org.khronos.test.testmodule" {
+        // Handle test module only - standard kernels are already registered
+        if module_name == "test-testmodule" || module_name == "org.khronos.test.testmodule" {
             // Register test kernels for CTS
             // Add a dummy test kernel
             let test_kernel_id = generate_id();
@@ -680,6 +677,9 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
             if let Ok(mut kernels) = KERNELS.lock() {
                 kernels.insert(test_kernel_id, test_kernel);
             }
+            VX_SUCCESS
+        } else if module_name == "openvx-core" || module_name == "openvx-vision" || module_name.is_empty() {
+            // Standard kernels already registered at context creation
             VX_SUCCESS
         } else {
             VX_ERROR_INVALID_PARAMETERS
