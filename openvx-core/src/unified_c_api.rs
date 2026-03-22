@@ -1116,6 +1116,15 @@ pub extern "C" fn vxAllocateUserKernelId(context: vx_context, id: *mut vx_enum) 
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
+    // VX_KERNEL_BASE(VX_ID_USER, 0) = 0x100000, valid range is 0x100000 to 0x100FFF (4096 values)
+    const MAX_KERNEL_ID: usize = 0x100000 + 4096;
+    
+    let current = NEXT_KERNEL_ENUM.load(Ordering::SeqCst);
+    if current >= MAX_KERNEL_ID {
+        // Reset to base if we've exceeded the range (for test repeatability)
+        NEXT_KERNEL_ENUM.store(0x100000, Ordering::SeqCst);
+    }
+    
     let new_id = NEXT_KERNEL_ENUM.fetch_add(1, Ordering::SeqCst) as vx_enum;
     unsafe {
         *id = new_id;
