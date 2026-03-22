@@ -1058,8 +1058,9 @@ static USER_KERNELS: Lazy<Mutex<HashMap<vx_enum, Arc<VxCUserKernel>>>> = Lazy::n
 });
 
 static NEXT_KERNEL_ENUM: Lazy<AtomicUsize> = Lazy::new(|| {
-    // VX_KERNEL_BASE(VX_ID_USER, 0) = ((0x1 << 20) | (0 << 12)) = 0x100000
-    AtomicUsize::new(0x100000) // Start at VX_KERNEL_BASE(VX_ID_USER, 0)
+    // VX_KERNEL_BASE(VX_ID_USER, 0) where VX_ID_USER = 0xFFE
+    // = (0xFFE << 20) | (0 << 12) = 0xFFE00000
+    AtomicUsize::new(0xFFE00000)
 });
 
 static NEXT_LIBRARY_ID: Lazy<AtomicUsize> = Lazy::new(|| {
@@ -1116,13 +1117,13 @@ pub extern "C" fn vxAllocateUserKernelId(context: vx_context, id: *mut vx_enum) 
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
-    // VX_KERNEL_BASE(VX_ID_USER, 0) = 0x100000, valid range is 0x100000 to 0x100FFF (4096 values)
-    const MAX_KERNEL_ID: usize = 0x100000 + 4096;
+    // VX_KERNEL_BASE(VX_ID_USER, 0) = 0xFFE00000, valid range is 0xFFE00000 to 0xFFE00FFF (4096 values)
+    const MAX_KERNEL_ID: usize = 0xFFE00000 + 4096;
     
     let current = NEXT_KERNEL_ENUM.load(Ordering::SeqCst);
     if current >= MAX_KERNEL_ID {
         // Reset to base if we've exceeded the range (for test repeatability)
-        NEXT_KERNEL_ENUM.store(0x100000, Ordering::SeqCst);
+        NEXT_KERNEL_ENUM.store(0xFFE00000, Ordering::SeqCst);
     }
     
     let new_id = NEXT_KERNEL_ENUM.fetch_add(1, Ordering::SeqCst) as vx_enum;
