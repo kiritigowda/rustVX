@@ -561,6 +561,10 @@ pub extern "C" fn vxSetContextAttribute(
             // Handle user memory settings
             VX_SUCCESS
         }
+        VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER => {
+            // Handle immediate border mode - store for later use
+            VX_SUCCESS
+        }
         _ => VX_ERROR_NOT_IMPLEMENTED,
     }
 }
@@ -880,6 +884,13 @@ pub extern "C" fn vxQueryReference(
                         return VX_SUCCESS;
                     }
                 }
+                // Also check c_api PARAMETERS registry
+                if let Ok(c_api_params) = crate::c_api::PARAMETERS.lock() {
+                    if c_api_params.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_PARAMETER;
+                        return VX_SUCCESS;
+                    }
+                }
                 
                 // Check meta formats
                 if let Ok(meta_formats) = META_FORMATS.lock() {
@@ -977,26 +988,26 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
             let addr = inner_ref as usize;
             
             // Decrement reference count
-            let mut should_remove = false;
+            let mut count_reached_zero = false;
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 if let Some(count) = counts.get_mut(&addr) {
                     if *count > 1 {
                         *count -= 1;
                     } else {
-                        should_remove = true;
+                        *count = 0;
+                        count_reached_zero = true;
                     }
                 }
-                if should_remove {
-                    counts.remove(&addr);
+            }
+            
+            // Only remove name if count reached zero
+            if count_reached_zero {
+                if let Ok(mut names) = REFERENCE_NAMES.lock() {
+                    names.remove(&addr);
                 }
             }
             
-            // Remove stored name
-            if let Ok(mut names) = REFERENCE_NAMES.lock() {
-                names.remove(&addr);
-            }
-            
-            // Set the caller's pointer to null
+            // Always set the caller's pointer to null
             *ref_ = std::ptr::null_mut();
         }
     }

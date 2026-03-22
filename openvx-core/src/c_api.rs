@@ -163,7 +163,7 @@ pub static KERNELS: Lazy<Mutex<std::collections::HashMap<u64, Arc<KernelData>>>>
     Mutex::new(std::collections::HashMap::new())
 });
 
-static PARAMETERS: Lazy<Mutex<std::collections::HashMap<u64, Arc<ParameterData>>>> = Lazy::new(|| {
+pub static PARAMETERS: Lazy<Mutex<std::collections::HashMap<u64, Arc<ParameterData>>>> = Lazy::new(|| {
     Mutex::new(std::collections::HashMap::new())
 });
 
@@ -751,23 +751,9 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
                 }
             }
         }
-        
-        // Kernel not found - create it
-        let id = generate_id();
-        let kernel = Arc::new(KernelData {
-            id,
-            context_id,
-            name: kernel_name.to_string(),
-            kernel_enum: 0,
-            num_params: 4,
-            ref_count: std::sync::atomic::AtomicUsize::new(1),
-        });
-        
-        if let Ok(mut kernels) = KERNELS.lock() {
-            kernels.insert(id, kernel);
-        }
-        
-        id as *mut VxKernel
+
+        // Kernel not found - return NULL (don't auto-create)
+        std::ptr::null_mut()
     }
 }
 
