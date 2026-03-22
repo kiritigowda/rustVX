@@ -392,16 +392,19 @@ pub extern "C" fn vxScheduleGraph(graph: vx_graph) -> vx_status {
 /// Check if graph is verified
 #[no_mangle]
 pub extern "C" fn vxIsGraphVerified(graph: vx_graph, verified: *mut vx_bool) -> vx_status {
-    if graph.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
     if verified.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-
-    let graph_id = graph as u64;
     
     unsafe {
+        // If graph is invalid, set verified to false and return success
+        if graph.is_null() {
+            *verified = 0; // vx_false_e
+            return VX_SUCCESS;
+        }
+
+        let graph_id = graph as u64;
+        
         if let Ok(graphs) = GRAPHS_DATA.lock() {
             if let Some(g) = graphs.get(&graph_id) {
                 let is_verified = g.verified.lock().unwrap();
@@ -409,7 +412,7 @@ pub extern "C" fn vxIsGraphVerified(graph: vx_graph, verified: *mut vx_bool) -> 
                 return VX_SUCCESS;
             }
         }
-        // Graph not found - set to false and return success (per OpenVX spec)
+        // Graph not found - set to false and return success
         *verified = 0;
     }
     
@@ -1292,9 +1295,9 @@ pub extern "C" fn vxGetUserStructNameByEnum(
     if let Ok(structs) = USER_STRUCTS.lock() {
         if let Some((name, _)) = structs.get(&user_struct_type) {
             let name_bytes = name.as_bytes();
-            // Handle size=0 case to prevent underflow
+            // Handle size=0 case - return VX_ERROR_NO_MEMORY per CTS expectations
             if size == 0 {
-                return VX_ERROR_INVALID_PARAMETERS;
+                return VX_ERROR_NO_MEMORY;
             }
             let copy_len = name_bytes.len().min(size - 1);
             unsafe {
