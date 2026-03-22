@@ -129,7 +129,7 @@ pub struct KernelData {
 }
 
 /// Internal parameter data (stored in Arc)
-struct ParameterData {
+pub struct ParameterData {
     id: u64,
     context_id: u32,
     kernel_id: u64,
