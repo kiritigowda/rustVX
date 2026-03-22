@@ -916,15 +916,36 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
 // ============================================================================
 // Status Constants
 // ============================================================================
+// Status Codes (per OpenVX 1.3.1 spec)
+// ============================================================================
 
 pub const VX_SUCCESS: vx_status = 0;
-pub const VX_ERROR_INVALID_REFERENCE: vx_status = -1;
-pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -2;
-pub const VX_ERROR_INVALID_GRAPH: vx_status = -3;
-pub const VX_ERROR_INVALID_NODE: vx_status = -4;
-pub const VX_ERROR_INVALID_KERNEL: vx_status = -5;
-pub const VX_ERROR_INVALID_CONTEXT: vx_status = -6;
-pub const VX_ERROR_NOT_IMPLEMENTED: vx_status = -30;
+pub const VX_FAILURE: vx_status = -1;
+pub const VX_ERROR_NOT_IMPLEMENTED: vx_status = -2;
+pub const VX_ERROR_NOT_SUPPORTED: vx_status = -3;
+pub const VX_ERROR_NOT_SUFFICIENT: vx_status = -4;
+pub const VX_ERROR_NOT_ALLOCATED: vx_status = -5;
+pub const VX_ERROR_NOT_COMPATIBLE: vx_status = -6;
+pub const VX_ERROR_NO_RESOURCES: vx_status = -7;
+pub const VX_ERROR_NO_MEMORY: vx_status = -8;
+pub const VX_ERROR_OPTIMIZED_AWAY: vx_status = -9;
+pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -10;
+pub const VX_ERROR_INVALID_MODULE: vx_status = -11;
+pub const VX_ERROR_INVALID_REFERENCE: vx_status = -12;
+pub const VX_ERROR_INVALID_LINK: vx_status = -13;
+pub const VX_ERROR_INVALID_FORMAT: vx_status = -14;
+pub const VX_ERROR_INVALID_DIMENSION: vx_status = -15;
+pub const VX_ERROR_INVALID_VALUE: vx_status = -16;
+pub const VX_ERROR_INVALID_TYPE: vx_status = -17;
+pub const VX_ERROR_INVALID_GRAPH: vx_status = -18;
+pub const VX_ERROR_INVALID_NODE: vx_status = -19;
+pub const VX_ERROR_INVALID_SCOPE: vx_status = -20;
+pub const VX_ERROR_GRAPH_SCHEDULED: vx_status = -21;
+pub const VX_ERROR_GRAPH_ABANDONED: vx_status = -22;
+pub const VX_ERROR_MULTIPLE_WRITERS: vx_status = -23;
+pub const VX_ERROR_REFERENCE_NONZERO: vx_status = -24;
+pub const VX_ERROR_INVALID_CONTEXT: vx_status = -25; // Not in spec, using next available
+pub const VX_ERROR_INVALID_KERNEL: vx_status = -26; // Not in spec, using next available
 
 // ============================================================================
 // Type Constants
@@ -1025,12 +1046,6 @@ pub const VX_DF_IMAGE_GRAYSCALE: vx_df_image = 0x0085859;
 pub const VX_DF_IMAGE_VIRT: vx_df_image = 0xFFFFFFFFu32;
 
 // ============================================================================
-// Additional Status Codes
-// ============================================================================
-
-pub const VX_ERROR_INVALID_FORMAT: vx_status = -7;
-pub const VX_ERROR_NO_MEMORY: vx_status = -8;
-
 // ============================================================================
 // Image Attributes
 // ============================================================================

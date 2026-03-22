@@ -538,29 +538,29 @@ pub const VX_REFERENCE_ATTRIBUTE_TYPE: vx_enum = 0x00080001;  // VX_REFERENCE_TY
 pub const VX_REFERENCE_ATTRIBUTE_COUNT: vx_enum = 0x00080000;  // VX_REFERENCE_COUNT
 pub const VX_REFERENCE_ATTRIBUTE_NAME: vx_enum = 0x00080002;    // VX_REFERENCE_NAME
 
-/// Reference type value
-pub const VX_TYPE_REFERENCE: vx_enum = 0x000;
-// pub const VX_TYPE_CONTEXT: vx_enum = 0x801; // Use value from c_api.rs
-pub const VX_TYPE_GRAPH: vx_enum = 0x002;
-pub const VX_TYPE_NODE: vx_enum = 0x003;
-pub const VX_TYPE_KERNEL: vx_enum = 0x004;
-pub const VX_TYPE_PARAMETER: vx_enum = 0x005;
-pub const VX_TYPE_DELAY: vx_enum = 0x006;
-pub const VX_TYPE_LUT: vx_enum = 0x007;
-pub const VX_TYPE_DISTRIBUTION: vx_enum = 0x008;
-pub const VX_TYPE_THRESHOLD: vx_enum = 0x009;
-pub const VX_TYPE_MATRIX: vx_enum = 0x00A;
-pub const VX_TYPE_CONVOLUTION: vx_enum = 0x00B;
-pub const VX_TYPE_SCALAR: vx_enum = 0x00C;
-pub const VX_TYPE_ARRAY: vx_enum = 0x00D;
-pub const VX_TYPE_IMAGE: vx_enum = 0x00E;
-pub const VX_TYPE_REMAP: vx_enum = 0x00F;
-pub const VX_TYPE_OBJECT_ARRAY: vx_enum = 0x010;
-pub const VX_TYPE_PYRAMID: vx_enum = 0x011;
-pub const VX_TYPE_TENSOR: vx_enum = 0x012;
-pub const VX_TYPE_META_FORMAT: vx_enum = 0x013;
-pub const VX_TYPE_IMPORT: vx_enum = 0x014;
-pub const VX_TYPE_TARGET: vx_enum = 0x015;
+/// Reference type values (from vx_types.h)
+pub const VX_TYPE_REFERENCE: vx_enum = 0x800;
+pub const VX_TYPE_CONTEXT: vx_enum = 0x801;
+pub const VX_TYPE_GRAPH: vx_enum = 0x802;
+pub const VX_TYPE_NODE: vx_enum = 0x803;
+pub const VX_TYPE_KERNEL: vx_enum = 0x804;
+pub const VX_TYPE_PARAMETER: vx_enum = 0x805;
+pub const VX_TYPE_DELAY: vx_enum = 0x806;
+pub const VX_TYPE_LUT: vx_enum = 0x807;
+pub const VX_TYPE_DISTRIBUTION: vx_enum = 0x808;
+pub const VX_TYPE_PYRAMID: vx_enum = 0x809;
+pub const VX_TYPE_THRESHOLD: vx_enum = 0x80A;
+pub const VX_TYPE_MATRIX: vx_enum = 0x80B;
+pub const VX_TYPE_CONVOLUTION: vx_enum = 0x80C;
+pub const VX_TYPE_SCALAR: vx_enum = 0x80D;
+pub const VX_TYPE_ARRAY: vx_enum = 0x80E;
+pub const VX_TYPE_IMAGE: vx_enum = 0x80F;
+pub const VX_TYPE_REMAP: vx_enum = 0x810;
+pub const VX_TYPE_META_FORMAT: vx_enum = 0x812;
+pub const VX_TYPE_OBJECT_ARRAY: vx_enum = 0x813;
+pub const VX_TYPE_TENSOR: vx_enum = 0x814;
+pub const VX_TYPE_IMPORT: vx_enum = 0x815;
+pub const VX_TYPE_TARGET: vx_enum = 0x816;
 
 /// Context registry - public for cross-module registration
 pub static CONTEXTS: Lazy<Mutex<HashMap<usize, Arc<VxCContext>>>> = Lazy::new(|| {
