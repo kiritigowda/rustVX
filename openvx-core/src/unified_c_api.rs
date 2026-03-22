@@ -1339,8 +1339,6 @@ pub const VX_DIRECTIVE_ENABLE_PERFORMANCE: vx_enum = 0x00;
 pub const VX_DIRECTIVE_DISABLE_PERFORMANCE: vx_enum = 0x01;
 pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x02;
 pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x03;
-pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x02;
-pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x03;
 
 /// Set directive on reference
 #[no_mangle]
