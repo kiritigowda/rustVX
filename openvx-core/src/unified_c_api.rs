@@ -883,7 +883,14 @@ pub extern "C" fn vxQueryReference(
                 if size < std::mem::size_of::<vx_uint32>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
-                *(ptr as *mut vx_uint32) = 1; // Simplified
+                // Get actual reference count from REFERENCE_COUNTS registry
+                let addr = ref_ as usize;
+                let count = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                    counts.get(&addr).copied().unwrap_or(1) as vx_uint32
+                } else {
+                    1
+                };
+                *(ptr as *mut vx_uint32) = count;
                 VX_SUCCESS
             }
             VX_REFERENCE_ATTRIBUTE_NAME => {
