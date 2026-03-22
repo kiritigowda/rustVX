@@ -482,15 +482,17 @@ pub extern "C" fn vxQueryContext(
                 if size == std::mem::size_of::<vx_uint32>() {
                     // Return total count of registered kernels from both registries
                     let mut count = 0u32;
-                    if let Ok(kernels) = KERNELS.lock() {
-                        count += kernels.len() as u32;
-                    }
-                    if let Ok(c_api_kernels) = crate::c_api::KERNELS.lock() {
-                        count += c_api_kernels.len() as u32;
-                    }
-                    if let Ok(user_kernels) = USER_KERNELS.lock() {
-                        count += user_kernels.len() as u32;
-                    }
+                    let unified_count = if let Ok(kernels) = KERNELS.lock() {
+                        kernels.len() as u32
+                    } else { 0 };
+                    let c_api_count = if let Ok(c_api_kernels) = crate::c_api::KERNELS.lock() {
+                        c_api_kernels.len() as u32
+                    } else { 0 };
+                    let user_count = if let Ok(user_kernels) = USER_KERNELS.lock() {
+                        user_kernels.len() as u32
+                    } else { 0 };
+                    count = unified_count + c_api_count + user_count;
+                    eprintln!("DEBUG vxQueryContext: unified={}, c_api={}, user={}, total={}", unified_count, c_api_count, user_count, count);
                     *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS
                 } else {
