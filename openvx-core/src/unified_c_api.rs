@@ -1292,6 +1292,10 @@ pub extern "C" fn vxGetUserStructNameByEnum(
     if let Ok(structs) = USER_STRUCTS.lock() {
         if let Some((name, _)) = structs.get(&user_struct_type) {
             let name_bytes = name.as_bytes();
+            // Handle size=0 case to prevent underflow
+            if size == 0 {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
             let copy_len = name_bytes.len().min(size - 1);
             unsafe {
                 std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), type_name as *mut u8, copy_len);
