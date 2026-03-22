@@ -40,6 +40,159 @@ pub struct VxCGraphData {
     ref_count: AtomicUsize,
 }
 
+/// Context data
+pub struct VxCContext {
+    id: u64,
+    ref_count: AtomicUsize,
+}
+
+/// Image data
+pub struct VxCImage {
+    width: u32,
+    height: u32,
+    format: vx_enum,
+    data: RwLock<Vec<u8>>,
+    ref_count: AtomicUsize,
+}
+
+/// Array data
+pub struct VxCArray {
+    item_type: vx_enum,
+    capacity: usize,
+    items: RwLock<Vec<u8>>,
+    ref_count: AtomicUsize,
+}
+
+/// Matrix data
+pub struct VxCMatrix {
+    rows: u32,
+    cols: u32,
+    data_type: vx_enum,
+    data: RwLock<Vec<f32>>,
+    ref_count: AtomicUsize,
+}
+
+/// Convolution data
+pub struct VxCConvolution {
+    rows: u32,
+    cols: u32,
+    scale: u32,
+    data: RwLock<Vec<i16>>,
+    ref_count: AtomicUsize,
+}
+
+/// LUT data
+pub struct VxCLUT {
+    data_type: vx_enum,
+    count: usize,
+    data: RwLock<Vec<u8>>,
+    ref_count: AtomicUsize,
+}
+
+/// Distribution data
+pub struct VxCDistribution {
+    bins: usize,
+    offset: u32,
+    range: u32,
+    data: RwLock<Vec<u32>>,
+    ref_count: AtomicUsize,
+}
+
+/// Threshold data
+pub struct VxCThreshold {
+    thresh_type: vx_enum,
+    data_type: vx_enum,
+    ref_count: AtomicUsize,
+}
+
+/// Pyramid data
+pub struct VxCPyramid {
+    levels: usize,
+    scale: f32,
+    ref_count: AtomicUsize,
+}
+
+/// Remap data
+pub struct VxCRemap {
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    ref_count: AtomicUsize,
+}
+
+/// Object array data
+pub struct VxCObjectArray {
+    exemplar_type: vx_enum,
+    count: usize,
+    ref_count: AtomicUsize,
+}
+
+/// Delay data
+pub struct VxCDelay {
+    slots: usize,
+    ref_count: AtomicUsize,
+}
+
+/// Tensor data
+pub struct VxCTensor {
+    num_dims: usize,
+    dims: Vec<usize>,
+    data_type: vx_enum,
+    ref_count: AtomicUsize,
+}
+
+/// Meta format data
+pub struct VxCMetaFormat {
+    format_type: vx_enum,
+    ref_count: AtomicUsize,
+}
+
+/// Import data
+pub struct VxCImport {
+    import_type: vx_enum,
+    ref_count: AtomicUsize,
+}
+
+/// Kernel data
+pub struct VxCKernel {
+    enumeration: vx_enum,
+    name: String,
+    ref_count: AtomicUsize,
+}
+
+/// Target data
+pub struct VxCTarget {
+    id: u64,
+    name: String,
+    ref_count: AtomicUsize,
+}
+
+/// Node data
+pub struct VxCNode {
+    id: u64,
+    kernel: vx_enum,
+    ref_count: AtomicUsize,
+}
+
+/// Parameter data
+pub struct VxCParameter {
+    index: u32,
+    direction: vx_enum,
+    data_type: vx_enum,
+    ref_count: AtomicUsize,
+}
+
+// Node registry
+static NODES: Lazy<Mutex<HashMap<u64, Arc<VxCNode>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Parameter registry
+static PARAMETERS: Lazy<Mutex<HashMap<u64, Arc<VxCParameter>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
 // Global graph storage
 use once_cell::sync::Lazy;
 use std::sync::Arc;
@@ -381,6 +534,117 @@ pub const VX_REFERENCE_ATTRIBUTE_NAME: vx_enum = 0x02;
 
 /// Reference type value
 pub const VX_TYPE_REFERENCE: vx_enum = 0x000;
+pub const VX_TYPE_CONTEXT: vx_enum = 0x001;
+pub const VX_TYPE_GRAPH: vx_enum = 0x002;
+pub const VX_TYPE_NODE: vx_enum = 0x003;
+pub const VX_TYPE_KERNEL: vx_enum = 0x004;
+pub const VX_TYPE_PARAMETER: vx_enum = 0x005;
+pub const VX_TYPE_DELAY: vx_enum = 0x006;
+pub const VX_TYPE_LUT: vx_enum = 0x007;
+pub const VX_TYPE_DISTRIBUTION: vx_enum = 0x008;
+pub const VX_TYPE_THRESHOLD: vx_enum = 0x009;
+pub const VX_TYPE_MATRIX: vx_enum = 0x00A;
+pub const VX_TYPE_CONVOLUTION: vx_enum = 0x00B;
+pub const VX_TYPE_SCALAR: vx_enum = 0x00C;
+pub const VX_TYPE_ARRAY: vx_enum = 0x00D;
+pub const VX_TYPE_IMAGE: vx_enum = 0x00E;
+pub const VX_TYPE_REMAP: vx_enum = 0x00F;
+pub const VX_TYPE_OBJECT_ARRAY: vx_enum = 0x010;
+pub const VX_TYPE_PYRAMID: vx_enum = 0x011;
+pub const VX_TYPE_TENSOR: vx_enum = 0x012;
+pub const VX_TYPE_META_FORMAT: vx_enum = 0x013;
+pub const VX_TYPE_IMPORT: vx_enum = 0x014;
+pub const VX_TYPE_TARGET: vx_enum = 0x015;
+
+// Context registry
+static CONTEXTS: Lazy<Mutex<HashMap<usize, Arc<VxCContext>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Image registry
+static IMAGES: Lazy<Mutex<HashMap<usize, Arc<VxCImage>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Array registry
+static ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCArray>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Scalar registry
+static SCALARS: Lazy<Mutex<HashMap<usize, Arc<VxCScalar>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Matrix registry
+static MATRICES: Lazy<Mutex<HashMap<usize, Arc<VxCMatrix>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Convolution registry
+static CONVOLUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCConvolution>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// LUT registry
+static LUTS: Lazy<Mutex<HashMap<usize, Arc<VxCLUT>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Distribution registry
+static DISTRIBUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCDistribution>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Threshold registry
+static THRESHOLDS: Lazy<Mutex<HashMap<usize, Arc<VxCThreshold>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Pyramid registry
+static PYRAMIDS: Lazy<Mutex<HashMap<usize, Arc<VxCPyramid>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Remap registry
+static REMAPS: Lazy<Mutex<HashMap<usize, Arc<VxCRemap>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Object array registry
+static OBJECT_ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCObjectArray>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Delay registry
+static DELAYS: Lazy<Mutex<HashMap<usize, Arc<VxCDelay>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Tensor registry
+static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Meta format registry
+static META_FORMATS: Lazy<Mutex<HashMap<usize, Arc<VxCMetaFormat>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Import registry
+static IMPORTS: Lazy<Mutex<HashMap<usize, Arc<VxCImport>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Kernel registry
+static KERNELS: Lazy<Mutex<HashMap<u64, Arc<VxCKernel>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Target registry
+static TARGETS: Lazy<Mutex<HashMap<u64, Arc<VxCTarget>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
 
 // Reference name storage
 static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, String>>> = Lazy::new(|| {
@@ -408,8 +672,178 @@ pub extern "C" fn vxQueryReference(
                 if size < std::mem::size_of::<vx_enum>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
-                // Try to determine type from pointer
-                // For now, return generic reference type
+                // Determine actual type based on which global registry contains the reference
+                let addr = ref_ as usize;
+                
+                // Check contexts
+                if let Ok(contexts) = CONTEXTS.lock() {
+                    if contexts.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_CONTEXT;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check graphs
+                if let Ok(graphs) = GRAPHS_DATA.lock() {
+                    if graphs.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_GRAPH;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check images
+                if let Ok(images) = IMAGES.lock() {
+                    if images.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_IMAGE;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check arrays
+                if let Ok(arrays) = ARRAYS.lock() {
+                    if arrays.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_ARRAY;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check scalars
+                if let Ok(scalars) = SCALARS.lock() {
+                    if scalars.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_SCALAR;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check convolutions
+                if let Ok(convs) = CONVOLUTIONS.lock() {
+                    if convs.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_CONVOLUTION;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check matrices
+                if let Ok(matrices) = MATRICES.lock() {
+                    if matrices.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_MATRIX;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check LUTs
+                if let Ok(luts) = LUTS.lock() {
+                    if luts.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_LUT;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check thresholds
+                if let Ok(thresholds) = THRESHOLDS.lock() {
+                    if thresholds.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_THRESHOLD;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check pyramids
+                if let Ok(pyramids) = PYRAMIDS.lock() {
+                    if pyramids.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_PYRAMID;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check nodes
+                if let Ok(nodes) = NODES.lock() {
+                    if nodes.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_NODE;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check distributions
+                if let Ok(distributions) = DISTRIBUTIONS.lock() {
+                    if distributions.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_DISTRIBUTION;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check remaps
+                if let Ok(remaps) = REMAPS.lock() {
+                    if remaps.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_REMAP;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check object arrays
+                if let Ok(object_arrays) = OBJECT_ARRAYS.lock() {
+                    if object_arrays.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_OBJECT_ARRAY;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check delays
+                if let Ok(delays) = DELAYS.lock() {
+                    if delays.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_DELAY;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check tensors
+                if let Ok(tensors) = TENSORS.lock() {
+                    if tensors.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_TENSOR;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check parameters
+                if let Ok(parameters) = PARAMETERS.lock() {
+                    if parameters.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_PARAMETER;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check meta formats
+                if let Ok(meta_formats) = META_FORMATS.lock() {
+                    if meta_formats.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_META_FORMAT;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check imports
+                if let Ok(imports) = IMPORTS.lock() {
+                    if imports.contains_key(&addr) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_IMPORT;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check kernels
+                if let Ok(kernels) = KERNELS.lock() {
+                    if kernels.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_KERNEL;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Check targets
+                if let Ok(targets) = TARGETS.lock() {
+                    if targets.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_TARGET;
+                        return VX_SUCCESS;
+                    }
+                }
+                
+                // Default to generic reference if not found in any registry
                 *(ptr as *mut vx_enum) = VX_TYPE_REFERENCE;
                 VX_SUCCESS
             }
