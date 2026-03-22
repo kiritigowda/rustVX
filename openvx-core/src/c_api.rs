@@ -212,12 +212,28 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = ctx as u64;
+        let addr = ctx as usize;
+        
+        // Decrement reference count
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            if let Some(count) = counts.get_mut(&addr) {
+                if *count > 1 {
+                    *count -= 1;
+                    // Don't actually release yet, just return
+                    *context = std::ptr::null_mut();
+                    return VX_SUCCESS;
+                } else {
+                    counts.remove(&addr);
+                }
+            }
+        }
+        
         if let Ok(mut contexts) = CONTEXTS.lock() {
             contexts.retain(|&c| c != id);
         }
         // Also remove from unified registry
         if let Ok(mut unified_ctxs) = UNIFIED_CONTEXTS.lock() {
-            unified_ctxs.remove(&(ctx as usize));
+            unified_ctxs.remove(&addr);
         }
         *context = std::ptr::null_mut();
     }
