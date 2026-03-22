@@ -370,6 +370,21 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = g as u64;
+        let addr = g as usize;
+        
+        // Decrement reference count
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            if let Some(count) = counts.get_mut(&addr) {
+                if *count > 1 {
+                    *count -= 1;
+                    *graph = std::ptr::null_mut();
+                    return VX_SUCCESS;
+                } else {
+                    counts.remove(&addr);
+                }
+            }
+        }
+        
         if let Ok(mut graphs) = GRAPHS.lock() {
             graphs.remove(&id);
         }
