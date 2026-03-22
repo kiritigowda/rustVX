@@ -239,6 +239,8 @@ fn register_standard_kernels(context_id: u32) {
             });
             kernels.insert(kernel_id, kernel);
         }
+        // Debug: print kernel count
+        eprintln!("DEBUG: Registered {} standard kernels for context {}", kernels.len(), context_id);
     }
 }
 
