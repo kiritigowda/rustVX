@@ -8,6 +8,7 @@ use crate::types::VxStatus;
 
 // Import the unified CONTEXTS registry
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
+use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData, VxGraphState};
 
 // ============================================================================
 // Type Aliases (C-compatible)
@@ -290,6 +291,8 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
     }
     let context_id = context as u32;
     let id = generate_id();
+    
+    // Store in the local registry
     let graph = Arc::new(GraphData {
         id,
         context_id,
@@ -299,6 +302,22 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
     if let Ok(mut graphs) = GRAPHS.lock() {
         graphs.insert(id, graph);
     }
+    
+    // Also register in unified registry for vxQueryReference
+    let unified_graph = Arc::new(VxCGraphData {
+        id,
+        context_id: context_id as u64,
+        nodes: std::sync::RwLock::new(Vec::new()),
+        parameters: std::sync::RwLock::new(Vec::new()),
+        state: std::sync::Mutex::new(VxGraphState::VxGraphStateUnverified),
+        verified: std::sync::Mutex::new(false),
+        ref_count: std::sync::atomic::AtomicUsize::new(1),
+    });
+    
+    if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
+        graphs_data.insert(id, unified_graph);
+    }
+    
     id as *mut VxGraph
 }
 
@@ -315,6 +334,10 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         let id = g as u64;
         if let Ok(mut graphs) = GRAPHS.lock() {
             graphs.remove(&id);
+        }
+        // Also remove from unified registry
+        if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
+            graphs_data.remove(&id);
         }
         *graph = std::ptr::null_mut();
     }

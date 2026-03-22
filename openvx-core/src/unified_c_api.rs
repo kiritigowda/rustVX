@@ -31,13 +31,13 @@ pub enum VxGraphState {
 
 /// Internal graph data with verification and execution state
 pub struct VxCGraphData {
-    id: u64,
-    context_id: u64,
-    nodes: RwLock<Vec<u64>>, // Store node IDs instead of raw pointers
-    parameters: RwLock<Vec<u64>>, // Store reference IDs
-    state: Mutex<VxGraphState>,
-    verified: Mutex<bool>,
-    ref_count: AtomicUsize,
+    pub id: u64,
+    pub context_id: u64,
+    pub nodes: RwLock<Vec<u64>>, // Store node IDs instead of raw pointers
+    pub parameters: RwLock<Vec<u64>>, // Store reference IDs
+    pub state: Mutex<VxGraphState>,
+    pub verified: Mutex<bool>,
+    pub ref_count: AtomicUsize,
 }
 
 /// Context data
@@ -197,7 +197,7 @@ static PARAMETERS: Lazy<Mutex<HashMap<u64, Arc<VxCParameter>>>> = Lazy::new(|| {
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 
-static GRAPHS_DATA: Lazy<Mutex<HashMap<u64, Arc<VxCGraphData>>>> = Lazy::new(|| {
+pub static GRAPHS_DATA: Lazy<Mutex<HashMap<u64, Arc<VxCGraphData>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -474,26 +474,31 @@ pub extern "C" fn vxQueryContext(
     unsafe {
         match attribute {
             VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS => {
-                if size != std::mem::size_of::<vx_size>() {
-                    return VX_ERROR_INVALID_PARAMETERS;
+                // vx_uint32 is expected per spec
+                if size == std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = 0;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
                 }
-                // Return number of unique kernels
-                *(ptr as *mut vx_size) = 0; // Placeholder
-                VX_SUCCESS
             }
             VX_CONTEXT_ATTRIBUTE_MODULES => {
-                if size != std::mem::size_of::<vx_size>() {
-                    return VX_ERROR_INVALID_PARAMETERS;
+                // vx_uint32 is expected per spec
+                if size == std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = 0;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
                 }
-                *(ptr as *mut vx_size) = 0;
-                VX_SUCCESS
             }
             VX_CONTEXT_ATTRIBUTE_REFERENCES => {
-                if size != std::mem::size_of::<vx_size>() {
-                    return VX_ERROR_INVALID_PARAMETERS;
+                // vx_uint32 is expected per spec
+                if size == std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = 0;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
                 }
-                *(ptr as *mut vx_size) = 0;
-                VX_SUCCESS
             }
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }
