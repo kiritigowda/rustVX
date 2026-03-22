@@ -1252,14 +1252,18 @@ pub extern "C" fn vxRegisterUserStructWithName(
     size: vx_size,
     type_name: *const vx_char,
 ) -> vx_enum {
+    // Size 0 should return VX_TYPE_INVALID per spec
+    if size == 0 {
+        return VX_TYPE_INVALID;
+    }
     if context.is_null() || type_name.is_null() {
-        return 0;
+        return VX_TYPE_INVALID;
     }
 
     unsafe {
         let name_str = match CStr::from_ptr(type_name).to_str() {
             Ok(s) => s.to_string(),
-            Err(_) => return 0,
+            Err(_) => return VX_TYPE_INVALID,
         };
 
         let new_enum = NEXT_USER_STRUCT_ENUM.fetch_add(1, Ordering::SeqCst) as vx_enum;
@@ -1280,10 +1284,8 @@ pub extern "C" fn vxGetUserStructNameByEnum(
     type_name: *mut vx_char,
     size: vx_size,
 ) -> vx_status {
-    if context.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    if type_name.is_null() {
+    // CTS expects INVALID_PARAMETERS for NULL context (not INVALID_REFERENCE)
+    if context.is_null() || type_name.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
@@ -1313,8 +1315,12 @@ pub extern "C" fn vxGetUserStructEnumByName(
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    if type_name.is_null() || user_struct_type.is_null() {
+    if user_struct_type.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
+    }
+    // NULL type_name should return VX_FAILURE per test expectations
+    if type_name.is_null() {
+        return VX_FAILURE;
     }
 
     unsafe {
