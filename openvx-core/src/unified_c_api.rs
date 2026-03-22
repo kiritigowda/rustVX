@@ -409,10 +409,11 @@ pub extern "C" fn vxIsGraphVerified(graph: vx_graph, verified: *mut vx_bool) -> 
                 return VX_SUCCESS;
             }
         }
+        // Graph not found - set to false and return success (per OpenVX spec)
         *verified = 0;
     }
     
-    VX_ERROR_INVALID_GRAPH
+    VX_SUCCESS
 }
 
 /// Replicate node for object arrays
@@ -1054,7 +1055,8 @@ static USER_KERNELS: Lazy<Mutex<HashMap<vx_enum, Arc<VxCUserKernel>>>> = Lazy::n
 });
 
 static NEXT_KERNEL_ENUM: Lazy<AtomicUsize> = Lazy::new(|| {
-    AtomicUsize::new(0x100) // Start at 256 for user kernels
+    // VX_KERNEL_BASE(VX_ID_USER, 0) = ((0x1 << 20) | (0 << 12)) = 0x100000
+    AtomicUsize::new(0x100000) // Start at VX_KERNEL_BASE(VX_ID_USER, 0)
 });
 
 static NEXT_LIBRARY_ID: Lazy<AtomicUsize> = Lazy::new(|| {
@@ -1297,7 +1299,8 @@ pub extern "C" fn vxGetUserStructNameByEnum(
         }
     }
 
-    VX_ERROR_INVALID_PARAMETERS
+    // Struct not found - return VX_FAILURE per spec
+    VX_FAILURE
 }
 
 /// Get struct type enum from name
@@ -1305,27 +1308,33 @@ pub extern "C" fn vxGetUserStructNameByEnum(
 pub extern "C" fn vxGetUserStructEnumByName(
     context: vx_context,
     type_name: *const vx_char,
-) -> vx_enum {
-    if context.is_null() || type_name.is_null() {
-        return 0;
+    user_struct_type: *mut vx_enum,
+) -> vx_status {
+    if context.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if type_name.is_null() || user_struct_type.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
     }
 
     unsafe {
         let name_str = match CStr::from_ptr(type_name).to_str() {
             Ok(s) => s,
-            Err(_) => return 0,
+            Err(_) => return VX_FAILURE,
         };
 
         if let Ok(structs) = USER_STRUCTS.lock() {
             for (enum_val, (name, _)) in structs.iter() {
                 if name == name_str {
-                    return *enum_val;
+                    *user_struct_type = *enum_val;
+                    return VX_SUCCESS;
                 }
             }
         }
     }
 
-    0
+    // Struct not found
+    VX_FAILURE
 }
 
 // ============================================================================
