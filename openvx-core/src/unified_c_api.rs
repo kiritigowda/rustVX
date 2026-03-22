@@ -941,13 +941,46 @@ pub extern "C" fn vxSetReferenceName(
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
+    // Validate that reference exists in at least one registry
+    let addr = ref_ as usize;
+    let addr_u64 = ref_ as u64;
+    let mut found = false;
+    
+    // Check all registries to validate reference exists
+    if let Ok(contexts) = CONTEXTS.lock() {
+        if contexts.contains_key(&addr) { found = true; }
+    }
+    if !found {
+        if let Ok(graphs) = GRAPHS_DATA.lock() {
+            if graphs.contains_key(&addr_u64) { found = true; }
+        }
+    }
+    if !found {
+        if let Ok(images) = IMAGES.lock() {
+            if images.contains_key(&addr) { found = true; }
+        }
+    }
+    if !found {
+        if let Ok(arrays) = ARRAYS.lock() {
+            if arrays.contains_key(&addr) { found = true; }
+        }
+    }
+    if !found {
+        if let Ok(scalars) = SCALARS.lock() {
+            if scalars.contains_key(&addr) { found = true; }
+        }
+    }
+    
+    if !found {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
     unsafe {
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s.to_string(),
             Err(_) => return VX_ERROR_INVALID_PARAMETERS,
         };
         
-        let addr = ref_ as usize;
         if let Ok(mut names) = REFERENCE_NAMES.lock() {
             names.insert(addr, name_str);
         }
