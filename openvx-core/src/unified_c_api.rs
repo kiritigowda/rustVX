@@ -42,8 +42,8 @@ pub struct VxCGraphData {
 
 /// Context data
 pub struct VxCContext {
-    id: u64,
-    ref_count: AtomicUsize,
+    pub id: u64,
+    pub ref_count: AtomicUsize,
 }
 
 /// Image data
@@ -448,12 +448,13 @@ pub extern "C" fn vxReplicateNode(
 // 2. Context Operations
 // ============================================================================
 
-// Context attribute constants
-pub const VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS: vx_enum = 0x00;
-pub const VX_CONTEXT_ATTRIBUTE_MODULES: vx_enum = 0x01;
-pub const VX_CONTEXT_ATTRIBUTE_REFERENCES: vx_enum = 0x02;
-pub const VX_CONTEXT_ATTRIBUTE_USER_MEMORY: vx_enum = 0x03;
-pub const VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION: vx_enum = 0x04;
+// Context attribute constants (calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_CONTEXT) + offset)
+// VX_ATTRIBUTE_BASE(0x000, 0x801) = 0x00080100
+pub const VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS: vx_enum = 0x00080102;  // +0x2
+pub const VX_CONTEXT_ATTRIBUTE_MODULES: vx_enum = 0x00080103;        // +0x3
+pub const VX_CONTEXT_ATTRIBUTE_REFERENCES: vx_enum = 0x00080104;       // +0x4
+pub const VX_CONTEXT_ATTRIBUTE_USER_MEMORY: vx_enum = 0x00080105;      // +0x5
+pub const VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION: vx_enum = 0x00080106; // +0x6
 
 /// Query context attributes
 #[no_mangle]
@@ -528,13 +529,13 @@ pub extern "C" fn vxSetContextAttribute(
 // ============================================================================
 
 // Reference attribute constants
-pub const VX_REFERENCE_ATTRIBUTE_TYPE: vx_enum = 0x00;
-pub const VX_REFERENCE_ATTRIBUTE_COUNT: vx_enum = 0x01;
-pub const VX_REFERENCE_ATTRIBUTE_NAME: vx_enum = 0x02;
+pub const VX_REFERENCE_ATTRIBUTE_TYPE: vx_enum = 0x00080001;  // VX_REFERENCE_TYPE
+pub const VX_REFERENCE_ATTRIBUTE_COUNT: vx_enum = 0x00080000;  // VX_REFERENCE_COUNT
+pub const VX_REFERENCE_ATTRIBUTE_NAME: vx_enum = 0x00080002;    // VX_REFERENCE_NAME
 
 /// Reference type value
 pub const VX_TYPE_REFERENCE: vx_enum = 0x000;
-pub const VX_TYPE_CONTEXT: vx_enum = 0x001;
+// pub const VX_TYPE_CONTEXT: vx_enum = 0x801; // Use value from c_api.rs
 pub const VX_TYPE_GRAPH: vx_enum = 0x002;
 pub const VX_TYPE_NODE: vx_enum = 0x003;
 pub const VX_TYPE_KERNEL: vx_enum = 0x004;
@@ -556,10 +557,27 @@ pub const VX_TYPE_META_FORMAT: vx_enum = 0x013;
 pub const VX_TYPE_IMPORT: vx_enum = 0x014;
 pub const VX_TYPE_TARGET: vx_enum = 0x015;
 
-// Context registry
-static CONTEXTS: Lazy<Mutex<HashMap<usize, Arc<VxCContext>>>> = Lazy::new(|| {
+/// Context registry - public for cross-module registration
+pub static CONTEXTS: Lazy<Mutex<HashMap<usize, Arc<VxCContext>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
+
+/// Register a context in the unified registry
+pub fn register_context(id: u64, ptr: *mut VxContext) {
+    if let Ok(mut contexts) = CONTEXTS.lock() {
+        contexts.insert(ptr as usize, Arc::new(VxCContext {
+            id,
+            ref_count: AtomicUsize::new(1),
+        }));
+    }
+}
+
+/// Unregister a context from the unified registry
+pub fn unregister_context(id: u64) {
+    if let Ok(mut contexts) = CONTEXTS.lock() {
+        contexts.retain(|_, ctx| ctx.id != id);
+    }
+}
 
 // Image registry
 static IMAGES: Lazy<Mutex<HashMap<usize, Arc<VxCImage>>>> = Lazy::new(|| {
@@ -936,6 +954,11 @@ pub struct VxCScalar {
     data: RwLock<Vec<u8>>,
     context: vx_context,
 }
+
+// SAFETY: VxCScalar is safe to Send/Sync because the context pointer
+// is only used for reference validation, not for concurrent mutable access
+unsafe impl Send for VxCScalar {}
+unsafe impl Sync for VxCScalar {}
 
 /// Copy scalar value to/from user memory
 #[no_mangle]

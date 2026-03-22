@@ -1,20 +1,21 @@
+     Removed 260 files, 128.5MiB total
    Compiling proc-macro2 v1.0.106
    Compiling quote v1.0.45
    Compiling unicode-ident v1.0.24
    Compiling libc v0.2.183
    Compiling parking_lot_core v0.9.12
-   Compiling smallvec v1.15.1
-   Compiling hashbrown v0.16.1
-   Compiling thiserror v1.0.69
-   Compiling equivalent v1.0.2
-   Compiling scopeguard v1.2.0
    Compiling cfg-if v1.0.4
+   Compiling scopeguard v1.2.0
+   Compiling hashbrown v0.16.1
+   Compiling smallvec v1.15.1
+   Compiling equivalent v1.0.2
+   Compiling thiserror v1.0.69
    Compiling fixedbitset v0.4.2
    Compiling log v0.4.29
    Compiling once_cell v1.21.4
    Compiling lock_api v0.4.14
-   Compiling syn v2.0.117
    Compiling indexmap v2.13.0
+   Compiling syn v2.0.117
    Compiling parking_lot v0.12.5
    Compiling petgraph v0.6.5
    Compiling thiserror-impl v1.0.69
@@ -198,58 +199,118 @@ warning: type `vx_array` should have an upper camel case name
      |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxArray`
 
 warning: type `vx_distribution` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:907:10
-    |
-907 | pub type vx_distribution = *mut VxDistribution;
-    |          ^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxDistribution`
+    --> openvx-core/src/unified_c_api.rs:1341:10
+     |
+1341 | pub type vx_distribution = *mut VxDistribution;
+     |          ^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxDistribution`
 
 warning: type `vx_remap` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:911:10
-    |
-911 | pub type vx_remap = *mut VxRemap;
-    |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxRemap`
+    --> openvx-core/src/unified_c_api.rs:1345:10
+     |
+1345 | pub type vx_remap = *mut VxRemap;
+     |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxRemap`
 
 warning: type `vx_delay` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:915:10
-    |
-915 | pub type vx_delay = *mut VxDelay;
-    |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxDelay`
+    --> openvx-core/src/unified_c_api.rs:1349:10
+     |
+1349 | pub type vx_delay = *mut VxDelay;
+     |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxDelay`
 
 warning: type `vx_object_array` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:919:10
-    |
-919 | pub type vx_object_array = *mut VxObjectArray;
-    |          ^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxObjectArray`
+    --> openvx-core/src/unified_c_api.rs:1353:10
+     |
+1353 | pub type vx_object_array = *mut VxObjectArray;
+     |          ^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxObjectArray`
 
 warning: type `vx_tensor` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:923:10
-    |
-923 | pub type vx_tensor = *mut VxTensor;
-    |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxTensor`
+    --> openvx-core/src/unified_c_api.rs:1357:10
+     |
+1357 | pub type vx_tensor = *mut VxTensor;
+     |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxTensor`
 
 warning: type `vx_import` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:927:10
-    |
-927 | pub type vx_import = *mut VxImport;
-    |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxImport`
+    --> openvx-core/src/unified_c_api.rs:1361:10
+     |
+1361 | pub type vx_import = *mut VxImport;
+     |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxImport`
 
 warning: type `vx_meta_format` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:931:10
-    |
-931 | pub type vx_meta_format = *mut VxMetaFormat;
-    |          ^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxMetaFormat`
+    --> openvx-core/src/unified_c_api.rs:1365:10
+     |
+1365 | pub type vx_meta_format = *mut VxMetaFormat;
+     |          ^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxMetaFormat`
 
 warning: type `vx_target` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:935:10
-    |
-935 | pub type vx_target = *mut VxTarget;
-    |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxTarget`
+    --> openvx-core/src/unified_c_api.rs:1369:10
+     |
+1369 | pub type vx_target = *mut VxTarget;
+     |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxTarget`
 
 warning: type `vx_graph_parameter` should have an upper camel case name
-   --> openvx-core/src/unified_c_api.rs:939:10
+    --> openvx-core/src/unified_c_api.rs:1373:10
+     |
+1373 | pub type vx_graph_parameter = *mut VxGraphParameter;
+     |          ^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxGraphParameter`
+
+error[E0277]: `*mut VxContext` cannot be shared between threads safely
+   --> openvx-core/src/unified_c_api.rs:575:17
     |
-939 | pub type vx_graph_parameter = *mut VxGraphParameter;
-    |          ^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxGraphParameter`
+575 | static SCALARS: Lazy<Mutex<HashMap<usize, Arc<VxCScalar>>>> = Lazy::new(|| {
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `*mut VxContext` cannot be shared between threads safely
+    |
+    = help: within `VxCScalar`, the trait `Sync` is not implemented for `*mut VxContext`
+note: required because it appears within the type `VxCScalar`
+   --> openvx-core/src/unified_c_api.rs:934:12
+    |
+934 | pub struct VxCScalar {
+    |            ^^^^^^^^^
+    = note: required for `Arc<VxCScalar>` to implement `Send`
+    = note: required because it appears within the type `(usize, Arc<VxCScalar>)`
+    = note: required for `hashbrown::raw::RawTable<(usize, Arc<VxCScalar>)>` to implement `Send`
+note: required because it appears within the type `hashbrown::map::HashMap<usize, Arc<VxCScalar>, RandomState>`
+   --> /rust/deps/hashbrown-0.16.1/src/map.rs:185:11
+note: required because it appears within the type `HashMap<usize, Arc<VxCScalar>>`
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/std/src/collections/hash/map.rs:247:11
+    = note: required for `std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>` to implement `Sync`
+    = note: 1 redundant requirement hidden
+    = note: required for `once_cell::imp::OnceCell<std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>>` to implement `Sync`
+note: required because it appears within the type `once_cell::sync::OnceCell<std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>>`
+   --> /home/simon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs:911:16
+    |
+911 |     pub struct OnceCell<T>(Imp<T>);
+    |                ^^^^^^^^
+    = note: required for `once_cell::sync::Lazy<std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>>` to implement `Sync`
+    = note: shared static variables must have a type that implements `Sync`
+
+error[E0277]: `*mut VxContext` cannot be sent between threads safely
+   --> openvx-core/src/unified_c_api.rs:575:17
+    |
+575 | static SCALARS: Lazy<Mutex<HashMap<usize, Arc<VxCScalar>>>> = Lazy::new(|| {
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `*mut VxContext` cannot be sent between threads safely
+    |
+    = help: within `VxCScalar`, the trait `Send` is not implemented for `*mut VxContext`
+note: required because it appears within the type `VxCScalar`
+   --> openvx-core/src/unified_c_api.rs:934:12
+    |
+934 | pub struct VxCScalar {
+    |            ^^^^^^^^^
+    = note: required for `Arc<VxCScalar>` to implement `Send`
+    = note: required because it appears within the type `(usize, Arc<VxCScalar>)`
+    = note: required for `hashbrown::raw::RawTable<(usize, Arc<VxCScalar>)>` to implement `Send`
+note: required because it appears within the type `hashbrown::map::HashMap<usize, Arc<VxCScalar>, RandomState>`
+   --> /rust/deps/hashbrown-0.16.1/src/map.rs:185:11
+note: required because it appears within the type `HashMap<usize, Arc<VxCScalar>>`
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/std/src/collections/hash/map.rs:247:11
+    = note: required for `std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>` to implement `Sync`
+    = note: 1 redundant requirement hidden
+    = note: required for `once_cell::imp::OnceCell<std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>>` to implement `Sync`
+note: required because it appears within the type `once_cell::sync::OnceCell<std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>>`
+   --> /home/simon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs:911:16
+    |
+911 |     pub struct OnceCell<T>(Imp<T>);
+    |                ^^^^^^^^
+    = note: required for `once_cell::sync::Lazy<std::sync::Mutex<HashMap<usize, Arc<VxCScalar>>>>` to implement `Sync`
+    = note: shared static variables must have a type that implements `Sync`
 
 warning: unnecessary `unsafe` block
    --> openvx-core/src/c_api.rs:233:5
@@ -260,414 +321,1074 @@ warning: unnecessary `unsafe` block
     = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `color`
-    --> openvx-core/src/unified_c_api.rs:1157:5
+    --> openvx-core/src/unified_c_api.rs:1591:5
      |
-1157 |     color: u32,
+1591 |     color: u32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_color`
      |
      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `channel`
-    --> openvx-core/src/unified_c_api.rs:1169:5
+    --> openvx-core/src/unified_c_api.rs:1603:5
      |
-1169 |     channel: i32,
+1603 |     channel: i32,
      |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_channel`
 
 warning: unused variable: `prev_ptrs`
-    --> openvx-core/src/unified_c_api.rs:1192:5
+    --> openvx-core/src/unified_c_api.rs:1626:5
      |
-1192 |     prev_ptrs: *mut *mut c_void,
+1626 |     prev_ptrs: *mut *mut c_void,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_prev_ptrs`
 
 warning: unused variable: `num_planes`
-    --> openvx-core/src/unified_c_api.rs:1193:5
+    --> openvx-core/src/unified_c_api.rs:1627:5
      |
-1193 |     num_planes: u32,
+1627 |     num_planes: u32,
      |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_planes`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1216:5
+    --> openvx-core/src/unified_c_api.rs:1650:5
      |
-1216 |     usage: i32,
+1650 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `mem_type`
-    --> openvx-core/src/unified_c_api.rs:1217:5
+    --> openvx-core/src/unified_c_api.rs:1651:5
      |
-1217 |     mem_type: i32,
+1651 |     mem_type: i32,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
 
 warning: unused variable: `plane_index`
-    --> openvx-core/src/unified_c_api.rs:1228:5
+    --> openvx-core/src/unified_c_api.rs:1662:5
      |
-1228 |     plane_index: u32,
+1662 |     plane_index: u32,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_plane_index`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1230:5
+    --> openvx-core/src/unified_c_api.rs:1664:5
      |
-1230 |     usage: i32,
+1664 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `mem_type`
-    --> openvx-core/src/unified_c_api.rs:1231:5
+    --> openvx-core/src/unified_c_api.rs:1665:5
      |
-1231 |     mem_type: i32,
+1665 |     mem_type: i32,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
 
 warning: unused variable: `plane_index`
-    --> openvx-core/src/unified_c_api.rs:1243:5
+    --> openvx-core/src/unified_c_api.rs:1677:5
      |
-1243 |     plane_index: u32,
+1677 |     plane_index: u32,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_plane_index`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1246:5
+    --> openvx-core/src/unified_c_api.rs:1680:5
      |
-1246 |     usage: i32,
+1680 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `mem_type`
-    --> openvx-core/src/unified_c_api.rs:1247:5
+    --> openvx-core/src/unified_c_api.rs:1681:5
      |
-1247 |     mem_type: i32,
+1681 |     mem_type: i32,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1294:5
+    --> openvx-core/src/unified_c_api.rs:1728:5
      |
-1294 |     attribute: i32,
+1728 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1296:5
+    --> openvx-core/src/unified_c_api.rs:1730:5
      |
-1296 |     size: usize,
+1730 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `index`
-    --> openvx-core/src/unified_c_api.rs:1317:5
+    --> openvx-core/src/unified_c_api.rs:1751:5
      |
-1317 |     index: u32,
+1751 |     index: u32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1321:5
+    --> openvx-core/src/unified_c_api.rs:1755:5
      |
-1321 |     usage: i32,
+1755 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `mem_type`
-    --> openvx-core/src/unified_c_api.rs:1322:5
+    --> openvx-core/src/unified_c_api.rs:1756:5
      |
-1322 |     mem_type: i32,
+1756 |     mem_type: i32,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
 
 warning: unused variable: `index`
-    --> openvx-core/src/unified_c_api.rs:1334:5
+    --> openvx-core/src/unified_c_api.rs:1768:5
      |
-1334 |     index: u32,
+1768 |     index: u32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
 
 warning: unused variable: `map_id`
-    --> openvx-core/src/unified_c_api.rs:1335:5
+    --> openvx-core/src/unified_c_api.rs:1769:5
      |
-1335 |     map_id: usize,
+1769 |     map_id: usize,
      |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_map_id`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1347:5
+    --> openvx-core/src/unified_c_api.rs:1781:5
      |
-1347 |     usage: i32,
+1781 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `user_mem_type`
-    --> openvx-core/src/unified_c_api.rs:1348:5
+    --> openvx-core/src/unified_c_api.rs:1782:5
      |
-1348 |     user_mem_type: i32,
+1782 |     user_mem_type: i32,
      |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
 
 warning: unused variable: `start`
-    --> openvx-core/src/unified_c_api.rs:1359:5
+    --> openvx-core/src/unified_c_api.rs:1793:5
      |
-1359 |     start: usize,
+1793 |     start: usize,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_start`
 
 warning: unused variable: `end`
-    --> openvx-core/src/unified_c_api.rs:1360:5
+    --> openvx-core/src/unified_c_api.rs:1794:5
      |
-1360 |     end: usize,
+1794 |     end: usize,
      |     ^^^ help: if this is intentional, prefix it with an underscore: `_end`
 
 warning: unused variable: `stride`
-    --> openvx-core/src/unified_c_api.rs:1361:5
+    --> openvx-core/src/unified_c_api.rs:1795:5
      |
-1361 |     stride: usize,
+1795 |     stride: usize,
      |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_stride`
 
 warning: unused variable: `user_mem_type`
-    --> openvx-core/src/unified_c_api.rs:1363:5
+    --> openvx-core/src/unified_c_api.rs:1797:5
      |
-1363 |     user_mem_type: i32,
+1797 |     user_mem_type: i32,
      |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1374:5
+    --> openvx-core/src/unified_c_api.rs:1808:5
      |
-1374 |     attribute: i32,
+1808 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1376:5
+    --> openvx-core/src/unified_c_api.rs:1810:5
      |
-1376 |     size: usize,
+1810 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1387:5
+    --> openvx-core/src/unified_c_api.rs:1821:5
      |
-1387 |     attribute: i32,
+1821 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1389:5
+    --> openvx-core/src/unified_c_api.rs:1823:5
      |
-1389 |     size: usize,
+1823 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1400:5
+    --> openvx-core/src/unified_c_api.rs:1834:5
      |
-1400 |     attribute: i32,
+1834 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1402:5
+    --> openvx-core/src/unified_c_api.rs:1836:5
      |
-1402 |     size: usize,
+1836 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1413:5
+    --> openvx-core/src/unified_c_api.rs:1847:5
      |
-1413 |     attribute: i32,
+1847 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1415:5
+    --> openvx-core/src/unified_c_api.rs:1849:5
      |
-1415 |     size: usize,
+1849 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1426:5
+    --> openvx-core/src/unified_c_api.rs:1860:5
      |
-1426 |     attribute: i32,
+1860 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1428:5
+    --> openvx-core/src/unified_c_api.rs:1862:5
      |
-1428 |     size: usize,
+1862 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `offset`
-    --> openvx-core/src/unified_c_api.rs:1440:5
+    --> openvx-core/src/unified_c_api.rs:1874:5
      |
-1440 |     offset: u32,
+1874 |     offset: u32,
      |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1452:5
+    --> openvx-core/src/unified_c_api.rs:1886:5
      |
-1452 |     attribute: i32,
+1886 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1454:5
+    --> openvx-core/src/unified_c_api.rs:1888:5
      |
-1454 |     size: usize,
+1888 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1466:5
+    --> openvx-core/src/unified_c_api.rs:1900:5
      |
-1466 |     usage: i32,
+1900 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `user_mem_type`
-    --> openvx-core/src/unified_c_api.rs:1467:5
+    --> openvx-core/src/unified_c_api.rs:1901:5
      |
-1467 |     user_mem_type: i32,
+1901 |     user_mem_type: i32,
      |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1489:5
+    --> openvx-core/src/unified_c_api.rs:1923:5
      |
-1489 |     attribute: i32,
+1923 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1491:5
+    --> openvx-core/src/unified_c_api.rs:1925:5
      |
-1491 |     size: usize,
+1925 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `src_width`
-    --> openvx-core/src/unified_c_api.rs:1512:5
+    --> openvx-core/src/unified_c_api.rs:1946:5
      |
-1512 |     src_width: u32,
+1946 |     src_width: u32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_src_width`
 
 warning: unused variable: `src_height`
-    --> openvx-core/src/unified_c_api.rs:1513:5
+    --> openvx-core/src/unified_c_api.rs:1947:5
      |
-1513 |     src_height: u32,
+1947 |     src_height: u32,
      |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_src_height`
 
 warning: unused variable: `dst_width`
-    --> openvx-core/src/unified_c_api.rs:1514:5
+    --> openvx-core/src/unified_c_api.rs:1948:5
      |
-1514 |     dst_width: u32,
+1948 |     dst_width: u32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dst_width`
 
 warning: unused variable: `dst_height`
-    --> openvx-core/src/unified_c_api.rs:1515:5
+    --> openvx-core/src/unified_c_api.rs:1949:5
      |
-1515 |     dst_height: u32,
+1949 |     dst_height: u32,
      |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dst_height`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1526:5
+    --> openvx-core/src/unified_c_api.rs:1960:5
      |
-1526 |     attribute: i32,
+1960 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1528:5
+    --> openvx-core/src/unified_c_api.rs:1962:5
      |
-1528 |     size: usize,
+1962 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1540:5
+    --> openvx-core/src/unified_c_api.rs:1974:5
      |
-1540 |     usage: i32,
+1974 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `user_mem_type`
-    --> openvx-core/src/unified_c_api.rs:1541:5
+    --> openvx-core/src/unified_c_api.rs:1975:5
      |
-1541 |     user_mem_type: i32,
+1975 |     user_mem_type: i32,
      |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1556:5
+    --> openvx-core/src/unified_c_api.rs:1990:5
      |
-1556 |     usage: i32,
+1990 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `mem_type`
-    --> openvx-core/src/unified_c_api.rs:1557:5
+    --> openvx-core/src/unified_c_api.rs:1991:5
      |
-1557 |     mem_type: i32,
+1991 |     mem_type: i32,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1615:5
+    --> openvx-core/src/unified_c_api.rs:2049:5
      |
-1615 |     attribute: i32,
+2049 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1617:5
+    --> openvx-core/src/unified_c_api.rs:2051:5
      |
-1617 |     size: usize,
+2051 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `index`
-    --> openvx-core/src/unified_c_api.rs:1628:5
+    --> openvx-core/src/unified_c_api.rs:2062:5
      |
-1628 |     index: u32,
+2062 |     index: u32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
 
 warning: unused variable: `index`
-    --> openvx-core/src/unified_c_api.rs:1639:5
+    --> openvx-core/src/unified_c_api.rs:2073:5
      |
-1639 |     index: u32,
+2073 |     index: u32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
 
 warning: unused variable: `data_type`
-    --> openvx-core/src/unified_c_api.rs:1664:5
+    --> openvx-core/src/unified_c_api.rs:2098:5
      |
-1664 |     data_type: i32,
+2098 |     data_type: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_data_type`
 
 warning: unused variable: `fixed_point_pos`
-    --> openvx-core/src/unified_c_api.rs:1665:5
+    --> openvx-core/src/unified_c_api.rs:2099:5
      |
-1665 |     fixed_point_pos: i8,
+2099 |     fixed_point_pos: i8,
      |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_point_pos`
 
 warning: unused variable: `num_dims`
-    --> openvx-core/src/unified_c_api.rs:1676:5
+    --> openvx-core/src/unified_c_api.rs:2110:5
      |
-1676 |     num_dims: usize,
+2110 |     num_dims: usize,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_dims`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1689:5
+    --> openvx-core/src/unified_c_api.rs:2123:5
      |
-1689 |     attribute: i32,
+2123 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1691:5
+    --> openvx-core/src/unified_c_api.rs:2125:5
      |
-1691 |     size: usize,
+2125 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1703:5
+    --> openvx-core/src/unified_c_api.rs:2137:5
      |
-1703 |     usage: i32,
+2137 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `user_mem_type`
-    --> openvx-core/src/unified_c_api.rs:1704:5
+    --> openvx-core/src/unified_c_api.rs:2138:5
      |
-1704 |     user_mem_type: i32,
+2138 |     user_mem_type: i32,
      |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
 
 warning: unused variable: `num_dims`
-    --> openvx-core/src/unified_c_api.rs:1715:5
+    --> openvx-core/src/unified_c_api.rs:2149:5
      |
-1715 |     num_dims: usize,
+2149 |     num_dims: usize,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_dims`
 
 warning: unused variable: `usage`
-    --> openvx-core/src/unified_c_api.rs:1721:5
+    --> openvx-core/src/unified_c_api.rs:2155:5
      |
-1721 |     usage: i32,
+2155 |     usage: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
 
 warning: unused variable: `mem_type`
-    --> openvx-core/src/unified_c_api.rs:1722:5
+    --> openvx-core/src/unified_c_api.rs:2156:5
      |
-1722 |     mem_type: i32,
+2156 |     mem_type: i32,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1788:5
+    --> openvx-core/src/unified_c_api.rs:2222:5
      |
-1788 |     attribute: i32,
+2222 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1790:5
+    --> openvx-core/src/unified_c_api.rs:2224:5
      |
-1790 |     size: usize,
+2224 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2247:5
+     |
+2247 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2249:5
+     |
+2249 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:2260:5
+     |
+2260 |     index: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:2271:5
+     |
+2271 |     index: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `num_refs`
+    --> openvx-core/src/unified_c_api.rs:2294:5
+     |
+2294 |     num_refs: usize,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_refs`
+
+warning: unused variable: `uses`
+    --> openvx-core/src/unified_c_api.rs:2296:5
+     |
+2296 |     uses: *const usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_uses`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2334:5
+     |
+2334 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2336:5
+     |
+2336 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2355:5
+     |
+2355 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2357:5
+     |
+2357 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2368:5
+     |
+2368 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2370:5
+     |
+2370 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:2389:5
+     |
+2389 |     index: u32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `direction`
+    --> openvx-core/src/unified_c_api.rs:2390:5
+     |
+2390 |     direction: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_direction`
+
+warning: unused variable: `data_type`
+    --> openvx-core/src/unified_c_api.rs:2391:5
+     |
+2391 |     data_type: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_data_type`
+
+warning: unused variable: `state`
+    --> openvx-core/src/unified_c_api.rs:2392:5
+     |
+2392 |     state: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+
+warning: unused variable: `pattern`
+    --> openvx-core/src/unified_c_api.rs:2448:5
+     |
+2448 |     pattern: i32,
+     |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pattern`
+
+warning: unused variable: `pattern`
+    --> openvx-core/src/unified_c_api.rs:2461:5
+     |
+2461 |     pattern: i32,
+     |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pattern`
+
+warning: unused variable: `output_x`
+    --> openvx-core/src/unified_c_api.rs:2576:5
+     |
+2576 |     output_x: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
+
+warning: unused variable: `output_y`
+    --> openvx-core/src/unified_c_api.rs:2577:5
+     |
+2577 |     output_y: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
+
+warning: unused variable: `output_x`
+    --> openvx-core/src/unified_c_api.rs:2589:5
+     |
+2589 |     output_x: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
+
+warning: unused variable: `output_y`
+    --> openvx-core/src/unified_c_api.rs:2590:5
+     |
+2590 |     output_y: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
+
+warning: unused variable: `scale`
+    --> openvx-core/src/unified_c_api.rs:2705:5
+     |
+2705 |     scale: vx_scalar,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_scale`
+
+warning: unused variable: `min_val`
+    --> openvx-core/src/unified_c_api.rs:2720:5
+     |
+2720 |     min_val: vx_scalar,
+     |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_val`
+
+warning: unused variable: `max_val`
+    --> openvx-core/src/unified_c_api.rs:2721:5
+     |
+2721 |     max_val: vx_scalar,
+     |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_val`
+
+warning: unused variable: `min_loc`
+    --> openvx-core/src/unified_c_api.rs:2722:5
+     |
+2722 |     min_loc: vx_array,
+     |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_loc`
+
+warning: unused variable: `max_loc`
+    --> openvx-core/src/unified_c_api.rs:2723:5
+     |
+2723 |     max_loc: vx_array,
+     |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_loc`
+
+warning: unused variable: `num_min_max`
+    --> openvx-core/src/unified_c_api.rs:2724:5
+     |
+2724 |     num_min_max: vx_scalar,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_min_max`
+
+warning: unused variable: `mean`
+    --> openvx-core/src/unified_c_api.rs:2736:5
+     |
+2736 |     mean: vx_scalar,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_mean`
+
+warning: unused variable: `stddev`
+    --> openvx-core/src/unified_c_api.rs:2737:5
+     |
+2737 |     stddev: vx_scalar,
+     |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_stddev`
+
+warning: unused variable: `new_points_estimates`
+    --> openvx-core/src/unified_c_api.rs:2818:5
+     |
+2818 |     new_points_estimates: vx_array,
+     |     ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_new_points_estimates`
+
+warning: unused variable: `strength_thresh`
+    --> openvx-core/src/unified_c_api.rs:2837:5
+     |
+2837 |     strength_thresh: vx_scalar,
+     |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_strength_thresh`
+
+warning: unused variable: `min_distance`
+    --> openvx-core/src/unified_c_api.rs:2838:5
+     |
+2838 |     min_distance: vx_scalar,
+     |     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_distance`
+
+warning: unused variable: `sensitivity`
+    --> openvx-core/src/unified_c_api.rs:2839:5
+     |
+2839 |     sensitivity: vx_scalar,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sensitivity`
+
+warning: unused variable: `num_corners`
+    --> openvx-core/src/unified_c_api.rs:2843:5
+     |
+2843 |     num_corners: vx_scalar,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_corners`
+
+warning: unused variable: `strength_thresh`
+    --> openvx-core/src/unified_c_api.rs:2855:5
+     |
+2855 |     strength_thresh: vx_scalar,
+     |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_strength_thresh`
+
+warning: unused variable: `num_corners`
+    --> openvx-core/src/unified_c_api.rs:2858:5
+     |
+2858 |     num_corners: vx_scalar,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_corners`
+
+warning: unused variable: `min_distance`
+    --> openvx-core/src/unified_c_api.rs:2870:5
+     |
+2870 |     min_distance: vx_scalar,
+     |     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_distance`
+
+warning: unused variable: `sensitivity`
+    --> openvx-core/src/unified_c_api.rs:2871:5
+     |
+2871 |     sensitivity: vx_scalar,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sensitivity`
+
+warning: unused variable: `num_corners`
+    --> openvx-core/src/unified_c_api.rs:2875:5
+     |
+2875 |     num_corners: vx_scalar,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_corners`
+
+warning: unused variable: `output_x`
+    --> openvx-core/src/unified_c_api.rs:2966:5
+     |
+2966 |     output_x: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
+
+warning: unused variable: `output_y`
+    --> openvx-core/src/unified_c_api.rs:2967:5
+     |
+2967 |     output_y: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
+
+warning: unused variable: `output_x`
+    --> openvx-core/src/unified_c_api.rs:3247:5
+     |
+3247 |     output_x: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
+
+warning: unused variable: `output_y`
+    --> openvx-core/src/unified_c_api.rs:3248:5
+     |
+3248 |     output_y: vx_image,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `openvx-core` (lib) generated 151 warnings
+error: could not compile `openvx-core` (lib) due to 2 previous errors; 151 warnings emitted
+   Compiling openvx-core v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-core)
+warning: unused import: `crate::types::VxStatus`
+ --> openvx-core/src/c_api.rs:7:5
+  |
+7 | use crate::types::VxStatus;
+  |     ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type `vx_status` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:14:10
+   |
+14 | pub type vx_status = i32;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxStatus`
+   |
+   = note: `#[warn(non_camel_case_types)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: type `vx_enum` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:15:10
+   |
+15 | pub type vx_enum = i32;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxEnum`
+
+warning: type `vx_uint32` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:16:10
+   |
+16 | pub type vx_uint32 = u32;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxUint32`
+
+warning: type `vx_size` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:17:10
+   |
+17 | pub type vx_size = usize;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxSize`
+
+warning: type `vx_char` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:18:10
+   |
+18 | pub type vx_char = i8;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxChar`
+
+warning: type `vx_bool` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:19:10
+   |
+19 | pub type vx_bool = i32;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxBool`
+
+warning: type `vx_df_image` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:20:10
+   |
+20 | pub type vx_df_image = u32;
+   |          ^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxDfImage`
+
+warning: type `vx_uint64` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:21:10
+   |
+21 | pub type vx_uint64 = u64;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxUint64`
+
+warning: type `vx_int32` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:22:10
+   |
+22 | pub type vx_int32 = i32;
+   |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxInt32`
+
+warning: type `vx_float32` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:23:10
+   |
+23 | pub type vx_float32 = f32;
+   |          ^^^^^^^^^^ help: convert the identifier to upper camel case: `VxFloat32`
+
+warning: type `vx_map_id` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:24:10
+   |
+24 | pub type vx_map_id = usize;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxMapId`
+
+warning: type `vx_context` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:32:10
+   |
+32 | pub type vx_context = *mut VxContext;
+   |          ^^^^^^^^^^ help: convert the identifier to upper camel case: `VxContext`
+
+warning: type `vx_graph` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:36:10
+   |
+36 | pub type vx_graph = *mut VxGraph;
+   |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxGraph`
+
+warning: type `vx_node` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:40:10
+   |
+40 | pub type vx_node = *mut VxNode;
+   |          ^^^^^^^ help: convert the identifier to upper camel case: `VxNode`
+
+warning: type `vx_kernel` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:44:10
+   |
+44 | pub type vx_kernel = *mut VxKernel;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxKernel`
+
+warning: type `vx_parameter` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:48:10
+   |
+48 | pub type vx_parameter = *mut VxParameter;
+   |          ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxParameter`
+
+warning: type `vx_scalar` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:52:10
+   |
+52 | pub type vx_scalar = *mut VxScalar;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxScalar`
+
+warning: type `vx_convolution` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:56:10
+   |
+56 | pub type vx_convolution = *mut VxConvolution;
+   |          ^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxConvolution`
+
+warning: type `vx_matrix` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:60:10
+   |
+60 | pub type vx_matrix = *mut VxMatrix;
+   |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxMatrix`
+
+warning: type `vx_lut` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:64:10
+   |
+64 | pub type vx_lut = *mut VxLUT;
+   |          ^^^^^^ help: convert the identifier to upper camel case: `VxLut`
+
+warning: type `vx_threshold` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:68:10
+   |
+68 | pub type vx_threshold = *mut VxThreshold;
+   |          ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxThreshold`
+
+warning: type `vx_pyramid` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:72:10
+   |
+72 | pub type vx_pyramid = *mut VxPyramid;
+   |          ^^^^^^^^^^ help: convert the identifier to upper camel case: `VxPyramid`
+
+warning: type `vx_image` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:76:10
+   |
+76 | pub type vx_image = *mut VxImage;
+   |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxImage`
+
+warning: type `vx_reference` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:80:10
+   |
+80 | pub type vx_reference = *mut VxReference;
+   |          ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxReference`
+
+warning: type `vx_nodecomplete_f` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:83:10
+   |
+83 | pub type vx_nodecomplete_f = Option<extern "C" fn(vx_node) -> vx_action>;
+   |          ^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxNodecompleteF`
+
+warning: variant `VX_ACTION_CONTINUE` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:89:5
+   |
+89 |     VX_ACTION_CONTINUE = 0,
+   |     ^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxActionContinue`
+
+warning: variant `VX_ACTION_ABANDON` should have an upper camel case name
+  --> openvx-core/src/c_api.rs:90:5
+   |
+90 |     VX_ACTION_ABANDON = 1,
+   |     ^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxActionAbandon`
+
+warning: type `vx_array` should have an upper camel case name
+    --> openvx-core/src/c_api.rs:1019:10
+     |
+1019 | pub type vx_array = *mut VxArray;
+     |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxArray`
+
+warning: type `vx_distribution` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1346:10
+     |
+1346 | pub type vx_distribution = *mut VxDistribution;
+     |          ^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxDistribution`
+
+warning: type `vx_remap` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1350:10
+     |
+1350 | pub type vx_remap = *mut VxRemap;
+     |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxRemap`
+
+warning: type `vx_delay` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1354:10
+     |
+1354 | pub type vx_delay = *mut VxDelay;
+     |          ^^^^^^^^ help: convert the identifier to upper camel case: `VxDelay`
+
+warning: type `vx_object_array` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1358:10
+     |
+1358 | pub type vx_object_array = *mut VxObjectArray;
+     |          ^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxObjectArray`
+
+warning: type `vx_tensor` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1362:10
+     |
+1362 | pub type vx_tensor = *mut VxTensor;
+     |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxTensor`
+
+warning: type `vx_import` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1366:10
+     |
+1366 | pub type vx_import = *mut VxImport;
+     |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxImport`
+
+warning: type `vx_meta_format` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1370:10
+     |
+1370 | pub type vx_meta_format = *mut VxMetaFormat;
+     |          ^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxMetaFormat`
+
+warning: type `vx_target` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1374:10
+     |
+1374 | pub type vx_target = *mut VxTarget;
+     |          ^^^^^^^^^ help: convert the identifier to upper camel case: `VxTarget`
+
+warning: type `vx_graph_parameter` should have an upper camel case name
+    --> openvx-core/src/unified_c_api.rs:1378:10
+     |
+1378 | pub type vx_graph_parameter = *mut VxGraphParameter;
+     |          ^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `VxGraphParameter`
+
+warning: unnecessary `unsafe` block
+   --> openvx-core/src/c_api.rs:233:5
+    |
+233 |     unsafe {
+    |     ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `color`
+    --> openvx-core/src/unified_c_api.rs:1596:5
+     |
+1596 |     color: u32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_color`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `channel`
+    --> openvx-core/src/unified_c_api.rs:1608:5
+     |
+1608 |     channel: i32,
+     |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_channel`
+
+warning: unused variable: `prev_ptrs`
+    --> openvx-core/src/unified_c_api.rs:1631:5
+     |
+1631 |     prev_ptrs: *mut *mut c_void,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_prev_ptrs`
+
+warning: unused variable: `num_planes`
+    --> openvx-core/src/unified_c_api.rs:1632:5
+     |
+1632 |     num_planes: u32,
+     |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_planes`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1655:5
+     |
+1655 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `mem_type`
+    --> openvx-core/src/unified_c_api.rs:1656:5
+     |
+1656 |     mem_type: i32,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
+
+warning: unused variable: `plane_index`
+    --> openvx-core/src/unified_c_api.rs:1667:5
+     |
+1667 |     plane_index: u32,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_plane_index`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1669:5
+     |
+1669 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `mem_type`
+    --> openvx-core/src/unified_c_api.rs:1670:5
+     |
+1670 |     mem_type: i32,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
+
+warning: unused variable: `plane_index`
+    --> openvx-core/src/unified_c_api.rs:1682:5
+     |
+1682 |     plane_index: u32,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_plane_index`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1685:5
+     |
+1685 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `mem_type`
+    --> openvx-core/src/unified_c_api.rs:1686:5
+     |
+1686 |     mem_type: i32,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:1733:5
+     |
+1733 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1735:5
+     |
+1735 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:1756:5
+     |
+1756 |     index: u32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1760:5
+     |
+1760 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `mem_type`
+    --> openvx-core/src/unified_c_api.rs:1761:5
+     |
+1761 |     mem_type: i32,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:1773:5
+     |
+1773 |     index: u32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `map_id`
+    --> openvx-core/src/unified_c_api.rs:1774:5
+     |
+1774 |     map_id: usize,
+     |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_map_id`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1786:5
+     |
+1786 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `user_mem_type`
+    --> openvx-core/src/unified_c_api.rs:1787:5
+     |
+1787 |     user_mem_type: i32,
+     |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
+
+warning: unused variable: `start`
+    --> openvx-core/src/unified_c_api.rs:1798:5
+     |
+1798 |     start: usize,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_start`
+
+warning: unused variable: `end`
+    --> openvx-core/src/unified_c_api.rs:1799:5
+     |
+1799 |     end: usize,
+     |     ^^^ help: if this is intentional, prefix it with an underscore: `_end`
+
+warning: unused variable: `stride`
+    --> openvx-core/src/unified_c_api.rs:1800:5
+     |
+1800 |     stride: usize,
+     |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_stride`
+
+warning: unused variable: `user_mem_type`
+    --> openvx-core/src/unified_c_api.rs:1802:5
+     |
+1802 |     user_mem_type: i32,
+     |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
 
 warning: unused variable: `attribute`
     --> openvx-core/src/unified_c_api.rs:1813:5
@@ -681,256 +1402,514 @@ warning: unused variable: `size`
 1815 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
-warning: unused variable: `index`
+warning: unused variable: `attribute`
     --> openvx-core/src/unified_c_api.rs:1826:5
      |
-1826 |     index: i32,
+1826 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1828:5
+     |
+1828 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:1839:5
+     |
+1839 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1841:5
+     |
+1841 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:1852:5
+     |
+1852 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1854:5
+     |
+1854 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:1865:5
+     |
+1865 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1867:5
+     |
+1867 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `offset`
+    --> openvx-core/src/unified_c_api.rs:1879:5
+     |
+1879 |     offset: u32,
+     |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:1891:5
+     |
+1891 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1893:5
+     |
+1893 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1905:5
+     |
+1905 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `user_mem_type`
+    --> openvx-core/src/unified_c_api.rs:1906:5
+     |
+1906 |     user_mem_type: i32,
+     |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:1928:5
+     |
+1928 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1930:5
+     |
+1930 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `src_width`
+    --> openvx-core/src/unified_c_api.rs:1951:5
+     |
+1951 |     src_width: u32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_src_width`
+
+warning: unused variable: `src_height`
+    --> openvx-core/src/unified_c_api.rs:1952:5
+     |
+1952 |     src_height: u32,
+     |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_src_height`
+
+warning: unused variable: `dst_width`
+    --> openvx-core/src/unified_c_api.rs:1953:5
+     |
+1953 |     dst_width: u32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dst_width`
+
+warning: unused variable: `dst_height`
+    --> openvx-core/src/unified_c_api.rs:1954:5
+     |
+1954 |     dst_height: u32,
+     |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dst_height`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:1965:5
+     |
+1965 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:1967:5
+     |
+1967 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1979:5
+     |
+1979 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `user_mem_type`
+    --> openvx-core/src/unified_c_api.rs:1980:5
+     |
+1980 |     user_mem_type: i32,
+     |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:1995:5
+     |
+1995 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `mem_type`
+    --> openvx-core/src/unified_c_api.rs:1996:5
+     |
+1996 |     mem_type: i32,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2054:5
+     |
+2054 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2056:5
+     |
+2056 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:2067:5
+     |
+2067 |     index: u32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
 
 warning: unused variable: `index`
-    --> openvx-core/src/unified_c_api.rs:1837:5
+    --> openvx-core/src/unified_c_api.rs:2078:5
      |
-1837 |     index: i32,
+2078 |     index: u32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `data_type`
+    --> openvx-core/src/unified_c_api.rs:2103:5
+     |
+2103 |     data_type: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_data_type`
+
+warning: unused variable: `fixed_point_pos`
+    --> openvx-core/src/unified_c_api.rs:2104:5
+     |
+2104 |     fixed_point_pos: i8,
+     |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_point_pos`
+
+warning: unused variable: `num_dims`
+    --> openvx-core/src/unified_c_api.rs:2115:5
+     |
+2115 |     num_dims: usize,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_dims`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2128:5
+     |
+2128 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2130:5
+     |
+2130 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:2142:5
+     |
+2142 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `user_mem_type`
+    --> openvx-core/src/unified_c_api.rs:2143:5
+     |
+2143 |     user_mem_type: i32,
+     |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_mem_type`
+
+warning: unused variable: `num_dims`
+    --> openvx-core/src/unified_c_api.rs:2154:5
+     |
+2154 |     num_dims: usize,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_dims`
+
+warning: unused variable: `usage`
+    --> openvx-core/src/unified_c_api.rs:2160:5
+     |
+2160 |     usage: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_usage`
+
+warning: unused variable: `mem_type`
+    --> openvx-core/src/unified_c_api.rs:2161:5
+     |
+2161 |     mem_type: i32,
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_type`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2227:5
+     |
+2227 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2229:5
+     |
+2229 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `attribute`
+    --> openvx-core/src/unified_c_api.rs:2252:5
+     |
+2252 |     attribute: i32,
+     |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
+
+warning: unused variable: `size`
+    --> openvx-core/src/unified_c_api.rs:2254:5
+     |
+2254 |     size: usize,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:2265:5
+     |
+2265 |     index: i32,
+     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `index`
+    --> openvx-core/src/unified_c_api.rs:2276:5
+     |
+2276 |     index: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
 
 warning: unused variable: `num_refs`
-    --> openvx-core/src/unified_c_api.rs:1860:5
+    --> openvx-core/src/unified_c_api.rs:2299:5
      |
-1860 |     num_refs: usize,
+2299 |     num_refs: usize,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_refs`
 
 warning: unused variable: `uses`
-    --> openvx-core/src/unified_c_api.rs:1862:5
+    --> openvx-core/src/unified_c_api.rs:2301:5
      |
-1862 |     uses: *const usize,
+2301 |     uses: *const usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_uses`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1900:5
+    --> openvx-core/src/unified_c_api.rs:2339:5
      |
-1900 |     attribute: i32,
+2339 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1902:5
+    --> openvx-core/src/unified_c_api.rs:2341:5
      |
-1902 |     size: usize,
+2341 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1921:5
+    --> openvx-core/src/unified_c_api.rs:2360:5
      |
-1921 |     attribute: i32,
+2360 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1923:5
+    --> openvx-core/src/unified_c_api.rs:2362:5
      |
-1923 |     size: usize,
+2362 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `attribute`
-    --> openvx-core/src/unified_c_api.rs:1934:5
+    --> openvx-core/src/unified_c_api.rs:2373:5
      |
-1934 |     attribute: i32,
+2373 |     attribute: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attribute`
 
 warning: unused variable: `size`
-    --> openvx-core/src/unified_c_api.rs:1936:5
+    --> openvx-core/src/unified_c_api.rs:2375:5
      |
-1936 |     size: usize,
+2375 |     size: usize,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
 warning: unused variable: `index`
-    --> openvx-core/src/unified_c_api.rs:1955:5
+    --> openvx-core/src/unified_c_api.rs:2394:5
      |
-1955 |     index: u32,
+2394 |     index: u32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
 
 warning: unused variable: `direction`
-    --> openvx-core/src/unified_c_api.rs:1956:5
+    --> openvx-core/src/unified_c_api.rs:2395:5
      |
-1956 |     direction: i32,
+2395 |     direction: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_direction`
 
 warning: unused variable: `data_type`
-    --> openvx-core/src/unified_c_api.rs:1957:5
+    --> openvx-core/src/unified_c_api.rs:2396:5
      |
-1957 |     data_type: i32,
+2396 |     data_type: i32,
      |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_data_type`
 
 warning: unused variable: `state`
-    --> openvx-core/src/unified_c_api.rs:1958:5
+    --> openvx-core/src/unified_c_api.rs:2397:5
      |
-1958 |     state: i32,
+2397 |     state: i32,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `pattern`
-    --> openvx-core/src/unified_c_api.rs:2014:5
+    --> openvx-core/src/unified_c_api.rs:2453:5
      |
-2014 |     pattern: i32,
+2453 |     pattern: i32,
      |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pattern`
 
 warning: unused variable: `pattern`
-    --> openvx-core/src/unified_c_api.rs:2027:5
+    --> openvx-core/src/unified_c_api.rs:2466:5
      |
-2027 |     pattern: i32,
+2466 |     pattern: i32,
      |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pattern`
 
 warning: unused variable: `output_x`
-    --> openvx-core/src/unified_c_api.rs:2142:5
+    --> openvx-core/src/unified_c_api.rs:2581:5
      |
-2142 |     output_x: vx_image,
+2581 |     output_x: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
 
 warning: unused variable: `output_y`
-    --> openvx-core/src/unified_c_api.rs:2143:5
+    --> openvx-core/src/unified_c_api.rs:2582:5
      |
-2143 |     output_y: vx_image,
+2582 |     output_y: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
 
 warning: unused variable: `output_x`
-    --> openvx-core/src/unified_c_api.rs:2155:5
+    --> openvx-core/src/unified_c_api.rs:2594:5
      |
-2155 |     output_x: vx_image,
+2594 |     output_x: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
 
 warning: unused variable: `output_y`
-    --> openvx-core/src/unified_c_api.rs:2156:5
+    --> openvx-core/src/unified_c_api.rs:2595:5
      |
-2156 |     output_y: vx_image,
+2595 |     output_y: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
 
 warning: unused variable: `scale`
-    --> openvx-core/src/unified_c_api.rs:2271:5
+    --> openvx-core/src/unified_c_api.rs:2710:5
      |
-2271 |     scale: vx_scalar,
+2710 |     scale: vx_scalar,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_scale`
 
 warning: unused variable: `min_val`
-    --> openvx-core/src/unified_c_api.rs:2286:5
+    --> openvx-core/src/unified_c_api.rs:2725:5
      |
-2286 |     min_val: vx_scalar,
+2725 |     min_val: vx_scalar,
      |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_val`
 
 warning: unused variable: `max_val`
-    --> openvx-core/src/unified_c_api.rs:2287:5
+    --> openvx-core/src/unified_c_api.rs:2726:5
      |
-2287 |     max_val: vx_scalar,
+2726 |     max_val: vx_scalar,
      |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_val`
 
 warning: unused variable: `min_loc`
-    --> openvx-core/src/unified_c_api.rs:2288:5
+    --> openvx-core/src/unified_c_api.rs:2727:5
      |
-2288 |     min_loc: vx_array,
+2727 |     min_loc: vx_array,
      |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_loc`
 
 warning: unused variable: `max_loc`
-    --> openvx-core/src/unified_c_api.rs:2289:5
+    --> openvx-core/src/unified_c_api.rs:2728:5
      |
-2289 |     max_loc: vx_array,
+2728 |     max_loc: vx_array,
      |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_loc`
 
 warning: unused variable: `num_min_max`
-    --> openvx-core/src/unified_c_api.rs:2290:5
+    --> openvx-core/src/unified_c_api.rs:2729:5
      |
-2290 |     num_min_max: vx_scalar,
+2729 |     num_min_max: vx_scalar,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_min_max`
 
 warning: unused variable: `mean`
-    --> openvx-core/src/unified_c_api.rs:2302:5
+    --> openvx-core/src/unified_c_api.rs:2741:5
      |
-2302 |     mean: vx_scalar,
+2741 |     mean: vx_scalar,
      |     ^^^^ help: if this is intentional, prefix it with an underscore: `_mean`
 
 warning: unused variable: `stddev`
-    --> openvx-core/src/unified_c_api.rs:2303:5
+    --> openvx-core/src/unified_c_api.rs:2742:5
      |
-2303 |     stddev: vx_scalar,
+2742 |     stddev: vx_scalar,
      |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_stddev`
 
 warning: unused variable: `new_points_estimates`
-    --> openvx-core/src/unified_c_api.rs:2384:5
+    --> openvx-core/src/unified_c_api.rs:2823:5
      |
-2384 |     new_points_estimates: vx_array,
+2823 |     new_points_estimates: vx_array,
      |     ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_new_points_estimates`
 
 warning: unused variable: `strength_thresh`
-    --> openvx-core/src/unified_c_api.rs:2403:5
+    --> openvx-core/src/unified_c_api.rs:2842:5
      |
-2403 |     strength_thresh: vx_scalar,
+2842 |     strength_thresh: vx_scalar,
      |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_strength_thresh`
 
 warning: unused variable: `min_distance`
-    --> openvx-core/src/unified_c_api.rs:2404:5
+    --> openvx-core/src/unified_c_api.rs:2843:5
      |
-2404 |     min_distance: vx_scalar,
+2843 |     min_distance: vx_scalar,
      |     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_distance`
 
 warning: unused variable: `sensitivity`
-    --> openvx-core/src/unified_c_api.rs:2405:5
+    --> openvx-core/src/unified_c_api.rs:2844:5
      |
-2405 |     sensitivity: vx_scalar,
+2844 |     sensitivity: vx_scalar,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sensitivity`
 
 warning: unused variable: `num_corners`
-    --> openvx-core/src/unified_c_api.rs:2409:5
+    --> openvx-core/src/unified_c_api.rs:2848:5
      |
-2409 |     num_corners: vx_scalar,
+2848 |     num_corners: vx_scalar,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_corners`
 
 warning: unused variable: `strength_thresh`
-    --> openvx-core/src/unified_c_api.rs:2421:5
+    --> openvx-core/src/unified_c_api.rs:2860:5
      |
-2421 |     strength_thresh: vx_scalar,
+2860 |     strength_thresh: vx_scalar,
      |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_strength_thresh`
 
 warning: unused variable: `num_corners`
-    --> openvx-core/src/unified_c_api.rs:2424:5
+    --> openvx-core/src/unified_c_api.rs:2863:5
      |
-2424 |     num_corners: vx_scalar,
+2863 |     num_corners: vx_scalar,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_corners`
 
 warning: unused variable: `min_distance`
-    --> openvx-core/src/unified_c_api.rs:2436:5
+    --> openvx-core/src/unified_c_api.rs:2875:5
      |
-2436 |     min_distance: vx_scalar,
+2875 |     min_distance: vx_scalar,
      |     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_distance`
 
 warning: unused variable: `sensitivity`
-    --> openvx-core/src/unified_c_api.rs:2437:5
+    --> openvx-core/src/unified_c_api.rs:2876:5
      |
-2437 |     sensitivity: vx_scalar,
+2876 |     sensitivity: vx_scalar,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sensitivity`
 
 warning: unused variable: `num_corners`
-    --> openvx-core/src/unified_c_api.rs:2441:5
+    --> openvx-core/src/unified_c_api.rs:2880:5
      |
-2441 |     num_corners: vx_scalar,
+2880 |     num_corners: vx_scalar,
      |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_corners`
 
 warning: unused variable: `output_x`
-    --> openvx-core/src/unified_c_api.rs:2532:5
+    --> openvx-core/src/unified_c_api.rs:2971:5
      |
-2532 |     output_x: vx_image,
+2971 |     output_x: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
 
 warning: unused variable: `output_y`
-    --> openvx-core/src/unified_c_api.rs:2533:5
+    --> openvx-core/src/unified_c_api.rs:2972:5
      |
-2533 |     output_y: vx_image,
+2972 |     output_y: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
 
 warning: unused variable: `output_x`
-    --> openvx-core/src/unified_c_api.rs:2813:5
+    --> openvx-core/src/unified_c_api.rs:3252:5
      |
-2813 |     output_x: vx_image,
+3252 |     output_x: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_x`
 
 warning: unused variable: `output_y`
-    --> openvx-core/src/unified_c_api.rs:2814:5
+    --> openvx-core/src/unified_c_api.rs:3253:5
      |
-2814 |     output_y: vx_image,
+3253 |     output_y: vx_image,
      |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_y`
 
 warning: fields `vendor_id`, `version`, and `implementation` are never read
@@ -1084,114 +2063,362 @@ warning: fields `id`, `context_id`, and `ref_count` are never read
 40 |     ref_count: AtomicUsize,
    |     ^^^^^^^^^
 
-warning: static `NEXT_GRAPH_ID` is never used
-  --> openvx-core/src/unified_c_api.rs:51:8
+warning: fields `id` and `ref_count` are never read
+  --> openvx-core/src/unified_c_api.rs:45:5
    |
-51 | static NEXT_GRAPH_ID: Lazy<AtomicUsize> = Lazy::new(|| {
-   |        ^^^^^^^^^^^^^
+44 | pub struct VxCContext {
+   |            ---------- fields in this struct
+45 |     id: u64,
+   |     ^^
+46 |     ref_count: AtomicUsize,
+   |     ^^^^^^^^^
+
+warning: fields `width`, `height`, `format`, `data`, and `ref_count` are never read
+  --> openvx-core/src/unified_c_api.rs:51:5
+   |
+50 | pub struct VxCImage {
+   |            -------- fields in this struct
+51 |     width: u32,
+   |     ^^^^^
+52 |     height: u32,
+   |     ^^^^^^
+53 |     format: vx_enum,
+   |     ^^^^^^
+54 |     data: RwLock<Vec<u8>>,
+   |     ^^^^
+55 |     ref_count: AtomicUsize,
+   |     ^^^^^^^^^
+
+warning: fields `item_type`, `capacity`, `items`, and `ref_count` are never read
+  --> openvx-core/src/unified_c_api.rs:60:5
+   |
+59 | pub struct VxCArray {
+   |            -------- fields in this struct
+60 |     item_type: vx_enum,
+   |     ^^^^^^^^^
+61 |     capacity: usize,
+   |     ^^^^^^^^
+62 |     items: RwLock<Vec<u8>>,
+   |     ^^^^^
+63 |     ref_count: AtomicUsize,
+   |     ^^^^^^^^^
+
+warning: fields `rows`, `cols`, `data_type`, `data`, and `ref_count` are never read
+  --> openvx-core/src/unified_c_api.rs:68:5
+   |
+67 | pub struct VxCMatrix {
+   |            --------- fields in this struct
+68 |     rows: u32,
+   |     ^^^^
+69 |     cols: u32,
+   |     ^^^^
+70 |     data_type: vx_enum,
+   |     ^^^^^^^^^
+71 |     data: RwLock<Vec<f32>>,
+   |     ^^^^
+72 |     ref_count: AtomicUsize,
+   |     ^^^^^^^^^
+
+warning: fields `rows`, `cols`, `scale`, `data`, and `ref_count` are never read
+  --> openvx-core/src/unified_c_api.rs:77:5
+   |
+76 | pub struct VxCConvolution {
+   |            -------------- fields in this struct
+77 |     rows: u32,
+   |     ^^^^
+78 |     cols: u32,
+   |     ^^^^
+79 |     scale: u32,
+   |     ^^^^^
+80 |     data: RwLock<Vec<i16>>,
+   |     ^^^^
+81 |     ref_count: AtomicUsize,
+   |     ^^^^^^^^^
+
+warning: fields `data_type`, `count`, `data`, and `ref_count` are never read
+  --> openvx-core/src/unified_c_api.rs:86:5
+   |
+85 | pub struct VxCLUT {
+   |            ------ fields in this struct
+86 |     data_type: vx_enum,
+   |     ^^^^^^^^^
+87 |     count: usize,
+   |     ^^^^^
+88 |     data: RwLock<Vec<u8>>,
+   |     ^^^^
+89 |     ref_count: AtomicUsize,
+   |     ^^^^^^^^^
+
+warning: fields `bins`, `offset`, `range`, `data`, and `ref_count` are never read
+  --> openvx-core/src/unified_c_api.rs:94:5
+   |
+93 | pub struct VxCDistribution {
+   |            --------------- fields in this struct
+94 |     bins: usize,
+   |     ^^^^
+95 |     offset: u32,
+   |     ^^^^^^
+96 |     range: u32,
+   |     ^^^^^
+97 |     data: RwLock<Vec<u32>>,
+   |     ^^^^
+98 |     ref_count: AtomicUsize,
+   |     ^^^^^^^^^
+
+warning: fields `thresh_type`, `data_type`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:103:5
+    |
+102 | pub struct VxCThreshold {
+    |            ------------ fields in this struct
+103 |     thresh_type: vx_enum,
+    |     ^^^^^^^^^^^
+104 |     data_type: vx_enum,
+    |     ^^^^^^^^^
+105 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `levels`, `scale`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:110:5
+    |
+109 | pub struct VxCPyramid {
+    |            ---------- fields in this struct
+110 |     levels: usize,
+    |     ^^^^^^
+111 |     scale: f32,
+    |     ^^^^^
+112 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `src_width`, `src_height`, `dst_width`, `dst_height`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:117:5
+    |
+116 | pub struct VxCRemap {
+    |            -------- fields in this struct
+117 |     src_width: u32,
+    |     ^^^^^^^^^
+118 |     src_height: u32,
+    |     ^^^^^^^^^^
+119 |     dst_width: u32,
+    |     ^^^^^^^^^
+120 |     dst_height: u32,
+    |     ^^^^^^^^^^
+121 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `exemplar_type`, `count`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:126:5
+    |
+125 | pub struct VxCObjectArray {
+    |            -------------- fields in this struct
+126 |     exemplar_type: vx_enum,
+    |     ^^^^^^^^^^^^^
+127 |     count: usize,
+    |     ^^^^^
+128 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `slots` and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:133:5
+    |
+132 | pub struct VxCDelay {
+    |            -------- fields in this struct
+133 |     slots: usize,
+    |     ^^^^^
+134 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `num_dims`, `dims`, `data_type`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:139:5
+    |
+138 | pub struct VxCTensor {
+    |            --------- fields in this struct
+139 |     num_dims: usize,
+    |     ^^^^^^^^
+140 |     dims: Vec<usize>,
+    |     ^^^^
+141 |     data_type: vx_enum,
+    |     ^^^^^^^^^
+142 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `format_type` and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:147:5
+    |
+146 | pub struct VxCMetaFormat {
+    |            ------------- fields in this struct
+147 |     format_type: vx_enum,
+    |     ^^^^^^^^^^^
+148 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `import_type` and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:153:5
+    |
+152 | pub struct VxCImport {
+    |            --------- fields in this struct
+153 |     import_type: vx_enum,
+    |     ^^^^^^^^^^^
+154 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `enumeration`, `name`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:159:5
+    |
+158 | pub struct VxCKernel {
+    |            --------- fields in this struct
+159 |     enumeration: vx_enum,
+    |     ^^^^^^^^^^^
+160 |     name: String,
+    |     ^^^^
+161 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `id`, `name`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:166:5
+    |
+165 | pub struct VxCTarget {
+    |            --------- fields in this struct
+166 |     id: u64,
+    |     ^^
+167 |     name: String,
+    |     ^^^^
+168 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `id`, `kernel`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:173:5
+    |
+172 | pub struct VxCNode {
+    |            ------- fields in this struct
+173 |     id: u64,
+    |     ^^
+174 |     kernel: vx_enum,
+    |     ^^^^^^
+175 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: fields `index`, `direction`, `data_type`, and `ref_count` are never read
+   --> openvx-core/src/unified_c_api.rs:180:5
+    |
+179 | pub struct VxCParameter {
+    |            ------------ fields in this struct
+180 |     index: u32,
+    |     ^^^^^
+181 |     direction: vx_enum,
+    |     ^^^^^^^^^
+182 |     data_type: vx_enum,
+    |     ^^^^^^^^^
+183 |     ref_count: AtomicUsize,
+    |     ^^^^^^^^^
+
+warning: static `NEXT_GRAPH_ID` is never used
+   --> openvx-core/src/unified_c_api.rs:204:8
+    |
+204 | static NEXT_GRAPH_ID: Lazy<AtomicUsize> = Lazy::new(|| {
+    |        ^^^^^^^^^^^^^
 
 warning: function `generate_graph_id` is never used
-  --> openvx-core/src/unified_c_api.rs:55:4
-   |
-55 | fn generate_graph_id() -> u64 {
-   |    ^^^^^^^^^^^^^^^^^
+   --> openvx-core/src/unified_c_api.rs:208:4
+    |
+208 | fn generate_graph_id() -> u64 {
+    |    ^^^^^^^^^^^^^^^^^
 
 warning: fields `data_type` and `context` are never read
-   --> openvx-core/src/unified_c_api.rs:501:5
+   --> openvx-core/src/unified_c_api.rs:935:5
     |
-500 | pub struct VxCScalar {
+934 | pub struct VxCScalar {
     |            --------- fields in this struct
-501 |     data_type: vx_enum,
+935 |     data_type: vx_enum,
     |     ^^^^^^^^^
-502 |     data: RwLock<Vec<u8>>,
-503 |     context: vx_context,
+936 |     data: RwLock<Vec<u8>>,
+937 |     context: vx_context,
     |     ^^^^^^^
 
 warning: multiple fields are never read
-   --> openvx-core/src/unified_c_api.rs:581:5
-    |
-580 | pub struct VxCUserKernel {
-    |            ------------- fields in this struct
-581 |     name: String,
-    |     ^^^^
-582 |     enumeration: vx_enum,
-    |     ^^^^^^^^^^^
-583 |     validate: VxKernelValidateF,
-    |     ^^^^^^^^
-584 |     init: VxKernelInitializeF,
-    |     ^^^^
-585 |     deinit: VxKernelDeinitializeF,
-    |     ^^^^^^
-586 |     num_params: vx_uint32,
-    |     ^^^^^^^^^^
-587 |     context_id: u64,
-    |     ^^^^^^^^^^
+    --> openvx-core/src/unified_c_api.rs:1020:5
+     |
+1019 | pub struct VxCUserKernel {
+     |            ------------- fields in this struct
+1020 |     name: String,
+     |     ^^^^
+1021 |     enumeration: vx_enum,
+     |     ^^^^^^^^^^^
+1022 |     validate: VxKernelValidateF,
+     |     ^^^^^^^^
+1023 |     init: VxKernelInitializeF,
+     |     ^^^^
+1024 |     deinit: VxKernelDeinitializeF,
+     |     ^^^^^^
+1025 |     num_params: vx_uint32,
+     |     ^^^^^^^^^^
+1026 |     context_id: u64,
+     |     ^^^^^^^^^^
 
 warning: constant `VX_KERNEL_SOBEL_3x3` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1110:11
+    --> openvx-core/src/unified_c_api.rs:1549:11
      |
-1110 | pub const VX_KERNEL_SOBEL_3x3: vx_enum = 0x03;
+1549 | pub const VX_KERNEL_SOBEL_3x3: vx_enum = 0x03;
      |           ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_SOBEL_3X3`
      |
      = note: `#[warn(non_upper_case_globals)]` (part of `#[warn(nonstandard_style)]`) on by default
 
 warning: constant `VX_KERNEL_GAUSSIAN_3x3` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1118:11
+    --> openvx-core/src/unified_c_api.rs:1557:11
      |
-1118 | pub const VX_KERNEL_GAUSSIAN_3x3: vx_enum = 0x0B;
+1557 | pub const VX_KERNEL_GAUSSIAN_3x3: vx_enum = 0x0B;
      |           ^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_GAUSSIAN_3X3`
 
 warning: constant `VX_KERNEL_MEDIAN_3x3` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1119:11
+    --> openvx-core/src/unified_c_api.rs:1558:11
      |
-1119 | pub const VX_KERNEL_MEDIAN_3x3: vx_enum = 0x0C;
+1558 | pub const VX_KERNEL_MEDIAN_3x3: vx_enum = 0x0C;
      |           ^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_MEDIAN_3X3`
 
 warning: constant `VX_KERNEL_DILATE_3x3` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1120:11
+    --> openvx-core/src/unified_c_api.rs:1559:11
      |
-1120 | pub const VX_KERNEL_DILATE_3x3: vx_enum = 0x0D;
+1559 | pub const VX_KERNEL_DILATE_3x3: vx_enum = 0x0D;
      |           ^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_DILATE_3X3`
 
 warning: constant `VX_KERNEL_ERODE_3x3` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1121:11
+    --> openvx-core/src/unified_c_api.rs:1560:11
      |
-1121 | pub const VX_KERNEL_ERODE_3x3: vx_enum = 0x0E;
+1560 | pub const VX_KERNEL_ERODE_3x3: vx_enum = 0x0E;
      |           ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_ERODE_3X3`
 
 warning: constant `VX_KERNEL_BOX_3x3` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1131:11
+    --> openvx-core/src/unified_c_api.rs:1570:11
      |
-1131 | pub const VX_KERNEL_BOX_3x3: vx_enum = 0x18;
+1570 | pub const VX_KERNEL_BOX_3x3: vx_enum = 0x18;
      |           ^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_BOX_3X3`
 
 warning: constant `VX_KERNEL_GAUSSIAN_5x5` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1132:11
+    --> openvx-core/src/unified_c_api.rs:1571:11
      |
-1132 | pub const VX_KERNEL_GAUSSIAN_5x5: vx_enum = 0x19;
+1571 | pub const VX_KERNEL_GAUSSIAN_5x5: vx_enum = 0x19;
      |           ^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_GAUSSIAN_5X5`
 
 warning: constant `VX_KERNEL_SOBEL_5x5` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1133:11
+    --> openvx-core/src/unified_c_api.rs:1572:11
      |
-1133 | pub const VX_KERNEL_SOBEL_5x5: vx_enum = 0x1A;
+1572 | pub const VX_KERNEL_SOBEL_5x5: vx_enum = 0x1A;
      |           ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_SOBEL_5X5`
 
 warning: constant `VX_KERNEL_DILATE_5x5` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1145:11
+    --> openvx-core/src/unified_c_api.rs:1584:11
      |
-1145 | pub const VX_KERNEL_DILATE_5x5: vx_enum = 0x26;
+1584 | pub const VX_KERNEL_DILATE_5x5: vx_enum = 0x26;
      |           ^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_DILATE_5X5`
 
 warning: constant `VX_KERNEL_ERODE_5x5` should have an upper case name
-    --> openvx-core/src/unified_c_api.rs:1146:11
+    --> openvx-core/src/unified_c_api.rs:1585:11
      |
-1146 | pub const VX_KERNEL_ERODE_5x5: vx_enum = 0x27;
+1585 | pub const VX_KERNEL_ERODE_5x5: vx_enum = 0x27;
      |           ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case (notice the capitalization): `VX_KERNEL_ERODE_5X5`
 
-warning: `openvx-core` (lib) generated 178 warnings (run `cargo fix --lib -p openvx-core` to apply 113 suggestions)
-   Compiling openvx-image v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-image)
+warning: `openvx-core` (lib) generated 197 warnings (run `cargo fix --lib -p openvx-core` to apply 113 suggestions)
    Compiling openvx-buffer v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-buffer)
+   Compiling openvx-image v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-image)
 warning: unused imports: `VX_READ_AND_WRITE`, `VX_READ_ONLY`, and `VX_WRITE_ONLY`
   --> openvx-buffer/src/c_api.rs:13:5
    |
@@ -1302,4 +2529,142 @@ warning: variable does not need to be mutable
 
 warning: `openvx-vision` (lib) generated 5 warnings (run `cargo fix --lib -p openvx-vision` to apply 4 suggestions)
    Compiling openvx-ffi v0.1.0 (/home/simon/.openclaw/workspace/rustVX/openvx-ffi)
-    Finished `release` profile [optimized] target(s) in 3.78s
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_CONTEXT` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_CONTEXT` in the value namespace is also re-exported here
+  |
+  = note: `#[warn(ambiguous_glob_reexports)]` on by default
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_GRAPH` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_GRAPH` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_NODE` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_NODE` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_KERNEL` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_KERNEL` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_PARAMETER` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_PARAMETER` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_SCALAR` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_SCALAR` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_IMAGE` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_IMAGE` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_ARRAY` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_ARRAY` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_MATRIX` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_MATRIX` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_CONVOLUTION` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_CONVOLUTION` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_THRESHOLD` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_THRESHOLD` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_PYRAMID` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_PYRAMID` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+ --> openvx-ffi/src/lib.rs:7:9
+  |
+7 | pub use openvx_core::c_api::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^ the name `VX_TYPE_LUT` in the value namespace is first re-exported here
+8 | pub use openvx_core::c_api_data::*;
+9 | pub use openvx_core::unified_c_api::*;
+  |         ----------------------------- but the name `VX_TYPE_LUT` in the value namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+  --> openvx-ffi/src/lib.rs:9:9
+   |
+ 9 | pub use openvx_core::unified_c_api::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the name `VxCImage` in the type namespace is first re-exported here
+...
+13 | pub use openvx_image::c_api::*;
+   |         ---------------------- but the name `VxCImage` in the type namespace is also re-exported here
+
+warning: ambiguous glob re-exports
+  --> openvx-ffi/src/lib.rs:9:9
+   |
+ 9 | pub use openvx_core::unified_c_api::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the name `VxCArray` in the type namespace is first re-exported here
+...
+12 | pub use openvx_buffer::c_api::*;
+   |         ----------------------- but the name `VxCArray` in the type namespace is also re-exported here
+
+warning: `openvx-ffi` (lib) generated 15 warnings
+    Finished `release` profile [optimized] target(s) in 2.24s

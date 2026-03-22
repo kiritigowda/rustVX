@@ -6,6 +6,9 @@ use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
 use crate::types::VxStatus;
 
+// Import the unified CONTEXTS registry
+use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
+
 // ============================================================================
 // Type Aliases (C-compatible)
 // ============================================================================
@@ -177,10 +180,18 @@ fn generate_id() -> u64 {
 #[no_mangle]
 pub extern "C" fn vxCreateContext() -> vx_context {
     let id = generate_id();
+    let ptr = id as *mut VxContext;
     if let Ok(mut contexts) = CONTEXTS.lock() {
         contexts.push(id);
     }
-    id as *mut VxContext
+    // Also register in unified registry so vxQueryReference can find it
+    if let Ok(mut unified_ctxs) = UNIFIED_CONTEXTS.lock() {
+        unified_ctxs.insert(ptr as usize, Arc::new(VxCContext {
+            id,
+            ref_count: std::sync::atomic::AtomicUsize::new(1),
+        }));
+    }
+    ptr
 }
 
 #[no_mangle]
@@ -196,6 +207,10 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
         let id = ctx as u64;
         if let Ok(mut contexts) = CONTEXTS.lock() {
             contexts.retain(|&c| c != id);
+        }
+        // Also remove from unified registry
+        if let Ok(mut unified_ctxs) = UNIFIED_CONTEXTS.lock() {
+            unified_ctxs.remove(&(ctx as usize));
         }
         *context = std::ptr::null_mut();
     }
