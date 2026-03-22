@@ -193,6 +193,11 @@ pub extern "C" fn vxCreateContext() -> vx_context {
             ref_count: std::sync::atomic::AtomicUsize::new(1),
         }));
     }
+    // Initialize reference count
+    let addr = ptr as usize;
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.insert(addr, 1);
+    }
     ptr
 }
 
@@ -329,7 +334,13 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         graphs_data.insert(id, unified_graph);
     }
     
-    id as *mut VxGraph
+    // Initialize reference count
+    let ptr = id as *mut VxGraph;
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.insert(ptr as usize, 1);
+    }
+    
+    ptr
 }
 
 #[no_mangle]
