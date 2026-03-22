@@ -119,7 +119,7 @@ struct NodeData {
 }
 
 /// Internal kernel data (stored in Arc)
-struct KernelData {
+pub struct KernelData {
     id: u64,
     context_id: u32,
     name: String,
@@ -159,7 +159,7 @@ static NODES: Lazy<Mutex<std::collections::HashMap<u64, Arc<NodeData>>>> = Lazy:
     Mutex::new(std::collections::HashMap::new())
 });
 
-static KERNELS: Lazy<Mutex<std::collections::HashMap<u64, Arc<KernelData>>>> = Lazy::new(|| {
+pub static KERNELS: Lazy<Mutex<std::collections::HashMap<u64, Arc<KernelData>>>> = Lazy::new(|| {
     Mutex::new(std::collections::HashMap::new())
 });
 

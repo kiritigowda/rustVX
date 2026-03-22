@@ -867,6 +867,14 @@ pub extern "C" fn vxQueryReference(
                     }
                 }
                 
+                // Also check c_api KERNELS registry
+                if let Ok(c_api_kernels) = crate::c_api::KERNELS.lock() {
+                    if c_api_kernels.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_KERNEL;
+                        return VX_SUCCESS;
+                    }
+                }
+                
                 // Check targets
                 if let Ok(targets) = TARGETS.lock() {
                     if targets.contains_key(&(ref_ as u64)) {
