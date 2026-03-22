@@ -912,12 +912,15 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
     }
 
     unsafe {
-        if !(*ref_).is_null() {
-            // Also remove any stored name
-            let addr = *ref_ as usize;
+        // ref_ is a *mut vx_reference (double pointer), so *ref_ is the actual reference
+        let inner_ref = *ref_;
+        if !inner_ref.is_null() {
+            // Remove stored name
+            let addr = inner_ref as usize;
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
             }
+            // Set the caller's pointer to null
             *ref_ = std::ptr::null_mut();
         }
     }
