@@ -391,16 +391,11 @@ pub extern "C" fn vxScheduleGraph(graph: vx_graph) -> vx_status {
 
 /// Check if graph is verified
 #[no_mangle]
-pub extern "C" fn vxIsGraphVerified(graph: vx_graph, verified: *mut vx_bool) -> vx_status {
-    if verified.is_null() {
-        return VX_ERROR_INVALID_PARAMETERS;
-    }
-    
+pub extern "C" fn vxIsGraphVerified(graph: vx_graph) -> vx_bool {
     unsafe {
-        // If graph is invalid, set verified to false and return success
+        // If graph is invalid, return false
         if graph.is_null() {
-            *verified = 0; // vx_false_e
-            return VX_SUCCESS;
+            return 0; // vx_false_e
         }
 
         let graph_id = graph as u64;
@@ -408,15 +403,12 @@ pub extern "C" fn vxIsGraphVerified(graph: vx_graph, verified: *mut vx_bool) -> 
         if let Ok(graphs) = GRAPHS_DATA.lock() {
             if let Some(g) = graphs.get(&graph_id) {
                 let is_verified = g.verified.lock().unwrap();
-                *verified = if *is_verified { 1 } else { 0 };
-                return VX_SUCCESS;
+                return if *is_verified { 1 } else { 0 };
             }
         }
-        // Graph not found - set to false and return success
-        *verified = 0;
+        // Graph not found - return false
+        0
     }
-    
-    VX_SUCCESS
 }
 
 /// Replicate node for object arrays
@@ -1347,6 +1339,8 @@ pub const VX_DIRECTIVE_ENABLE_PERFORMANCE: vx_enum = 0x00;
 pub const VX_DIRECTIVE_DISABLE_PERFORMANCE: vx_enum = 0x01;
 pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x02;
 pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x03;
+pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x02;
+pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x03;
 
 /// Set directive on reference
 #[no_mangle]
@@ -1362,6 +1356,14 @@ pub extern "C" fn vxDirective(ref_: vx_reference, directive: vx_enum) -> vx_stat
         }
         VX_DIRECTIVE_DISABLE_PERFORMANCE => {
             // Disable performance tracking
+            VX_SUCCESS
+        }
+        VX_DIRECTIVE_ENABLE_LOGGING => {
+            // Enable logging
+            VX_SUCCESS
+        }
+        VX_DIRECTIVE_DISABLE_LOGGING => {
+            // Disable logging
             VX_SUCCESS
         }
         _ => VX_ERROR_NOT_IMPLEMENTED,
@@ -1420,8 +1422,13 @@ pub extern "C" fn vxGetUserStructNameByEnum(
     type_name: *mut vx_char,
     size: vx_size,
 ) -> vx_status {
-    // CTS expects INVALID_PARAMETERS for NULL context (not INVALID_REFERENCE)
-    if context.is_null() || type_name.is_null() {
+    // Check for NULL context first - return INVALID_PARAMETERS per CTS
+    if context.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    
+    // Check for NULL type_name
+    if type_name.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
