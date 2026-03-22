@@ -480,7 +480,18 @@ pub extern "C" fn vxQueryContext(
             VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS => {
                 // vx_uint32 is expected per spec
                 if size == std::mem::size_of::<vx_uint32>() {
-                    *(ptr as *mut vx_uint32) = 0;
+                    // Return total count of registered kernels from both registries
+                    let mut count = 0u32;
+                    if let Ok(kernels) = KERNELS.lock() {
+                        count += kernels.len() as u32;
+                    }
+                    if let Ok(c_api_kernels) = crate::c_api::KERNELS.lock() {
+                        count += c_api_kernels.len() as u32;
+                    }
+                    if let Ok(user_kernels) = USER_KERNELS.lock() {
+                        count += user_kernels.len() as u32;
+                    }
+                    *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -489,7 +500,14 @@ pub extern "C" fn vxQueryContext(
             VX_CONTEXT_ATTRIBUTE_MODULES => {
                 // vx_uint32 is expected per spec
                 if size == std::mem::size_of::<vx_uint32>() {
-                    *(ptr as *mut vx_uint32) = 0;
+                    // Return number of loaded modules for this context
+                    let context_id = context as u64;
+                    let module_count = if let Ok(modules) = MODULES.lock() {
+                        modules.get(&context_id).map(|m| m.len() as u32).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    *(ptr as *mut vx_uint32) = module_count;
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -498,7 +516,20 @@ pub extern "C" fn vxQueryContext(
             VX_CONTEXT_ATTRIBUTE_REFERENCES => {
                 // vx_uint32 is expected per spec
                 if size == std::mem::size_of::<vx_uint32>() {
-                    *(ptr as *mut vx_uint32) = 0;
+                    // Return count of references for this context
+                    let context_id = context as u64;
+                    let mut count = 0u32;
+                    // Count graphs for this context
+                    if let Ok(graphs) = GRAPHS_DATA.lock() {
+                        for (_, graph) in graphs.iter() {
+                            if graph.context_id == context_id {
+                                count += 1;
+                            }
+                        }
+                    }
+                    // Count other references... (nodes, images, etc.)
+                    // For now, return the count we have
+                    *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -660,6 +691,12 @@ static META_FORMATS: Lazy<Mutex<HashMap<usize, Arc<VxCMetaFormat>>>> = Lazy::new
 
 // Import registry
 static IMPORTS: Lazy<Mutex<HashMap<usize, Arc<VxCImport>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Module registry - tracks loaded kernel modules per context
+// Key is context_id, Value is set of loaded module names
+pub static MODULES: Lazy<Mutex<HashMap<u64, std::collections::HashSet<String>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 

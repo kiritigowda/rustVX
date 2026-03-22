@@ -183,6 +183,7 @@ fn generate_id() -> u64 {
 pub extern "C" fn vxCreateContext() -> vx_context {
     let id = generate_id();
     let ptr = id as *mut VxContext;
+    let context_id = id as u32;
     if let Ok(mut contexts) = CONTEXTS.lock() {
         contexts.push(id);
     }
@@ -198,7 +199,47 @@ pub extern "C" fn vxCreateContext() -> vx_context {
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         counts.insert(addr, 1);
     }
+    // Register standard OpenVX kernels for this context
+    register_standard_kernels(context_id);
     ptr
+}
+
+/// Register standard OpenVX built-in kernels for a context
+fn register_standard_kernels(context_id: u32) {
+    use std::sync::atomic::Ordering;
+    
+    // Register built-in kernels that are always available
+    let standard_kernels: Vec<(&str, i32)> = vec![
+        ("org.khronos.openvx.color_convert", 0x1i32),
+        ("org.khronos.openvx.channel_extract", 0x2),
+        ("org.khronos.openvx.channel_combine", 0x3),
+        ("org.khronos.openvx.sobel3x3", 0x6),
+        ("org.khronos.openvx.add", 0x7),
+        ("org.khronos.openvx.subtract", 0x8),
+        ("org.khronos.openvx.multiply", 0x9),
+        ("org.khronos.openvx.erode3x3", 0x14),
+        ("org.khronos.openvx.dilate3x3", 0x15),
+        ("org.khronos.openvx.threshold", 0x18),
+        ("org.khronos.openvx.convolve", 0x21),
+        ("org.khronos.openvx.gaussian3x3", 0x22),
+        ("org.khronos.openvx.median3x3", 0x23),
+        ("org.khronos.openvx.box3x3", 0x24),
+    ];
+    
+    if let Ok(mut kernels) = KERNELS.lock() {
+        for (name, kernel_enum) in standard_kernels {
+            let kernel_id = generate_id();
+            let kernel = Arc::new(KernelData {
+                id: kernel_id,
+                context_id,
+                name: name.to_string(),
+                kernel_enum: kernel_enum as i32,
+                num_params: 2,
+                ref_count: std::sync::atomic::AtomicUsize::new(1),
+            });
+            kernels.insert(kernel_id, kernel);
+        }
+    }
 }
 
 #[no_mangle]
@@ -597,6 +638,8 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
 
 #[no_mangle]
 pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> vx_status {
+    use crate::unified_c_api::MODULES;
+    
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -609,6 +652,13 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
             Ok(s) => s,
             Err(_) => return VX_ERROR_INVALID_PARAMETERS,
         };
+        
+        // Track this module as loaded for this context
+        let context_id = context as u64;
+        if let Ok(mut modules) = MODULES.lock() {
+            let context_modules: &mut std::collections::HashSet<String> = modules.entry(context_id).or_insert_with(std::collections::HashSet::new);
+            context_modules.insert(module_name.to_string());
+        }
         
         // Parse module name and register kernels
         // Handle test module or built-in kernels
@@ -636,15 +686,45 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
 }
 
 #[no_mangle]
-pub extern "C" fn vxUnloadKernels(context: vx_context, _module: *const vx_char) -> vx_status {
+pub extern "C" fn vxUnloadKernels(context: vx_context, module: *const vx_char) -> vx_status {
+    use crate::unified_c_api::MODULES;
+    
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    if _module.is_null() {
+    if module.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    // TODO: Unregister kernels from the module
-    VX_SUCCESS
+    
+    unsafe {
+        let module_name = match CStr::from_ptr(module).to_str() {
+            Ok(s) => s,
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        // Remove this module from the loaded modules for this context
+        let context_id = context as u64;
+        if let Ok(mut modules) = MODULES.lock() {
+            if let Some(context_modules) = modules.get_mut(&context_id) {
+                context_modules.remove(module_name);
+            }
+        }
+        
+        // Unregister kernels from this module
+        let context_id_u32 = context as u32;
+        if let Ok(mut kernels) = KERNELS.lock() {
+            // Remove all kernels that belong to this context and module
+            // For the test module, we remove kernels with names matching the module pattern
+            if module_name == "test-testmodule" {
+                kernels.retain(|_id, k| {
+                    // Keep kernels that don't match the test module pattern or don't belong to this context
+                    k.context_id != context_id_u32 || k.name != "org.khronos.test.testmodule"
+                });
+            }
+        }
+        
+        VX_SUCCESS
+    }
 }
 
 #[no_mangle]
