@@ -12,7 +12,7 @@ use crate::c_api_data::vx_pixel_value_t;
 
 // Include the image C API functions directly
 // These are duplicated here to ensure proper symbol export
-use std::ffi::{CStr, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
@@ -250,6 +250,25 @@ pub const VX_GRAPH_ATTRIBUTE_STATUS: vx_enum = 0x00080205;           // +0x5
 // Backwards compat aliases
 pub const VX_GRAPH_PERFORMANCE: vx_enum = VX_GRAPH_ATTRIBUTE_PERFORMANCE;
 
+// Graph state enum values (from vx_types.h)
+// VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_GRAPH_STATE) = 0x00015000
+pub const VX_GRAPH_STATE_UNVERIFIED: vx_enum = 0x00015000;
+pub const VX_GRAPH_STATE_VERIFIED: vx_enum = 0x00015001;
+pub const VX_GRAPH_STATE_RUNNING: vx_enum = 0x00015002;
+pub const VX_GRAPH_STATE_ABANDONED: vx_enum = 0x00015003;
+pub const VX_GRAPH_STATE_COMPLETED: vx_enum = 0x00015004;
+
+/// Convert internal VxGraphState to OpenVX graph state constant
+fn convert_graph_state_to_vx(state: VxGraphState) -> vx_enum {
+    match state {
+        VxGraphState::VxGraphStateUnverified => VX_GRAPH_STATE_UNVERIFIED,
+        VxGraphState::VxGraphStateVerified => VX_GRAPH_STATE_VERIFIED,
+        VxGraphState::VxGraphStateRunning => VX_GRAPH_STATE_RUNNING,
+        VxGraphState::VxGraphStateAbandoned => VX_GRAPH_STATE_ABANDONED,
+        VxGraphState::VxGraphStateCompleted => VX_GRAPH_STATE_COMPLETED,
+    }
+}
+
 /// Verify graph - validates graph structure
 #[no_mangle]
 pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
@@ -388,7 +407,7 @@ pub extern "C" fn vxQueryGraph(
                             return VX_ERROR_INVALID_PARAMETERS;
                         }
                         let state = g.state.lock().unwrap();
-                        *(ptr as *mut vx_enum) = *state as vx_enum;
+                        *(ptr as *mut vx_enum) = convert_graph_state_to_vx(*state);
                         return VX_SUCCESS;
                     }
                     // VX_GRAPH_STATUS = 0x00080205 (base + 0x5)
@@ -802,8 +821,8 @@ static TARGETS: Lazy<Mutex<HashMap<u64, Arc<VxCTarget>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
-// Reference name storage
-static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, String>>> = Lazy::new(|| {
+// Reference name storage - use CString to ensure null-terminated strings with stable pointers
+static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, CString>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -1190,13 +1209,15 @@ pub extern "C" fn vxSetReferenceName(
     }
 
     unsafe {
-        let name_str = match CStr::from_ptr(name).to_str() {
-            Ok(s) => s.to_string(),
+        // Convert the input C string to a CString for storage
+        // This ensures the string is null-terminated and the pointer remains valid
+        let name_cstring = match CString::new(CStr::from_ptr(name).to_bytes()) {
+            Ok(s) => s,
             Err(_) => return VX_ERROR_INVALID_PARAMETERS,
         };
         
         if let Ok(mut names) = REFERENCE_NAMES.lock() {
-            names.insert(addr, name_str);
+            names.insert(addr, name_cstring);
         }
     }
 
