@@ -19,7 +19,9 @@ pub fn gaussian3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
     }
     
     let src_data = src.data();
-    let mut temp_buffer = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
     
     // Horizontal pass - parallel by rows
@@ -86,7 +88,9 @@ pub fn gaussian5x5_parallel(src: &Image, dst: &Image) -> VxResult<()> {
     }
     
     let src_data = src.data();
-    let mut temp_buffer = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
     
     const KERNEL: [i32; 5] = [1, 4, 6, 4, 1];
@@ -143,7 +147,9 @@ pub fn box3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
     }
     
     let src_data = src.data();
-    let mut temp_buffer = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp_buffer = vec![0u8; temp_size];
     
     // Horizontal pass with parallel rows
     temp_buffer

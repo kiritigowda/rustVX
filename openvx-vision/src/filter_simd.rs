@@ -16,7 +16,9 @@ pub fn gaussian3x3_simd(src: &Image, dst: &Image) -> VxResult<()> {
     }
     
     let src_data = src.data();
-    let mut temp_buffer = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
     
     #[cfg(target_arch = "x86_64")]
@@ -64,7 +66,9 @@ pub fn gaussian5x5_simd(src: &Image, dst: &Image) -> VxResult<()> {
     }
     
     let src_data = src.data();
-    let mut temp_buffer = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
     
     // 5x5 kernel: [1, 4, 6, 4, 1] separable
@@ -114,7 +118,9 @@ pub fn box3x3_simd(src: &Image, dst: &Image) -> VxResult<()> {
     }
     
     let src_data = src.data();
-    let mut temp_buffer = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
     
     // Horizontal box filter (moving average)

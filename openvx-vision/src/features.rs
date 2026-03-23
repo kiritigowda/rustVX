@@ -79,7 +79,9 @@ pub fn harris_corners(
 ) -> VxResult<Vec<Corner>> {
     let width = image.width();
     let height = image.height();
-    let mut responses = vec![0f32; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let response_size = width.saturating_mul(height);
+    let mut responses = vec![0f32; response_size];
     
     // Compute gradients using Sobel
     let (grad_x, grad_y) = compute_gradients_sobel(image)?;
@@ -330,8 +332,10 @@ fn compute_fast_score(circle: &[u8; 16], center: u8, threshold: u8) -> u16 {
 fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
     let width = image.width();
     let height = image.height();
-    let mut grad_x = vec![0f32; width * height];
-    let mut grad_y = vec![0f32; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let gradient_size = width.saturating_mul(height);
+    let mut grad_x = vec![0f32; gradient_size];
+    let mut grad_y = vec![0f32; gradient_size];
     
     // Sobel kernels
     const SOBEL_X: [[i32; 3]; 3] = [

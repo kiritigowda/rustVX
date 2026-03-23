@@ -6,7 +6,9 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Benchmark
 use openvx_image::{Image, ImageFormat};
 
 fn create_test_image(width: usize, height: usize) -> Image {
-    let mut data = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let data_size = width.saturating_mul(height);
+    let mut data = vec![0u8; data_size];
     for (i, pixel) in data.iter_mut().enumerate() {
         *pixel = ((i * 17) & 0xFF) as u8;
     }
@@ -14,7 +16,9 @@ fn create_test_image(width: usize, height: usize) -> Image {
 }
 
 fn create_test_rgb(width: usize, height: usize) -> Image {
-    let mut data = vec![0u8; width * height * 3];
+    // Use saturating_mul to prevent integer overflow
+    let data_size = width.saturating_mul(height).saturating_mul(3);
+    let mut data = vec![0u8; data_size];
     for (i, pixel) in data.iter_mut().enumerate() {
         *pixel = ((i * 13) & 0xFF) as u8;
     }
@@ -239,8 +243,10 @@ fn bench_sobel3x3(c: &mut Criterion) {
     
     for (width, height) in &sizes {
         let src = create_test_image(*width, *height);
-        let mut gx = vec![0i16; width * height];
-        let mut gy = vec![0i16; width * height];
+        // Use saturating_mul to prevent integer overflow
+        let buf_size = width.saturating_mul(*height);
+        let mut gx = vec![0i16; buf_size];
+        let mut gy = vec![0i16; buf_size];
         
         group.bench_with_input(
             BenchmarkId::new("scalar", format!("{}x{}", width, height)),

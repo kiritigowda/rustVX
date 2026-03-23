@@ -1813,7 +1813,8 @@ fn min_max_loc(src: &Image) -> VxResult<(u8, u8, Coordinate, Coordinate)> {
 fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
     let width = src.width;
     let height = src.height;
-    let pixel_count = (width * height) as f32;
+    // Use saturating_mul to prevent integer overflow
+    let pixel_count = width.saturating_mul(height) as f32;
     
     // Compute mean
     let mut sum: u64 = 0;
@@ -2219,8 +2220,10 @@ fn compute_fast_score(circle: &[u8; 16], center: u8, threshold: u8) -> u16 {
 fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
     let width = image.width;
     let height = image.height;
-    let mut grad_x = vec![0f32; width * height];
-    let mut grad_y = vec![0f32; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let gradient_size = width.saturating_mul(height);
+    let mut grad_x = vec![0f32; gradient_size];
+    let mut grad_y = vec![0f32; gradient_size];
     
     for y in 1..height - 1 {
         for x in 1..width - 1 {

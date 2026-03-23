@@ -258,8 +258,9 @@ pub fn rgb_to_nv12(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
     let mut dst_data = dst.data_mut();
-    
-    let chroma_offset = width * height;
+
+    // Use saturating_mul to prevent integer overflow
+    let chroma_offset = width.saturating_mul(height);
     
     for y in 0..height {
         for x in 0..width {
@@ -312,7 +313,8 @@ pub fn nv12_to_rgb(src: &Image, dst: &Image) -> VxResult<()> {
     let mut dst_data = dst.data_mut();
     let src_data = src.data();
     
-    let chroma_offset = width * height;
+    // Use saturating_mul to prevent integer overflow
+    let chroma_offset = width.saturating_mul(height);
     
     for y in 0..height {
         for x in 0..width {

@@ -201,8 +201,9 @@ pub fn gaussian3x3(src: &Image, dst: &Image) -> VxResult<()> {
     
     let mut dst_data = dst.data_mut();
     
-    // Temporary buffer for horizontal pass
-    let mut temp = vec![0u8; width * height];
+    // Temporary buffer for horizontal pass - use saturating_mul to prevent overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp = vec![0u8; temp_size];
     
     // Horizontal pass
     for y in 0..height {
@@ -247,8 +248,9 @@ pub fn gaussian5x5(src: &Image, dst: &Image) -> VxResult<()> {
     
     let mut dst_data = dst.data_mut();
     
-    // Temporary buffer for horizontal pass
-    let mut temp = vec![0u8; width * height];
+    // Temporary buffer for horizontal pass - use saturating_mul to prevent overflow
+    let temp_size = width.saturating_mul(height);
+    let mut temp = vec![0u8; temp_size];
     
     // Horizontal pass
     for y in 0..height {

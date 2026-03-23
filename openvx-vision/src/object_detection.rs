@@ -156,10 +156,12 @@ pub fn canny_edge_detector(
     let height = src.height();
     
     // Step 1: Apply Gaussian blur (simplified - use existing 3x3)
-    let mut blurred = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let image_size = width.saturating_mul(height);
+    let mut blurred = vec![0u8; image_size];
     {
         let kernel = [1, 2, 1];
-        let mut temp = vec![0u8; width * height];
+        let mut temp = vec![0u8; image_size];
         
         // Horizontal pass
         for y in 0..height {
@@ -195,10 +197,12 @@ pub fn canny_edge_detector(
     }
     
     // Step 2: Compute gradients using Sobel
-    let mut grad_x = vec![0f32; width * height];
-    let mut grad_y = vec![0f32; width * height];
-    let mut magnitude = vec![0f32; width * height];
-    let mut direction = vec![0f32; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let image_size = width.saturating_mul(height);
+    let mut grad_x = vec![0f32; image_size];
+    let mut grad_y = vec![0f32; image_size];
+    let mut magnitude = vec![0f32; image_size];
+    let mut direction = vec![0f32; image_size];
     
     const SOBEL_X: [[i32; 3]; 3] = [
         [-1, 0, 1],
@@ -235,7 +239,9 @@ pub fn canny_edge_detector(
     }
     
     // Step 3: Non-maximum suppression
-    let mut suppressed = vec![0u8; width * height];
+    // Use saturating_mul to prevent integer overflow
+    let image_size = width.saturating_mul(height);
+    let mut suppressed = vec![0u8; image_size];
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let idx = y * width + x;
@@ -266,7 +272,9 @@ pub fn canny_edge_detector(
     
     // Step 4: Double threshold and hysteresis
     let mut dst_data = dst.data_mut();
-    let mut edges = vec![0u8; width * height]; // 0=non-edge, 1=weak, 2=strong
+    // Use saturating_mul to prevent integer overflow
+    let image_size = width.saturating_mul(height);
+    let mut edges = vec![0u8; image_size]; // 0=non-edge, 1=weak, 2=strong
     
     for y in 0..height {
         for x in 0..width {
