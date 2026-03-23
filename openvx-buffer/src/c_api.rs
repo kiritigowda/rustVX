@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::sync::RwLock;
 use std::collections::HashMap;
 use openvx_core::c_api::{
-    vx_context, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id,
+    vx_context, vx_graph, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id, vx_int32,
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_TYPE_UINT8, VX_TYPE_INT8, VX_TYPE_UINT16, VX_TYPE_INT16,
@@ -12,6 +12,7 @@ use openvx_core::c_api::{
     VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
+use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution};
 
 /// Array struct for C API
 pub struct VxCArray {
@@ -193,6 +194,37 @@ pub extern "C" fn vxQueryArray(
     }
 
     VX_SUCCESS
+}
+
+/// Create a virtual array (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualArray(
+    graph: vx_graph,
+    item_type: vx_enum,
+    capacity: vx_size,
+) -> vx_array {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual arrays are created like regular ones but associated with graph
+    // In a full implementation, memory would be allocated during graph execution
+    // A capacity of 0 means unspecified capacity
+    vxCreateArray(graph as vx_context, item_type, if capacity == 0 { 1024 } else { capacity })
+}
+
+/// Create a virtual distribution (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualDistribution(
+    graph: vx_graph,
+    num_bins: vx_size,
+    offset: vx_int32,
+    range: vx_uint32,
+) -> vx_distribution {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual distributions are created like regular ones
+    vxCreateDistribution(graph as vx_context, num_bins, offset as u32, range)
 }
 
 /// Release array
