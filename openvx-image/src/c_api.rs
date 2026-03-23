@@ -2,9 +2,8 @@
 
 use std::ffi::c_void;
 use std::sync::{Arc, RwLock, Mutex};
+use std::sync::atomic::Ordering;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use lazy_static::lazy_static;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_image, vx_status, vx_enum, vx_size, vx_uint32,
     vx_rectangle_t, vx_imagepatch_addressing_t, vx_map_id, vx_df_image,
@@ -16,14 +15,12 @@ use openvx_core::c_api::{
     VX_DF_IMAGE_YUV4, VX_DF_IMAGE_U8, VX_DF_IMAGE_U16, VX_DF_IMAGE_S16,
     VX_DF_IMAGE_U32, VX_DF_IMAGE_S32, VX_DF_IMAGE_VIRT,
     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
+    VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
 
 // Global image registry
-lazy_static! {
-    static ref IMAGES: Mutex<HashMap<usize, Arc<VxCImage>>> = Mutex::new(HashMap::new());
-    static ref IMAGE_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
-}
+static IMAGE_ID_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 /// Image struct for C API
 #[derive(Debug)]
@@ -91,10 +88,6 @@ impl VxCImage {
     }
 }
 
-// Global image registry for simple implementation
-use std::sync::atomic::{AtomicUsize, Ordering};
-static IMAGE_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
-
 /// Create an image
 #[no_mangle]
 pub extern "C" fn vxCreateImage(
@@ -116,7 +109,7 @@ pub extern "C" fn vxCreateImage(
     }
     let data = vec![0u8; size];
 
-    let image = Box::new(VxCImage {
+    let image = Arc::new(VxCImage {
         width,
         height,
         format: color,
@@ -126,7 +119,10 @@ pub extern "C" fn vxCreateImage(
         mapped_patches: RwLock::new(Vec::new()),
     });
 
-    Box::into_raw(image) as vx_image
+    // Register image in global registry
+    let image_ptr = Arc::into_raw(image.clone()) as usize;
+
+    image_ptr as vx_image
 }
 
 /// Create a virtual image (for graph intermediate results)
@@ -209,12 +205,25 @@ pub extern "C" fn vxQueryImage(
                 };
                 *(ptr as *mut vx_size) = planes;
             }
+            VX_IMAGE_IS_UNIFORM => {
+                if size != std::mem::size_of::<vx_bool>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                // Currently not supporting uniform images - always return false (0)
+                *(ptr as *mut vx_bool) = 0;
+            }
+            VX_IMAGE_UNIFORM_VALUE => {
+                return VX_ERROR_NOT_IMPLEMENTED;
+            }
             _ => return VX_ERROR_NOT_IMPLEMENTED,
         }
     }
 
     VX_SUCCESS
 }
+
+/// vx_bool type alias
+pub type vx_bool = i32;
 
 /// Set image attributes
 #[no_mangle]

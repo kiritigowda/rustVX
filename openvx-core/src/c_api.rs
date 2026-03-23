@@ -1317,12 +1317,18 @@ pub const VX_DF_IMAGE_VIRT: vx_df_image = 0xFFFFFFFFu32;
 // ============================================================================
 // ============================================================================
 // Image Attributes
+// VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_IMAGE) = (0x000 << 20) | (0x80F << 8) = 0x80F00
 // ============================================================================
 
-pub const VX_IMAGE_FORMAT: vx_enum = 0x00;
-pub const VX_IMAGE_WIDTH: vx_enum = 0x01;
-pub const VX_IMAGE_HEIGHT: vx_enum = 0x02;
-pub const VX_IMAGE_PLANES: vx_enum = 0x03;
+pub const VX_IMAGE_FORMAT: vx_enum = 0x80F02;
+pub const VX_IMAGE_WIDTH: vx_enum = 0x80F00;
+pub const VX_IMAGE_HEIGHT: vx_enum = 0x80F01;
+pub const VX_IMAGE_PLANES: vx_enum = 0x80F03;
+pub const VX_IMAGE_SPACE: vx_enum = 0x80F04;
+pub const VX_IMAGE_RANGE: vx_enum = 0x80F05;
+pub const VX_IMAGE_MEMORY_TYPE: vx_enum = 0x80F07;
+pub const VX_IMAGE_IS_UNIFORM: vx_enum = 0x80F08;
+pub const VX_IMAGE_UNIFORM_VALUE: vx_enum = 0x80F09;
 
 // ============================================================================
 // Array Attributes

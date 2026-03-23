@@ -1,7 +1,7 @@
 //! Optical Flow implementation
 
 use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
-use openvx_image::Image;
+use openvx_image::{Image, ImageFormat};
 
 /// OpticalFlowPyrLK kernel - Lucas-Kanade pyramidal optical flow
 pub struct OpticalFlowPyrLKKernel;
@@ -30,7 +30,7 @@ impl KernelTrait for OpticalFlowPyrLKKernel {
 /// Build a Gaussian pyramid (5 levels with 5x5 kernel)
 pub fn build_gaussian_pyramid(image: &Image, levels: usize) -> VxResult<Vec<Image>> {
     let mut pyramid = Vec::with_capacity(levels);
-    pyramid.push(Image::new(image.width(), image.height(), openvx_image::ImageFormat::Gray));
+    pyramid.push(Image::new(image.width(), image.height(), ImageFormat::Gray));
     
     // Copy first level
     let src_data = image.data();
@@ -46,10 +46,10 @@ pub fn build_gaussian_pyramid(image: &Image, levels: usize) -> VxResult<Vec<Imag
     for i in 1..levels {
         let width = (prev_width + 1) / 2;
         let height = (prev_height + 1) / 2;
-        pyramid.push(Image::new(width, height, openvx_image::ImageFormat::Gray));
+        pyramid.push(Image::new(width, height, ImageFormat::Gray));
         
         // Apply Gaussian blur then downsample
-        let temp = Image::new(prev_width, prev_height, openvx_image::ImageFormat::Gray);
+        let temp = Image::new(prev_width, prev_height, ImageFormat::Gray);
         crate::filter::gaussian5x5(&pyramid[i - 1], &temp)?;
         downsample(&temp, &pyramid[i])?;
         
