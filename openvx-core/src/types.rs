@@ -204,7 +204,7 @@ pub enum VxError {
     InvalidCoordinates = -7,
     NotAllocated = -8,
     NotAvailable = -9,
-    NotImplemented = -10,
+    NotImplemented = -100,
     InvalidValue = -11,
     InvalidDimension = -12,
     InvalidFormat = -13,

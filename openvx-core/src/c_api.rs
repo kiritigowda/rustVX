@@ -4,11 +4,10 @@
 
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
-use crate::types::VxStatus;
 
 // Import the unified CONTEXTS registry
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
-use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData, VxGraphState};
+use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData};
 use crate::unified_c_api::REFERENCE_COUNTS;
 
 // ============================================================================
@@ -100,10 +99,10 @@ pub enum vx_action {
 // ============================================================================
 
 /// Internal graph data (stored in Arc)
-struct GraphData {
-    id: u64,
-    context_id: u32,
-    nodes: Mutex<Vec<u64>>, // Store node IDs instead of pointers
+pub struct GraphData {
+    pub id: u64,
+    pub context_id: u32,
+    pub nodes: Mutex<Vec<u64>>, // Store node IDs instead of pointers
 }
 
 /// Internal node data (stored in Arc)
@@ -147,11 +146,11 @@ pub struct ParameterData {
 
 use once_cell::sync::Lazy;
 
-static CONTEXTS: Lazy<Mutex<Vec<u64>>> = Lazy::new(|| {
+pub static CONTEXTS: Lazy<Mutex<Vec<u64>>> = Lazy::new(|| {
     Mutex::new(Vec::new())
 });
 
-static GRAPHS: Lazy<Mutex<std::collections::HashMap<u64, Arc<GraphData>>>> = Lazy::new(|| {
+pub static GRAPHS: Lazy<Mutex<std::collections::HashMap<u64, Arc<GraphData>>>> = Lazy::new(|| {
     Mutex::new(std::collections::HashMap::new())
 });
 
@@ -162,6 +161,9 @@ static NODES: Lazy<Mutex<std::collections::HashMap<u64, Arc<NodeData>>>> = Lazy:
 pub static KERNELS: Lazy<Mutex<std::collections::HashMap<u64, Arc<KernelData>>>> = Lazy::new(|| {
     Mutex::new(std::collections::HashMap::new())
 });
+
+// Re-export unified KERNELS for vxGetStatus
+pub use crate::unified_c_api::KERNELS as UNIFIED_KERNELS;
 
 pub static PARAMETERS: Lazy<Mutex<std::collections::HashMap<u64, Arc<ParameterData>>>> = Lazy::new(|| {
     Mutex::new(std::collections::HashMap::new())
@@ -194,7 +196,7 @@ pub extern "C" fn vxCreateContext() -> vx_context {
             ref_count: std::sync::atomic::AtomicUsize::new(1),
         }));
     }
-    // Initialize reference count
+    // Initialize reference count to 1 (the creation itself counts as a reference)
     let addr = ptr as usize;
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         counts.insert(addr, 1);
@@ -245,11 +247,12 @@ fn register_standard_kernels(context_id: u32) {
 #[no_mangle]
 pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
     if context.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
+        return VX_ERROR_INVALID_REFERENCE; // Per CTS: null pointer should return INVALID_REFERENCE
     }
     unsafe {
         let ctx = *context;
         if ctx.is_null() {
+            // Context already null - return INVALID_REFERENCE per CTS
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = ctx as u64;
@@ -290,27 +293,69 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
     if _ref_.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // Increment reference count
+    // Increment reference count - create entry if it doesn't exist
     let addr = _ref_ as usize;
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         let count = counts.entry(addr).or_insert(1);
         *count += 1;
+        return VX_SUCCESS;
     }
-    VX_SUCCESS
+    VX_ERROR_INVALID_REFERENCE
 }
 
 #[no_mangle]
 pub extern "C" fn vxGetStatus(ref_: vx_reference) -> vx_status {
     if ref_.is_null() {
-        return VX_ERROR_NO_RESOURCES;  // Changed from INVALID_REFERENCE
+        // Per CTS expectations, return VX_ERROR_NO_RESOURCES (-12) for null reference
+        return VX_ERROR_NO_RESOURCES;
     }
-    // Check if the reference is valid
+    // Check if the reference is valid in any registry
     let addr = ref_ as usize;
+    let id = ref_ as u64;
+    
+    // Check unified reference counts first
     if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if counts.contains_key(&addr) {
             return VX_SUCCESS;
         }
     }
+    
+    // Check if in any other registry (graphs, contexts, etc.)
+    // Check graphs in unified registry
+    if let Ok(graphs) = GRAPHS_DATA.lock() {
+        if graphs.contains_key(&id) {
+            return VX_SUCCESS;
+        }
+    }
+    
+    // Check graphs in c_api registry
+    if let Ok(c_api_graphs) = GRAPHS.lock() {
+        if c_api_graphs.contains_key(&id) {
+            return VX_SUCCESS;
+        }
+    }
+    
+    // Check contexts
+    if let Ok(contexts) = CONTEXTS.lock() {
+        if contexts.contains(&id) {
+            return VX_SUCCESS;
+        }
+    }
+    
+    // Check unified contexts
+    if let Ok(unified_contexts) = UNIFIED_CONTEXTS.lock() {
+        if unified_contexts.contains_key(&addr) {
+            return VX_SUCCESS;
+        }
+    }
+    
+    // Check kernels in c_api
+    if let Ok(kernels) = KERNELS.lock() {
+        if kernels.contains_key(&id) {
+            return VX_SUCCESS;
+        }
+    }
+    
     VX_ERROR_INVALID_REFERENCE
 }
 
@@ -364,39 +409,39 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
     }
     let context_id = context as u32;
     let id = generate_id();
-    
+
     // Store in the local registry
     let graph = Arc::new(GraphData {
         id,
         context_id,
         nodes: Mutex::new(Vec::new()),
     });
-    
+
     if let Ok(mut graphs) = GRAPHS.lock() {
-        graphs.insert(id, graph);
+        graphs.insert(id, graph.clone());
     }
-    
+
     // Also register in unified registry for vxQueryReference
-    let unified_graph = Arc::new(VxCGraphData {
+    let unified_graph = Arc::new(crate::unified_c_api::VxCGraphData {
         id,
         context_id: context_id as u64,
         nodes: std::sync::RwLock::new(Vec::new()),
         parameters: std::sync::RwLock::new(Vec::new()),
-        state: std::sync::Mutex::new(VxGraphState::VxGraphStateUnverified),
+        state: std::sync::Mutex::new(crate::unified_c_api::VxGraphState::VxGraphStateUnverified),
         verified: std::sync::Mutex::new(false),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
     });
-    
-    if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
+
+    if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
         graphs_data.insert(id, unified_graph);
     }
-    
-    // Initialize reference count
+
+    // Initialize reference count to 1
     let ptr = id as *mut VxGraph;
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         counts.insert(ptr as usize, 1);
     }
-    
+
     ptr
 }
 
@@ -629,7 +674,13 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
         }
     }
     
-    id as *mut VxNode
+    // Initialize reference count for the node (same pattern as other objects)
+    let ptr = id as *mut VxNode;
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.insert(ptr as usize, 1);
+    }
+    
+    ptr
 }
 
 // ============================================================================
@@ -1056,17 +1107,17 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
 
 pub const VX_SUCCESS: vx_status = 0;
 pub const VX_FAILURE: vx_status = -1;
-pub const VX_ERROR_NOT_IMPLEMENTED: vx_status = -2;
-pub const VX_ERROR_NOT_SUPPORTED: vx_status = -2;  // CTS expects -2
+pub const VX_ERROR_NOT_IMPLEMENTED: vx_status = -2;  // Per OpenVX spec
+pub const VX_ERROR_NOT_SUPPORTED: vx_status = -3;  // Per OpenVX spec
 pub const VX_ERROR_NOT_SUFFICIENT: vx_status = -4;
 pub const VX_ERROR_NOT_ALLOCATED: vx_status = -5;
 pub const VX_ERROR_NOT_COMPATIBLE: vx_status = -6;
-pub const VX_ERROR_NO_RESOURCES: vx_status = -12;  // CTS expects -12 for NO_RESOURCES
+pub const VX_ERROR_NO_RESOURCES: vx_status = -7;  // Per OpenVX spec
 pub const VX_ERROR_NO_MEMORY: vx_status = -8;
 pub const VX_ERROR_OPTIMIZED_AWAY: vx_status = -9;
-pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -2;  // CTS expects -2
+pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -10;  // Per OpenVX spec (-10)
 pub const VX_ERROR_INVALID_MODULE: vx_status = -11;
-pub const VX_ERROR_INVALID_REFERENCE: vx_status = -12;
+pub const VX_ERROR_INVALID_REFERENCE: vx_status = -12;  // Per OpenVX spec (-12)
 pub const VX_ERROR_INVALID_LINK: vx_status = -13;
 pub const VX_ERROR_INVALID_FORMAT: vx_status = -14;
 pub const VX_ERROR_INVALID_DIMENSION: vx_status = -15;

@@ -4,6 +4,19 @@ use std::ffi::c_void;
 use std::sync::RwLock;
 use crate::c_api::*;
 
+// Pixel value union (needed for image operations)
+#[repr(C)]
+pub union vx_pixel_value_t {
+    pub rgb: [u8; 3],
+    pub rgba: [u8; 4],
+    pub yuv: [u8; 3],
+    pub u8: u8,
+    pub u16: u16,
+    pub u32: u32,
+    pub s16: i16,
+    pub s32: i32,
+}
+
 // ============================================================================
 // Scalar Implementation
 // ============================================================================
