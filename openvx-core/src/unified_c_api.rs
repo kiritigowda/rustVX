@@ -219,11 +219,15 @@ fn generate_graph_id() -> u64 {
 // 1. Graph Operations
 // ============================================================================
 
-// Graph attribute constants
-pub const VX_GRAPH_ATTRIBUTE_NUM_NODES: vx_enum = 0x00;
-pub const VX_GRAPH_ATTRIBUTE_NUM_PARAMETERS: vx_enum = 0x01;
-pub const VX_GRAPH_ATTRIBUTE_STATE: vx_enum = 0x02;
-pub const VX_GRAPH_ATTRIBUTE_STATUS: vx_enum = 0x03;
+// Graph attribute constants (from vx_types.h)
+// VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_GRAPH) = 0x00080200
+pub const VX_GRAPH_ATTRIBUTE_NUM_NODES: vx_enum = 0x00080200;        // +0x0
+pub const VX_GRAPH_ATTRIBUTE_PERFORMANCE: vx_enum = 0x00080202;      // +0x2 (VX_GRAPH_PERFORMANCE)
+pub const VX_GRAPH_ATTRIBUTE_NUM_PARAMETERS: vx_enum = 0x00080203;   // +0x3
+pub const VX_GRAPH_ATTRIBUTE_STATE: vx_enum = 0x00080204;            // +0x4
+pub const VX_GRAPH_ATTRIBUTE_STATUS: vx_enum = 0x00080205;           // +0x5
+// Backwards compat aliases
+pub const VX_GRAPH_PERFORMANCE: vx_enum = VX_GRAPH_ATTRIBUTE_PERFORMANCE;
 
 /// Verify graph - validates graph structure
 #[no_mangle]
@@ -318,44 +322,56 @@ pub extern "C" fn vxQueryGraph(
         if let Ok(graphs) = GRAPHS_DATA.lock() {
             if let Some(g) = graphs.get(&graph_id) {
                 match attribute {
-                    VX_GRAPH_ATTRIBUTE_NUM_NODES => {
-                        if size != std::mem::size_of::<vx_size>() {
+                    // Handle all graph attributes
+                    0x00 | 0x00080200 => { // VX_GRAPH_NUMNODES
+                        if size != std::mem::size_of::<vx_uint32>() {
                             return VX_ERROR_INVALID_PARAMETERS;
                         }
                         let nodes = g.nodes.read().unwrap();
-                        *(ptr as *mut vx_size) = nodes.len();
+                        *(ptr as *mut vx_uint32) = nodes.len() as vx_uint32;
                         return VX_SUCCESS;
                     }
-                    VX_GRAPH_ATTRIBUTE_NUM_PARAMETERS => {
-                        if size != std::mem::size_of::<vx_size>() {
+                    0x01 | 0x00080203 => { // VX_GRAPH_NUMPARAMETERS
+                        if size != std::mem::size_of::<vx_uint32>() {
                             return VX_ERROR_INVALID_PARAMETERS;
                         }
                         let params = g.parameters.read().unwrap();
-                        *(ptr as *mut vx_size) = params.len();
+                        *(ptr as *mut vx_uint32) = params.len() as vx_uint32;
                         return VX_SUCCESS;
                     }
-                    VX_GRAPH_ATTRIBUTE_STATE => {
-                        if size != std::mem::size_of::<vx_enum>() {
+                    0x02 | 0x00080202 => { // VX_GRAPH_PERFORMANCE
+                        if size == 0 {
                             return VX_ERROR_INVALID_PARAMETERS;
                         }
-                        // Also check for graph in c_api registry
-                        if let Ok(c_api_graphs) = crate::c_api::GRAPHS.lock() {
-                            if let Some(cg) = c_api_graphs.get(&graph_id) {
-                                let state = g.state.lock().unwrap();
-                                *(ptr as *mut vx_enum) = *state as vx_enum;
-                                return VX_SUCCESS;
-                            }
+                        unsafe {
+                            std::ptr::write_bytes(ptr, 0, size);
+                        }
+                        return VX_SUCCESS;
+                    }
+                    0x03 | 0x00080204 => { // VX_GRAPH_STATE
+                        if size != std::mem::size_of::<vx_enum>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
                         }
                         let state = g.state.lock().unwrap();
                         *(ptr as *mut vx_enum) = *state as vx_enum;
                         return VX_SUCCESS;
                     }
-                    _ => return VX_ERROR_INVALID_PARAMETERS,
+                    0x04 | 0x00080205 => { // VX_GRAPH_STATUS
+                        if size != std::mem::size_of::<vx_status>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        *(ptr as *mut vx_status) = VX_SUCCESS;
+                        return VX_SUCCESS;
+                    }
+                    _ => {
+                        eprintln!("vxQueryGraph: unknown attribute 0x{:08x}", attribute);
+                        return VX_ERROR_NOT_SUPPORTED;
+                    }
                 }
             }
         }
     }
-    
+
     VX_ERROR_INVALID_GRAPH
 }
 
@@ -1411,11 +1427,13 @@ pub unsafe extern "C" fn vxAddLogEntry(
     }
 }
 
-// Directive constants
-pub const VX_DIRECTIVE_ENABLE_PERFORMANCE: vx_enum = 0x00;
-pub const VX_DIRECTIVE_DISABLE_PERFORMANCE: vx_enum = 0x01;
-pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x02;
-pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x03;
+// Directive constants (from vx_types.h)
+// VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_DIRECTIVE) where VX_ENUM_DIRECTIVE=0x03
+// = (0x000 << 20) | (0x03 << 12) = 0x00003000
+pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x00003000;      // +0x0
+pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x00003001;       // +0x1
+pub const VX_DIRECTIVE_DISABLE_PERFORMANCE: vx_enum = 0x00003002;  // +0x2
+pub const VX_DIRECTIVE_ENABLE_PERFORMANCE: vx_enum = 0x00003003;   // +0x3
 
 /// Set directive on reference
 #[no_mangle]
@@ -1487,6 +1505,15 @@ pub extern "C" fn vxRegisterUserStructWithName(
             Err(_) => return VX_TYPE_INVALID,
         };
 
+        // Check if struct with this name already exists
+        if let Ok(structs) = USER_STRUCTS.lock() {
+            for (enum_val, (name, _)) in structs.iter() {
+                if name == &name_str {
+                    return *enum_val;
+                }
+            }
+        }
+
         let new_enum = NEXT_USER_STRUCT_ENUM.fetch_add(1, Ordering::SeqCst) as vx_enum;
         
         if let Ok(mut structs) = USER_STRUCTS.lock() {
@@ -1545,12 +1572,12 @@ pub extern "C" fn vxGetUserStructEnumByName(
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    if user_struct_type.is_null() {
-        return VX_ERROR_INVALID_PARAMETERS;
-    }
     // NULL type_name should return VX_FAILURE per test expectations
     if type_name.is_null() {
         return VX_FAILURE;
+    }
+    if user_struct_type.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
     }
 
     unsafe {
