@@ -173,7 +173,7 @@ static NEXT_ID: Lazy<std::sync::atomic::AtomicU64> = Lazy::new(|| {
     std::sync::atomic::AtomicU64::new(1)
 });
 
-fn generate_id() -> u64 {
+pub fn generate_id() -> u64 {
     NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
