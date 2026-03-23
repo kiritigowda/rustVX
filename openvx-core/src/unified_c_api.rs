@@ -351,6 +351,11 @@ pub struct vx_perf_t {
     pub tmp: u64,
     pub beg: u64,
     pub end: u64,
+    pub sum: u64,
+    pub avg: u64,
+    pub min: u64,
+    pub num: u64,
+    pub max: u64,
 }
 
 /// Query graph attributes
