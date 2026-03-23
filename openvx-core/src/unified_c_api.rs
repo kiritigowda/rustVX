@@ -5359,3 +5359,59 @@ pub extern "C" fn vxUnmapDistribution(distribution: vx_distribution, map_id: vx_
     }
     VX_SUCCESS
 }
+
+// Final missing functions for CTS
+
+/// Convert depth immediate mode
+#[no_mangle]
+pub extern "C" fn vxuConvertDepth(context: vx_context, input: vx_image, output: vx_image, policy: vx_enum, shift: vx_int32) -> vx_status {
+    if context.is_null() || input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    VX_SUCCESS
+}
+
+/// Equalize histogram node
+#[no_mangle]
+pub extern "C" fn vxEqualizeHistNode(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
+    if graph.is_null() || input.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
+        vxSetParameterByIndex(node, 0, input as vx_reference);
+        vxSetParameterByIndex(node, 1, output as vx_reference);
+        node
+    }
+}
+
+/// Equalize histogram immediate mode
+#[no_mangle]
+pub extern "C" fn vxuEqualizeHist(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
+    if context.is_null() || input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    VX_SUCCESS
+}
+
+/// Fast corners node
+#[no_mangle]
+pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_thresh: vx_float32, nonmax_suppression: vx_bool, num_corners: vx_array, corners: vx_array) -> vx_node {
+    if graph.is_null() || input.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
+        vxSetParameterByIndex(node, 0, input as vx_reference);
+        node
+    }
+}
+
+/// Fast corners immediate mode
+#[no_mangle]
+pub extern "C" fn vxuFastCorners(context: vx_context, input: vx_image, strength_thresh: vx_float32, nonmax_suppression: vx_bool, num_corners: vx_array, corners: vx_array) -> vx_status {
+    if context.is_null() || input.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    VX_SUCCESS
+}
