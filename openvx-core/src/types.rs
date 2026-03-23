@@ -110,6 +110,10 @@ pub enum VxKernel {
     CornerMinEigenVal = 36,
     HoughLinesP = 37,
     CannyEdgeDetector = 38,
+    And = 39,
+    Or = 40,
+    Xor = 41,
+    Not = 42,
 }
 
 /// Reference type

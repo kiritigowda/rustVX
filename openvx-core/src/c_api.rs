@@ -84,6 +84,38 @@ pub type vx_image = *mut VxImage;
 pub enum VxReference {}
 pub type vx_reference = *mut VxReference;
 
+/// Opaque reference to a distribution
+pub enum VxDistribution {}
+pub type vx_distribution = *mut VxDistribution;
+
+/// Opaque reference to a delay
+pub enum VxDelay {}
+pub type vx_delay = *mut VxDelay;
+
+/// Opaque reference to a remap
+pub enum VxRemap {}
+pub type vx_remap = *mut VxRemap;
+
+/// Opaque reference to a tensor
+pub enum VxTensor {}
+pub type vx_tensor = *mut VxTensor;
+
+/// Opaque reference to a meta format
+pub enum VxMetaFormat {}
+pub type vx_meta_format = *mut VxMetaFormat;
+
+/// Opaque reference to a graph parameter
+pub enum VxGraphParameter {}
+pub type vx_graph_parameter = *mut VxGraphParameter;
+
+/// Opaque reference to an import
+pub enum VxImport {}
+pub type vx_import = *mut VxImport;
+
+/// Opaque reference to a target
+pub enum VxTarget {}
+pub type vx_target = *mut VxTarget;
+
 /// Node completion callback type
 pub type vx_nodecomplete_f = Option<extern "C" fn(vx_node) -> vx_action>;
 

@@ -231,3 +231,215 @@ pub fn weighted(src1: &Image, src2: &Image, dst: &Image, alpha: u8) -> VxResult<
     
     Ok(())
 }
+
+/// Bitwise AND between two images
+pub fn and(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
+    if src1.width() != src2.width() || src1.height() != src2.height() {
+        return Err(openvx_core::VxStatus::ErrorInvalidDimension);
+    }
+    
+    let width = src1.width();
+    let height = src1.height();
+    let mut dst_data = dst.data_mut();
+    
+    for y in 0..height {
+        for x in 0..width {
+            let a = src1.get_pixel(x, y);
+            let b = src2.get_pixel(x, y);
+            dst_data[y * width + x] = a & b;
+        }
+    }
+    
+    Ok(())
+}
+
+/// Bitwise OR between two images
+pub fn or(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
+    if src1.width() != src2.width() || src1.height() != src2.height() {
+        return Err(openvx_core::VxStatus::ErrorInvalidDimension);
+    }
+    
+    let width = src1.width();
+    let height = src1.height();
+    let mut dst_data = dst.data_mut();
+    
+    for y in 0..height {
+        for x in 0..width {
+            let a = src1.get_pixel(x, y);
+            let b = src2.get_pixel(x, y);
+            dst_data[y * width + x] = a | b;
+        }
+    }
+    
+    Ok(())
+}
+
+/// Bitwise XOR between two images
+pub fn xor(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
+    if src1.width() != src2.width() || src1.height() != src2.height() {
+        return Err(openvx_core::VxStatus::ErrorInvalidDimension);
+    }
+    
+    let width = src1.width();
+    let height = src1.height();
+    let mut dst_data = dst.data_mut();
+    
+    for y in 0..height {
+        for x in 0..width {
+            let a = src1.get_pixel(x, y);
+            let b = src2.get_pixel(x, y);
+            dst_data[y * width + x] = a ^ b;
+        }
+    }
+    
+    Ok(())
+}
+
+/// Bitwise NOT (complement) of an image
+pub fn not(src: &Image, dst: &Image) -> VxResult<()> {
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    
+    for y in 0..height {
+        for x in 0..width {
+            let a = src.get_pixel(x, y);
+            dst_data[y * width + x] = !a;
+        }
+    }
+    
+    Ok(())
+}
+
+/// And kernel - bitwise AND between two images
+pub struct AndKernel;
+
+impl AndKernel {
+    pub fn new() -> Self { AndKernel }
+}
+
+impl KernelTrait for AndKernel {
+    fn get_name(&self) -> &str { "org.khronos.openvx.and" }
+    fn get_enum(&self) -> VxKernel { VxKernel::And }
+    
+    fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
+        if params.len() < 3 {
+            return Err(openvx_core::VxStatus::ErrorInvalidParameters);
+        }
+        Ok(())
+    }
+    
+    fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
+        let src1 = params.get(0)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let src2 = params.get(1)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let dst = params.get(2)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        
+        and(src1, src2, dst)?;
+        Ok(())
+    }
+}
+
+/// Or kernel - bitwise OR between two images
+pub struct OrKernel;
+
+impl OrKernel {
+    pub fn new() -> Self { OrKernel }
+}
+
+impl KernelTrait for OrKernel {
+    fn get_name(&self) -> &str { "org.khronos.openvx.or" }
+    fn get_enum(&self) -> VxKernel { VxKernel::Or }
+    
+    fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
+        if params.len() < 3 {
+            return Err(openvx_core::VxStatus::ErrorInvalidParameters);
+        }
+        Ok(())
+    }
+    
+    fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
+        let src1 = params.get(0)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let src2 = params.get(1)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let dst = params.get(2)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        
+        or(src1, src2, dst)?;
+        Ok(())
+    }
+}
+
+/// Xor kernel - bitwise XOR between two images
+pub struct XorKernel;
+
+impl XorKernel {
+    pub fn new() -> Self { XorKernel }
+}
+
+impl KernelTrait for XorKernel {
+    fn get_name(&self) -> &str { "org.khronos.openvx.xor" }
+    fn get_enum(&self) -> VxKernel { VxKernel::Xor }
+    
+    fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
+        if params.len() < 3 {
+            return Err(openvx_core::VxStatus::ErrorInvalidParameters);
+        }
+        Ok(())
+    }
+    
+    fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
+        let src1 = params.get(0)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let src2 = params.get(1)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let dst = params.get(2)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        
+        xor(src1, src2, dst)?;
+        Ok(())
+    }
+}
+
+/// Not kernel - bitwise NOT of an image
+pub struct NotKernel;
+
+impl NotKernel {
+    pub fn new() -> Self { NotKernel }
+}
+
+impl KernelTrait for NotKernel {
+    fn get_name(&self) -> &str { "org.khronos.openvx.not" }
+    fn get_enum(&self) -> VxKernel { VxKernel::Not }
+    
+    fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
+        if params.len() < 2 {
+            return Err(openvx_core::VxStatus::ErrorInvalidParameters);
+        }
+        Ok(())
+    }
+    
+    fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
+        let src = params.get(0)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let dst = params.get(1)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        
+        not(src, dst)?;
+        Ok(())
+    }
+}

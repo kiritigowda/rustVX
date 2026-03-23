@@ -2606,3 +2606,172 @@ pub fn vxu_non_linear_filter_impl(
         copy_rust_to_c_image(&dst, output)
     }
 }
+
+/// ===========================================================================
+/// VXU Bitwise Logical Operations
+/// ===========================================================================
+
+pub fn vxu_and_impl(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        // Bitwise AND implementation
+        let width = dst.width();
+        let height = dst.height();
+        let mut dst_data = dst.data_mut();
+        
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel(x, y);
+                let b = src2.get_pixel(x, y);
+                dst_data[y * width + x] = a & b;
+            }
+        }
+        
+        copy_rust_to_c_image(&dst, output)
+    }
+}
+
+pub fn vxu_or_impl(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        // Bitwise OR implementation
+        let width = dst.width();
+        let height = dst.height();
+        let mut dst_data = dst.data_mut();
+        
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel(x, y);
+                let b = src2.get_pixel(x, y);
+                dst_data[y * width + x] = a | b;
+            }
+        }
+        
+        copy_rust_to_c_image(&dst, output)
+    }
+}
+
+pub fn vxu_xor_impl(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        // Bitwise XOR implementation
+        let width = dst.width();
+        let height = dst.height();
+        let mut dst_data = dst.data_mut();
+        
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel(x, y);
+                let b = src2.get_pixel(x, y);
+                dst_data[y * width + x] = a ^ b;
+            }
+        }
+        
+        copy_rust_to_c_image(&dst, output)
+    }
+}
+
+pub fn vxu_not_impl(
+    context: vx_context,
+    input: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    
+    unsafe {
+        let src = match c_image_to_rust(input) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        // Bitwise NOT implementation
+        let width = dst.width();
+        let height = dst.height();
+        let mut dst_data = dst.data_mut();
+        
+        for y in 0..height {
+            for x in 0..width {
+                let a = src.get_pixel(x, y);
+                dst_data[y * width + x] = !a;
+            }
+        }
+        
+        copy_rust_to_c_image(&dst, output)
+    }
+}

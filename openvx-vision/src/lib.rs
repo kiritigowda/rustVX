@@ -81,6 +81,12 @@ pub fn register_all_kernels(context: &Context) -> VxResult<()> {
     context.register_kernel(Box::new(arithmetic::MultiplyKernel))?;
     context.register_kernel(Box::new(arithmetic::WeightedAverageKernel))?;
     
+    // Bitwise logical operations
+    context.register_kernel(Box::new(arithmetic::AndKernel))?;
+    context.register_kernel(Box::new(arithmetic::OrKernel))?;
+    context.register_kernel(Box::new(arithmetic::XorKernel))?;
+    context.register_kernel(Box::new(arithmetic::NotKernel))?;
+    
     // Statistical operations
     context.register_kernel(Box::new(statistics::MinMaxLocKernel))?;
     context.register_kernel(Box::new(statistics::MeanStdDevKernel))?;
@@ -111,7 +117,7 @@ pub fn register_all_kernels(context: &Context) -> VxResult<()> {
 pub use color::{ColorConvertKernel, ChannelExtractKernel, ChannelCombineKernel};
 pub use filter::{ConvolveKernel, Gaussian3x3Kernel, Gaussian5x5Kernel, Median3x3Kernel, Box3x3Kernel};
 pub use gradient::{Sobel3x3Kernel, MagnitudeKernel, PhaseKernel};
-pub use arithmetic::{AddKernel, SubtractKernel, MultiplyKernel, WeightedAverageKernel};
+pub use arithmetic::{AddKernel, SubtractKernel, MultiplyKernel, WeightedAverageKernel, AndKernel, OrKernel, XorKernel, NotKernel};
 pub use morphology::{Dilate3x3Kernel, Erode3x3Kernel};
 pub use statistics::{MinMaxLocKernel, MeanStdDevKernel, HistogramKernel, EqualizeHistogramKernel, IntegralImageKernel};
 pub use geometric::{ScaleImageKernel, WarpAffineKernel, WarpPerspectiveKernel};
