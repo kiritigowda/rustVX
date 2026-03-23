@@ -44,10 +44,18 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new(width: usize, height: usize, format: ImageFormat) -> Self {
+    pub fn new(width: usize, height: usize, format: ImageFormat) -> Option<Self> {
         let channels = format.channels();
-        let data = vec![0u8; width * height * channels];
-        Image { width, height, format, data }
+        // Use checked_mul to prevent integer overflow and allocation failure
+        let size = width
+            .checked_mul(height)?
+            .checked_mul(channels)?;
+        // Limit allocation size to prevent OOM (max ~1GB for single image)
+        if size > (1 << 30) {
+            return None;
+        }
+        let data = vec![0u8; size];
+        Some(Image { width, height, format, data })
     }
     
     pub fn from_data(width: usize, height: usize, format: ImageFormat, data: Vec<u8>) -> Self {
@@ -146,7 +154,7 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
 unsafe fn create_matching_image(c_image: vx_image) -> Option<Image> {
     let (width, height, format) = get_image_info(c_image)?;
     let format = df_image_to_format(format)?;
-    Some(Image::new(width as usize, height as usize, format))
+    Image::new(width as usize, height as usize, format)
 }
 
 /// ===========================================================================
@@ -178,7 +186,10 @@ pub fn vxu_color_convert_impl(
             None => return VX_ERROR_INVALID_FORMAT,
         };
         
-        let mut dst = Image::new(dst_info.0 as usize, dst_info.1 as usize, dst_format);
+        let mut dst = match Image::new(dst_info.0 as usize, dst_info.1 as usize, dst_format) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
         
         let result = match (src.format(), dst_format) {
             (ImageFormat::Rgb, ImageFormat::Gray) => rgb_to_gray(&src, &mut dst),
@@ -1386,7 +1397,11 @@ fn gaussian3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
     let kernel = [1, 2, 1];
     
     let dst_data = dst.data_mut();
-    let mut temp = vec![0u8; width * height];
+    // Use checked operations to prevent integer overflow
+    let temp_size = width
+        .checked_mul(height)
+        .ok_or(VxStatus::ErrorInvalidParameters)?;
+    let mut temp = vec![0u8; temp_size];
     
     // Horizontal pass
     for y in 0..height {
@@ -1429,7 +1444,11 @@ fn gaussian5x5(src: &Image, dst: &mut Image) -> VxResult<()> {
     let kernel = [1, 4, 6, 4, 1];
     
     let dst_data = dst.data_mut();
-    let mut temp = vec![0u8; width * height];
+    // Use checked operations to prevent integer overflow
+    let temp_size = width
+        .checked_mul(height)
+        .ok_or(VxStatus::ErrorInvalidParameters)?;
+    let mut temp = vec![0u8; temp_size];
     
     // Horizontal pass
     for y in 0..height {
@@ -2030,7 +2049,11 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image) -> VxResult
 fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -> VxResult<Vec<Corner>> {
     let width = image.width;
     let height = image.height;
-    let mut responses = vec![0f32; width * height];
+    // Use checked operations to prevent integer overflow
+    let response_size = width
+        .checked_mul(height)
+        .ok_or(VxStatus::ErrorInvalidParameters)?;
+    let mut responses = vec![0f32; response_size];
     
     // Compute gradients using Sobel
     let (grad_x, grad_y) = compute_gradients_sobel(image)?;
@@ -2231,11 +2254,16 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
     let width = src.width;
     let height = src.height;
     
+    // Use checked operations to prevent integer overflow
+    let img_size = width
+        .checked_mul(height)
+        .ok_or(VxStatus::ErrorInvalidParameters)?;
+    
     // Step 1: Gaussian blur
-    let mut blurred = vec![0u8; width * height];
+    let mut blurred = vec![0u8; img_size];
     {
         let kernel = [1, 2, 1];
-        let mut temp = vec![0u8; width * height];
+        let mut temp = vec![0u8; img_size];
         
         // Horizontal pass
         for y in 0..height {
@@ -2271,10 +2299,10 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
     }
     
     // Step 2: Compute gradients
-    let mut grad_x = vec![0i32; width * height];
-    let mut grad_y = vec![0i32; width * height];
-    let mut magnitude = vec![0f32; width * height];
-    let mut direction = vec![0f32; width * height];
+    let mut grad_x = vec![0i32; img_size];
+    let mut grad_y = vec![0i32; img_size];
+    let mut magnitude = vec![0f32; img_size];
+    let mut direction = vec![0f32; img_size];
     
     for y in 1..height - 1 {
         for x in 1..width - 1 {
@@ -2300,7 +2328,7 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
     }
     
     // Step 3: Non-maximum suppression
-    let mut suppressed = vec![0u8; width * height];
+    let mut suppressed = vec![0u8; img_size];
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let idx = y * width + x;
@@ -2326,7 +2354,7 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
     }
     
     // Step 4: Double threshold and hysteresis
-    let mut edges = vec![0u8; width * height];
+    let mut edges = vec![0u8; img_size];
     let mut dst_data = dst.data_mut();
     
     for y in 0..height {

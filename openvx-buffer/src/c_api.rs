@@ -56,7 +56,13 @@ pub extern "C" fn vxCreateArray(
     }
 
     let item_size = VxCArray::type_to_size(item_type);
-    let total_size = capacity * item_size;
+    let total_size = capacity
+        .checked_mul(item_size)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or(0);
+    if total_size == 0 && capacity > 0 {
+        return std::ptr::null_mut();
+    }
 
     let array = Box::new(VxCArray {
         item_type,
@@ -99,14 +105,18 @@ pub extern "C" fn vxAddArrayItems(
     }
 
     let mut data = array.data.write().unwrap();
-    let dest_offset = *num_items * array.item_size;
+    let dest_offset = num_items.checked_mul(array.item_size).unwrap_or(0);
+    if dest_offset + count.checked_mul(array.item_size).unwrap_or(0) > data.len() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
     let src = ptr as *const u8;
 
     unsafe {
         if stride == array.item_size || stride == 0 {
             // Contiguous copy
-            let src_slice = std::slice::from_raw_parts(src, count * array.item_size);
-            data[dest_offset..dest_offset + count * array.item_size].copy_from_slice(src_slice);
+            let copy_size = count.checked_mul(array.item_size).unwrap_or(0);
+            let src_slice = std::slice::from_raw_parts(src, copy_size);
+            data[dest_offset..dest_offset + copy_size].copy_from_slice(src_slice);
         } else {
             // Strided copy
             for i in 0..count {
@@ -275,11 +285,19 @@ pub extern "C" fn vxMapArrayRange(
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
-    let range_size = (end - start) * array.item_size;
-    let offset = start * array.item_size;
-
     // Copy data to a temporary buffer for mapping
     let data = array.data.read().unwrap();
+
+    let range_size = end.checked_sub(start)
+        .and_then(|len| len.checked_mul(array.item_size))
+        .unwrap_or(0);
+    if range_size == 0 && start < end {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    let offset = start.checked_mul(array.item_size).unwrap_or(0);
+    if offset.saturating_add(range_size) > data.len() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
     let mut mapped_data = vec![0u8; range_size];
     
     unsafe {
@@ -323,8 +341,10 @@ pub extern "C" fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_stat
 
     if let Some((start, end, data)) = mapped.remove(&map_id) {
         // Copy data back if it was a write
-        let range_size = (end - start) * array.item_size;
-        let offset = start * array.item_size;
+        let range_size = end.checked_sub(start)
+            .and_then(|len| len.checked_mul(array.item_size))
+            .unwrap_or(0);
+        let offset = start.checked_mul(array.item_size).unwrap_or(0);
         
         let mut array_data = array.data.write().unwrap();
         unsafe {

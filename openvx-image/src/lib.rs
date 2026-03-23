@@ -37,7 +37,11 @@ pub struct Image {
 impl Image {
     pub fn new(width: usize, height: usize, format: ImageFormat) -> Self {
         let channels = format.channels();
-        let data = vec![0u8; width * height * channels];
+        // Use saturating_mul to prevent integer overflow
+        let size = width
+            .saturating_mul(height)
+            .saturating_mul(channels);
+        let data = vec![0u8; size];
         Image {
             width,
             height,
@@ -107,7 +111,11 @@ impl Referenceable for Image {
 
 /// Create a uniform image
 pub fn create_uniform_image(width: usize, height: usize, format: ImageFormat, value: u8) -> Image {
-    let data = vec![value; width * height * format.channels()];
+    // Use saturating_mul to prevent integer overflow
+    let size = width
+        .saturating_mul(height)
+        .saturating_mul(format.channels());
+    let data = vec![value; size];
     Image::from_data(width, height, format, data)
 }
 

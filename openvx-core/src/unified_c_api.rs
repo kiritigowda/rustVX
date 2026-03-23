@@ -5035,8 +5035,17 @@ pub extern "C" fn vxCreateScalarWithSize(context: vx_context, data_type: vx_enum
     }
     unsafe {
         let data_size = if size > 0 { size as usize } else { 4 };
-        let layout = std::alloc::Layout::from_size_align(data_size, 8).unwrap();
+        if data_size > isize::MAX as usize {
+            return std::ptr::null_mut();
+        }
+        let layout = match std::alloc::Layout::from_size_align(data_size, 8) {
+            Ok(l) => l,
+            Err(_) => return std::ptr::null_mut(),
+        };
         let data_ptr = std::alloc::alloc(layout);
+        if data_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
         std::ptr::copy_nonoverlapping(ptr as *const u8, data_ptr, data_size);
         data_ptr as vx_scalar
     }

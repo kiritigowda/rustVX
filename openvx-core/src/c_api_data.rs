@@ -156,7 +156,12 @@ pub extern "C" fn vxCreateConvolution(
         return std::ptr::null_mut();
     }
 
-    let size = columns * rows;
+    let size = columns.checked_mul(rows)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or(0);
+    if size == 0 {
+        return std::ptr::null_mut();
+    }
     let conv = Box::new(VxCConvolutionData {
         columns,
         rows,
@@ -187,8 +192,13 @@ pub extern "C" fn vxCopyConvolutionCoefficients(
     }
 
     let c = unsafe { &*(conv as *const VxCConvolutionData) };
-    let size = c.columns * c.rows;
-    let data_size = size * std::mem::size_of::<i16>();
+    let size = c.columns.checked_mul(c.rows)
+        .and_then(|s| s.checked_mul(std::mem::size_of::<i16>()))
+        .unwrap_or(0);
+    if size == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    let data_size = size;
 
     unsafe {
         match usage {
@@ -281,7 +291,14 @@ pub extern "C" fn vxCreateMatrix(
     }
 
     let elem_size = VxCMatrixData::element_size(data_type);
-    let total_size = columns * rows * elem_size;
+    let total_size = columns
+        .checked_mul(rows)
+        .and_then(|s| s.checked_mul(elem_size))
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or(0);
+    if total_size == 0 && (columns > 0 && rows > 0) {
+        return std::ptr::null_mut();
+    }
 
     let matrix = Box::new(VxCMatrixData {
         data_type,
@@ -314,7 +331,13 @@ pub extern "C" fn vxCopyMatrix(
 
     let m = unsafe { &*(matrix as *const VxCMatrixData) };
     let elem_size = VxCMatrixData::element_size(m.data_type);
-    let data_size = m.columns * m.rows * elem_size;
+    let data_size = m.columns
+        .checked_mul(m.rows)
+        .and_then(|s| s.checked_mul(elem_size))
+        .unwrap_or(0);
+    if data_size == 0 && (m.columns > 0 && m.rows > 0) {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
 
     unsafe {
         match usage {
@@ -405,7 +428,13 @@ pub extern "C" fn vxCreateLUT(
     }
 
     let elem_size = VxCLUTData::element_size(data_type);
-    let total_size = count * elem_size;
+    let total_size = count
+        .checked_mul(elem_size)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or(0);
+    if total_size == 0 && count > 0 {
+        return std::ptr::null_mut();
+    }
 
     let lut = Box::new(VxCLUTData {
         data_type,
@@ -438,7 +467,10 @@ pub extern "C" fn vxCopyLUT(
 
     let l = unsafe { &*(lut as *const VxCLUTData) };
     let elem_size = VxCLUTData::element_size(l.data_type);
-    let data_size = l.count * elem_size;
+    let data_size = l.count.checked_mul(elem_size).unwrap_or(0);
+    if data_size == 0 && l.count > 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
 
     unsafe {
         match usage {
@@ -928,7 +960,15 @@ pub extern "C" fn vxCreatePyramid(
     };
 
     for _ in 0..levels {
-        let size = (current_width as usize) * (current_height as usize) * bpp;
+        let w = current_width as usize;
+        let h = current_height as usize;
+        let size = w
+            .checked_mul(h)
+            .and_then(|s| s.checked_mul(bpp))
+            .unwrap_or(0);
+        if size == 0 {
+            break;
+        }
         pyramid_images.push(VxCPyramidLevel {
             width: current_width,
             height: current_height,

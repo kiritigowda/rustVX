@@ -15,8 +15,10 @@ pub struct Buffer {
 impl Buffer {
     pub fn new(width: usize, height: usize) -> Self {
         let stride = width;
+        // Use saturating_mul to prevent integer overflow
+        let size = width.saturating_mul(height);
         Buffer {
-            data: vec![0u8; width * height],
+            data: vec![0u8; size],
             width,
             height,
             stride,
