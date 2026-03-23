@@ -2,6 +2,9 @@
 
 pub mod c_api;
 
+// Re-export channel image types
+pub use c_api::{VxCChannelImage, vxCreateImageFromChannel};
+
 use openvx_core::{VxResult, Referenceable, VxType};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 

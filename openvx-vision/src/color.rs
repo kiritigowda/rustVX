@@ -68,38 +68,65 @@ impl ChannelExtractKernel {
 impl KernelTrait for ChannelExtractKernel {
     fn get_name(&self) -> &str { "org.khronos.openvx.channel_extract" }
     fn get_enum(&self) -> VxKernel { VxKernel::ChannelExtract }
-    
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
         let src = params.get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+
+        // Get the channel value from the scalar parameter
+        let channel = params.get(1)
+            .and_then(|p| p.as_any().downcast_ref::<openvx_core::VxCScalar>())
+            .and_then(|s| s.get_i32())
+            .unwrap_or(0);
+
         let dst = params.get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         let width = src.width();
         let height = src.height();
         let mut dst_data = dst.data_mut();
-        
+
         for y in 0..height {
             for x in 0..width {
-                let (r, g, b) = src.get_rgb(x, y);
-                let val = match (x + y) % 3 {
-                    0 => r,
-                    1 => g,
-                    _ => b,
+                let val = match src.format() {
+                    ImageFormat::Rgb => {
+                        let (r, g, b) = src.get_rgb(x, y);
+                        match channel {
+                            0 => r,
+                            1 => g,
+                            2 => b,
+                            _ => r,
+                        }
+                    }
+                    ImageFormat::Rgba => {
+                        let idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
+                        let data = src.data();
+                        match channel {
+                            0 => *data.get(idx).unwrap_or(&0),
+                            1 => *data.get(idx.saturating_add(1)).unwrap_or(&0),
+                            2 => *data.get(idx.saturating_add(2)).unwrap_or(&0),
+                            3 => *data.get(idx.saturating_add(3)).unwrap_or(&0),
+                            _ => *data.get(idx).unwrap_or(&0),
+                        }
+                    }
+                    _ => src.get_pixel(x, y),
                 };
-                dst_data[y * width + x] = val;
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = val;
+                }
             }
         }
-        
+
         Ok(())
     }
 }

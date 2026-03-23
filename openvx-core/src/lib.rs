@@ -12,3 +12,4 @@ pub use types::{VxResult, VxStatus, VxType, VxKernel, VxError, VxBorderMode, VxI
 pub use reference::{Ref, Referenceable};
 pub use context::{Context, KernelTrait};
 pub use c_api::vx_status;
+pub use unified_c_api::VxCScalar;

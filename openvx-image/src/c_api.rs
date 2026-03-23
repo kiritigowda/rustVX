@@ -435,3 +435,181 @@ pub extern "C" fn vxUnmapImagePatch(
     // Full implementation would use the map_id to validate and cleanup
     VX_SUCCESS
 }
+
+/// Channel constants (re-exported from unified_c_api for local use)
+pub const VX_CHANNEL_0: vx_enum = 0;
+pub const VX_CHANNEL_1: vx_enum = 1;
+pub const VX_CHANNEL_2: vx_enum = 2;
+pub const VX_CHANNEL_3: vx_enum = 3;
+pub const VX_CHANNEL_R: vx_enum = 0;
+pub const VX_CHANNEL_G: vx_enum = 1;
+pub const VX_CHANNEL_B: vx_enum = 2;
+pub const VX_CHANNEL_A: vx_enum = 3;
+pub const VX_CHANNEL_Y: vx_enum = 4;
+pub const VX_CHANNEL_U: vx_enum = 5;
+pub const VX_CHANNEL_V: vx_enum = 6;
+
+/// Image struct for channel-extracted image views
+/// This is a specialized variant that references a parent image's channel data
+#[derive(Debug, Clone)]
+pub struct VxCChannelImage {
+    width: vx_uint32,
+    height: vx_uint32,
+    format: vx_df_image,
+    channel: vx_enum,
+    parent_context: vx_context,
+    parent_image: vx_image,
+    channel_offset: usize,
+    channel_stride: usize,
+    parent_data: Arc<RwLock<Vec<u8>>>,
+}
+
+/// Create an image from a specific channel of a multi-channel source image
+/// 
+/// This function creates a new image that references data from a single channel
+/// of a multi-channel parent image. The channel image shares the underlying data
+/// buffer with the parent.
+/// 
+/// # Arguments
+/// * `img` - The source multi-channel image
+/// * `channel` - The channel to extract (VX_CHANNEL_0, VX_CHANNEL_R, VX_CHANNEL_Y, etc.)
+/// 
+/// # Returns
+/// * A new vx_image on success, NULL on failure
+#[no_mangle]
+pub extern "C" fn vxCreateImageFromChannel(
+    img: vx_image,
+    channel: vx_enum,
+) -> vx_image {
+    if img.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let source_img = unsafe { &*(img as *const VxCImage) };
+    let source_channels = VxCImage::channels(source_img.format);
+    let source_bpp = VxCImage::bytes_per_pixel(source_img.format);
+
+    // Validate channel index
+    if channel < 0 {
+        return std::ptr::null_mut();
+    }
+    let channel_idx = channel as usize;
+    if channel_idx >= source_channels {
+        return std::ptr::null_mut();
+    }
+
+    // Validate that the source image is actually multi-channel
+    if source_channels == 1 {
+        return std::ptr::null_mut();
+    }
+
+    // Determine the output format and channel offset
+    let (output_format, channel_offset, channel_stride) = match source_img.format {
+        VX_DF_IMAGE_RGB => {
+            // RGB: 3 channels interleaved
+            (VX_DF_IMAGE_U8, channel_idx, 3)
+        }
+        VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => {
+            // RGBA/RGBX: 4 channels interleaved
+            (VX_DF_IMAGE_U8, channel_idx, 4)
+        }
+        VX_DF_IMAGE_YUV4 => {
+            // YUV4: 3 planes, separate Y, U, V
+            let width = source_img.width as usize;
+            let height = source_img.height as usize;
+            let plane_size = width * height;
+            let offset = channel_idx * plane_size;
+            let stride = 1; // Single channel, no interleaving
+            (VX_DF_IMAGE_U8, offset, stride)
+        }
+        VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
+            // NV12/NV21: Y plane + interleaved UV
+            let width = source_img.width as usize;
+            let height = source_img.height as usize;
+            let y_plane_size = width * height;
+            if channel_idx == 0 {
+                // Y channel - full Y plane
+                (VX_DF_IMAGE_U8, 0, 1)
+            } else if channel_idx == 1 || channel_idx == 2 {
+                // U or V channel - interleaved in UV plane
+                // For NV12: UV, for NV21: VU
+                let uv_offset = y_plane_size + if channel_idx == 1 { 0 } else { 1 };
+                (VX_DF_IMAGE_U8, uv_offset, 2)
+            } else {
+                return std::ptr::null_mut();
+            }
+        }
+        VX_DF_IMAGE_IYUV => {
+            // IYUV (I420): Y plane + U plane + V plane
+            let width = source_img.width as usize;
+            let height = source_img.height as usize;
+            let y_plane_size = width * height;
+            let uv_plane_size = (width / 2) * (height / 2);
+            let offset = match channel_idx {
+                0 => 0,                                    // Y
+                1 => y_plane_size,                         // U
+                2 => y_plane_size + uv_plane_size,         // V
+                _ => return std::ptr::null_mut(),
+            };
+            (VX_DF_IMAGE_U8, offset, 1)
+        }
+        _ => {
+            // Unsupported format for channel extraction
+            return std::ptr::null_mut();
+        }
+    };
+
+    // Create the channel image with reference to parent's data
+    let channel_image = Box::new(VxCChannelImage {
+        width: source_img.width,
+        height: source_img.height,
+        format: output_format,
+        channel,
+        parent_context: source_img.context,
+        parent_image: img,
+        channel_offset,
+        channel_stride,
+        parent_data: Arc::clone(&source_img.data),
+    });
+
+    // Store the channel image as a new type of image reference
+    // We use a different representation - Box<VxCChannelImage> cast to vx_image
+    let image_ptr = Box::into_raw(channel_image) as vx_image;
+
+    // Register image address in unified registry for type queries (vxQueryReference)
+    register_image(image_ptr as usize);
+
+    image_ptr
+}
+
+/// Query channel image attributes
+/// This is a helper function for querying VxCChannelImage objects
+pub fn query_channel_image(
+    image: *const VxCChannelImage,
+    attribute: vx_enum,
+    ptr: *mut c_void,
+) -> vx_status {
+    let img = unsafe { &*image };
+
+    unsafe {
+        match attribute {
+            VX_IMAGE_FORMAT => {
+                *(ptr as *mut vx_df_image) = img.format;
+                VX_SUCCESS
+            }
+            VX_IMAGE_WIDTH => {
+                *(ptr as *mut vx_uint32) = img.width;
+                VX_SUCCESS
+            }
+            VX_IMAGE_HEIGHT => {
+                *(ptr as *mut vx_uint32) = img.height;
+                VX_SUCCESS
+            }
+            VX_IMAGE_PLANES => {
+                *(ptr as *mut vx_size) = 1; // Single channel image has 1 plane
+                VX_SUCCESS
+            }
+            _ => VX_ERROR_NOT_IMPLEMENTED,
+        }
+    }
+}

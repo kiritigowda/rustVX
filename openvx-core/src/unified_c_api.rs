@@ -1214,6 +1214,36 @@ pub struct VxCScalar {
     context: vx_context,
 }
 
+impl VxCScalar {
+    /// Get the scalar value as an i32
+    pub fn get_i32(&self) -> Option<i32> {
+        let data = self.data.read().ok()?;
+        if data.len() >= 4 {
+            Some(i32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+        } else if data.len() >= 2 {
+            Some(i16::from_le_bytes([data[0], data[1]]) as i32)
+        } else if data.len() >= 1 {
+            Some(data[0] as i32)
+        } else {
+            None
+        }
+    }
+
+    /// Get the scalar value as a u32
+    pub fn get_u32(&self) -> Option<u32> {
+        let data = self.data.read().ok()?;
+        if data.len() >= 4 {
+            Some(u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+        } else if data.len() >= 2 {
+            Some(u16::from_le_bytes([data[0], data[1]]) as u32)
+        } else if data.len() >= 1 {
+            Some(data[0] as u32)
+        } else {
+            None
+        }
+    }
+}
+
 // SAFETY: VxCScalar is safe to Send/Sync because the context pointer
 // is only used for reference validation, not for concurrent mutable access
 unsafe impl Send for VxCScalar {}
@@ -1939,15 +1969,10 @@ pub extern "C" fn vxCreateUniformImage(
     std::ptr::null_mut()
 }
 
-#[no_mangle]
-pub extern "C" fn vxCreateImageFromChannel(
-    img: vx_image,
-    channel: i32,
-) -> vx_image {
-    if img.is_null() {
-        return std::ptr::null_mut();
-    }
-    std::ptr::null_mut()
+// Note: VxCChannelImage and vxCreateImageFromChannel are implemented in openvx-image crate
+// The implementation is re-exported here for unified C API
+extern "C" {
+    pub fn vxCreateImageFromChannel(img: vx_image, channel: vx_enum) -> vx_image;
 }
 
 #[no_mangle]
