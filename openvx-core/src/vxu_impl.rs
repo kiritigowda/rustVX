@@ -57,44 +57,53 @@ impl Image {
         let data = vec![0u8; size];
         Some(Image { width, height, format, data })
     }
-    
+
     pub fn from_data(width: usize, height: usize, format: ImageFormat, data: Vec<u8>) -> Self {
         Image { width, height, format, data }
     }
-    
+
     pub fn width(&self) -> usize { self.width }
     pub fn height(&self) -> usize { self.height }
     pub fn format(&self) -> ImageFormat { self.format }
     pub fn data(&self) -> &[u8] { &self.data }
     pub fn data_mut(&mut self) -> &mut [u8] { &mut self.data }
-    
+
     pub fn get_pixel(&self, x: usize, y: usize) -> u8 {
         if x >= self.width || y >= self.height {
             return 0;
         }
-        self.data[y * self.width + x]
+        let idx = y.saturating_mul(self.width).saturating_add(x);
+        *self.data.get(idx).unwrap_or(&0)
     }
-    
+
     pub fn get_rgb(&self, x: usize, y: usize) -> (u8, u8, u8) {
         if x >= self.width || y >= self.height {
             return (0, 0, 0);
         }
-        let idx = (y * self.width + x) * 3;
+        let idx = y.saturating_mul(self.width).saturating_add(x).saturating_mul(3);
+        if idx.saturating_add(2) >= self.data.len() {
+            return (0, 0, 0);
+        }
         (self.data[idx], self.data[idx + 1], self.data[idx + 2])
     }
-    
+
     pub fn set_pixel(&mut self, x: usize, y: usize, value: u8) {
         if x < self.width && y < self.height {
-            self.data[y * self.width + x] = value;
+            let idx = y.saturating_mul(self.width).saturating_add(x);
+            if let Some(p) = self.data.get_mut(idx) {
+                *p = value;
+            }
         }
     }
-    
+
     pub fn set_rgb(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
         if x < self.width && y < self.height {
-            let idx = (y * self.width + x) * 3;
-            self.data[idx] = r;
-            self.data[idx + 1] = g;
-            self.data[idx + 2] = b;
+            let idx = y.saturating_mul(self.width).saturating_add(x).saturating_mul(3);
+            if idx.saturating_add(2) < self.data.len() {
+                self.data[idx] = r;
+                self.data[idx + 1] = g;
+                self.data[idx + 2] = b;
+            }
         }
     }
 }
@@ -104,7 +113,7 @@ fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
     match df {
         0x00525547 => Some(ImageFormat::Gray), // 'U008' / VX_DF_IMAGE_U8
         0x52474220 => Some(ImageFormat::Rgb),  // 'RGB2' / VX_DF_IMAGE_RGB
-        0x52474241 => Some(ImageFormat::Rgba), // 'RGBA' / VX_DF_IMAGE_RGBA  
+        0x52474241 => Some(ImageFormat::Rgba), // 'RGBA' / VX_DF_IMAGE_RGBA
         0x564e3132 => Some(ImageFormat::NV12), // 'NV12' / VX_DF_IMAGE_NV12
         0x564e3231 => Some(ImageFormat::NV21), // 'NV21' / VX_DF_IMAGE_NV21
         _ => Some(ImageFormat::Gray), // Default to gray
@@ -116,7 +125,7 @@ unsafe fn get_image_info(image: vx_image) -> Option<(u32, u32, vx_df_image)> {
     if image.is_null() {
         return None;
     }
-    
+
     let img = &*(image as *const VxCImage);
     Some((img.width, img.height, img.format as vx_df_image))
 }
@@ -135,13 +144,13 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
     if dst.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     let img = &*(dst as *const VxCImage);
     let mut dst_data = match img.data.write() {
         Ok(d) => d,
         Err(_) => return VX_ERROR_INVALID_REFERENCE,
     };
-    
+
     if dst_data.len() == src.data.len() {
         dst_data.copy_from_slice(&src.data);
         VX_SUCCESS
@@ -169,28 +178,28 @@ pub fn vxu_color_convert_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let dst_info = match get_image_info(output) {
             Some(info) => info,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let dst_format = match df_image_to_format(dst_info.2) {
             Some(f) => f,
             None => return VX_ERROR_INVALID_FORMAT,
         };
-        
+
         let mut dst = match Image::new(dst_info.0 as usize, dst_info.1 as usize, dst_format) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let result = match (src.format(), dst_format) {
             (ImageFormat::Rgb, ImageFormat::Gray) => rgb_to_gray(&src, &mut dst),
             (ImageFormat::Gray, ImageFormat::Rgb) => gray_to_rgb(&src, &mut dst),
@@ -208,7 +217,7 @@ pub fn vxu_color_convert_impl(
                 }
             }
         };
-        
+
         match result {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -225,23 +234,23 @@ pub fn vxu_channel_extract_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Simple channel extraction based on channel index
         let width = src.width();
         let height = src.height();
         let mut dst_data = dst.data_mut();
-        
+
         for y in 0..height {
             for x in 0..width {
                 let val = match src.format() {
@@ -255,22 +264,25 @@ pub fn vxu_channel_extract_impl(
                         }
                     }
                     ImageFormat::Rgba => {
-                        let idx = (y * width + x) * 4;
+                        let idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
                         let data = src.data();
                         match channel {
-                            0 => data[idx],
-                            1 => data[idx + 1],
-                            2 => data[idx + 2],
-                            3 => data[idx + 3],
-                            _ => data[idx],
+                            0 => *data.get(idx).unwrap_or(&0),
+                            1 => *data.get(idx.saturating_add(1)).unwrap_or(&0),
+                            2 => *data.get(idx.saturating_add(2)).unwrap_or(&0),
+                            3 => *data.get(idx.saturating_add(3)).unwrap_or(&0),
+                            _ => *data.get(idx).unwrap_or(&0),
                         }
                     }
                     _ => src.get_pixel(x, y),
                 };
-                dst_data[y * width + x] = val;
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = val;
+                }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }
@@ -286,44 +298,44 @@ pub fn vxu_channel_combine_impl(
     if context.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let width = dst.width();
         let height = dst.height();
         let mut dst_data = dst.data_mut();
-        
+
         // Load source planes
         let r_img = if plane0.is_null() { None } else { c_image_to_rust(plane0) };
         let g_img = if plane1.is_null() { None } else { c_image_to_rust(plane1) };
         let b_img = if plane2.is_null() { None } else { c_image_to_rust(plane2) };
         let a_img = if plane3.is_null() { None } else { c_image_to_rust(plane3) };
-        
+
         for y in 0..height {
             for x in 0..width {
                 let r = r_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
                 let g = g_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
                 let b = b_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
                 let a = a_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(255);
-                
-                let idx = (y * width + x) * 4;
-                if idx + 3 < dst_data.len() {
+
+                let idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
+                if idx.saturating_add(3) < dst_data.len() {
                     dst_data[idx] = r;
                     dst_data[idx + 1] = g;
                     dst_data[idx + 2] = b;
                     dst_data[idx + 3] = a;
-                } else if idx + 2 < dst_data.len() {
+                } else if idx.saturating_add(2) < dst_data.len() {
                     dst_data[idx] = r;
                     dst_data[idx + 1] = g;
                     dst_data[idx + 2] = b;
                 }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }
@@ -340,18 +352,18 @@ pub fn vxu_gaussian3x3_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match gaussian3x3(&src, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -367,18 +379,18 @@ pub fn vxu_gaussian5x5_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match gaussian5x5(&src, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -394,18 +406,18 @@ pub fn vxu_box3x3_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match box3x3(&src, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -421,18 +433,18 @@ pub fn vxu_median3x3_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match median3x3(&src, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -449,26 +461,26 @@ pub fn vxu_convolve_impl(
     if context.is_null() || input.is_null() || _conv.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     // For now, apply a simple sharpening kernel
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Default sharpening kernel
         let kernel: [[i32; 3]; 3] = [
             [0, -1, 0],
             [-1, 5, -1],
             [0, -1, 0],
         ];
-        
+
         match convolve_generic(&src, &mut dst, &kernel, BorderMode::Replicate) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -488,18 +500,18 @@ pub fn vxu_dilate3x3_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match dilate3x3(&src, &mut dst, BorderMode::Constant(0)) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -515,18 +527,18 @@ pub fn vxu_erode3x3_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match erode3x3(&src, &mut dst, BorderMode::Constant(255)) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -565,23 +577,23 @@ pub fn vxu_sobel3x3_impl(
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut gx = match create_matching_image(output_x) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut gy = match create_matching_image(output_y) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match sobel3x3(&src, &mut gx, &mut gy) {
             Ok(_) => {
                 let status_x = if output_x.is_null() { VX_SUCCESS } else { copy_rust_to_c_image(&gx, output_x) };
@@ -606,23 +618,23 @@ pub fn vxu_magnitude_impl(
     if context.is_null() || grad_x.is_null() || grad_y.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let gx = match c_image_to_rust(grad_x) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let gy = match c_image_to_rust(grad_y) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match magnitude(&gx, &gy, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -639,23 +651,23 @@ pub fn vxu_phase_impl(
     if context.is_null() || grad_x.is_null() || grad_y.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let gx = match c_image_to_rust(grad_x) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let gy = match c_image_to_rust(grad_y) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match phase_op(&gx, &gy, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -677,23 +689,23 @@ pub fn vxu_add_impl(
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match add(&src1, &src2, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -711,23 +723,23 @@ pub fn vxu_subtract_impl(
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match subtract(&src1, &src2, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -747,23 +759,23 @@ pub fn vxu_multiply_impl(
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match multiply(&src1, &src2, &mut dst, 1.0) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -781,26 +793,26 @@ pub fn vxu_weighted_average_impl(
     if context.is_null() || img1.is_null() || img2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(img1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(img2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Default alpha value 128 (0.5)
         let alpha_val: u8 = 128;
-        
+
         match weighted(&src1, &src2, &mut dst, alpha_val) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -817,23 +829,23 @@ pub fn vxu_abs_diff_impl(
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match abs_diff(&src1, &src2, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -853,18 +865,18 @@ pub fn vxu_integral_image_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match integral_image(&src, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -881,13 +893,13 @@ pub fn vxu_mean_std_dev_impl(
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match mean_std_dev(&src) {
             Ok((_mean_val, _stddev_val)) => {
                 // In a full implementation, would write to scalar outputs
@@ -910,13 +922,13 @@ pub fn vxu_min_max_loc_impl(
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match min_max_loc(&src) {
             Ok((_min_val, _max_val, _min_loc, _max_loc)) => {
                 // In a full implementation, would write to scalar/array outputs
@@ -935,13 +947,13 @@ pub fn vxu_histogram_impl(
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match histogram(&src) {
             Ok(_hist) => {
                 // In a full implementation, would write to distribution
@@ -965,18 +977,18 @@ pub fn vxu_scale_image_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         match scale_image(&src, &mut dst, true) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -994,21 +1006,21 @@ pub fn vxu_warp_affine_impl(
     if context.is_null() || input.is_null() || _matrix.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Default identity affine
         let affine_matrix: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-        
+
         match warp_affine(&src, &affine_matrix, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -1026,21 +1038,21 @@ pub fn vxu_warp_perspective_impl(
     if context.is_null() || input.is_null() || _matrix.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Default identity perspective
         let persp_matrix: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        
+
         match warp_perspective(&src, &persp_matrix, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -1066,18 +1078,18 @@ pub fn vxu_harris_corners_impl(
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Default parameters
         let k = 0.04f32;
         let threshold = 100.0f32;
         let min_distance = 10usize;
-        
+
         match harris_corners(&src, k, threshold, min_distance) {
             Ok(_corners) => {
                 // In a full implementation, would write to array/scalar outputs
@@ -1099,16 +1111,16 @@ pub fn vxu_fast_corners_impl(
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Default threshold
         let threshold = 20u8;
-        
+
         match fast9(&src, threshold) {
             Ok(_corners) => {
                 // In a full implementation, would write to array/scalar outputs
@@ -1134,22 +1146,22 @@ pub fn vxu_canny_edge_detector_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Default thresholds
         let low_thresh = 50u8;
         let high_thresh = 150u8;
-        
+
         match canny_edge_detector(&src, &mut dst, low_thresh, high_thresh) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -1169,7 +1181,7 @@ pub fn vxu_gaussian_pyramid_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     // Pyramid generation would require multiple images
     // For now, stub implementation
     VX_SUCCESS
@@ -1189,7 +1201,7 @@ pub fn vxu_remap_impl(
     if context.is_null() || input.is_null() || _table.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     // Remap implementation requires reading from remap table
     // For now, stub implementation
     VX_SUCCESS
@@ -1252,10 +1264,10 @@ fn rgb_to_gray(src: &Image, dst: &mut Image) -> VxResult<()> {
     if dst.format != ImageFormat::Gray {
         return Err(VxStatus::ErrorInvalidFormat);
     }
-    
+
     let width = src.width;
     let height = src.height;
-    
+
     for y in 0..height {
         for x in 0..width {
             let (r, g, b) = src.get_rgb(x, y);
@@ -1263,7 +1275,7 @@ fn rgb_to_gray(src: &Image, dst: &mut Image) -> VxResult<()> {
             dst.set_pixel(x, y, gray);
         }
     }
-    
+
     Ok(())
 }
 
@@ -1271,17 +1283,17 @@ fn gray_to_rgb(src: &Image, dst: &mut Image) -> VxResult<()> {
     if src.format != ImageFormat::Gray || dst.format != ImageFormat::Rgb {
         return Err(VxStatus::ErrorInvalidFormat);
     }
-    
+
     let width = src.width;
     let height = src.height;
-    
+
     for y in 0..height {
         for x in 0..width {
             let gray = src.get_pixel(x, y);
             dst.set_rgb(x, y, gray, gray, gray);
         }
     }
-    
+
     Ok(())
 }
 
@@ -1289,22 +1301,24 @@ fn rgb_to_rgba(src: &Image, dst: &mut Image) -> VxResult<()> {
     if src.format != ImageFormat::Rgb || dst.format != ImageFormat::Rgba {
         return Err(VxStatus::ErrorInvalidFormat);
     }
-    
+
     let width = src.width;
     let height = src.height;
-    
+
     for y in 0..height {
         for x in 0..width {
             let (r, g, b) = src.get_rgb(x, y);
-            let idx = (y * width + x) * 4;
+            let idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
             let dst_data = dst.data_mut();
-            dst_data[idx] = r;
-            dst_data[idx + 1] = g;
-            dst_data[idx + 2] = b;
-            dst_data[idx + 3] = 255;
+            if idx.saturating_add(3) < dst_data.len() {
+                dst_data[idx] = r;
+                dst_data[idx + 1] = g;
+                dst_data[idx + 2] = b;
+                dst_data[idx + 3] = 255;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1312,22 +1326,24 @@ fn rgba_to_rgb(src: &Image, dst: &mut Image) -> VxResult<()> {
     if src.format != ImageFormat::Rgba || dst.format != ImageFormat::Rgb {
         return Err(VxStatus::ErrorInvalidFormat);
     }
-    
+
     let width = src.width;
     let height = src.height;
     let src_data = src.data();
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
-            let src_idx = (y * width + x) * 4;
-            let dst_idx = (y * width + x) * 3;
-            dst_data[dst_idx] = src_data[src_idx];
-            dst_data[dst_idx + 1] = src_data[src_idx + 1];
-            dst_data[dst_idx + 2] = src_data[src_idx + 2];
+            let src_idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
+            let dst_idx = y.saturating_mul(width).saturating_add(x).saturating_mul(3);
+            if src_idx.saturating_add(2) < src_data.len() && dst_idx.saturating_add(2) < dst_data.len() {
+                dst_data[dst_idx] = src_data[src_idx];
+                dst_data[dst_idx + 1] = src_data[src_idx + 1];
+                dst_data[dst_idx + 2] = src_data[src_idx + 2];
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1342,7 +1358,7 @@ fn clamp_u8(value: i32) -> u8 {
 fn get_pixel_bordered(img: &Image, x: isize, y: isize, border: BorderMode) -> u8 {
     let width = img.width as isize;
     let height = img.height as isize;
-    
+
     if x >= 0 && x < width && y >= 0 && y < height {
         img.get_pixel(x as usize, y as usize)
     } else {
@@ -1360,7 +1376,7 @@ fn get_pixel_bordered(img: &Image, x: isize, y: isize, border: BorderMode) -> u8
 
 fn quickselect(arr: &mut [u8], k: usize) -> u8 {
     if k >= arr.len() { return 0; }
-    
+
     let mut sorted = arr.to_vec();
     sorted.sort_unstable();
     sorted[k]
@@ -1370,9 +1386,9 @@ fn convolve_generic(src: &Image, dst: &mut Image, kernel: &[[i32; 3]; 3], border
     let width = src.width;
     let height = src.height;
     let kernel_sum: i32 = kernel.iter().flat_map(|r| r.iter()).sum::<i32>().max(1);
-    
+
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let mut sum: i32 = 0;
@@ -1384,10 +1400,13 @@ fn convolve_generic(src: &Image, dst: &mut Image, kernel: &[[i32; 3]; 3], border
                     sum += pixel as i32 * kernel[ky][kx];
                 }
             }
-            dst_data[y * width + x] = clamp_u8(sum / kernel_sum);
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = clamp_u8(sum / kernel_sum);
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1395,14 +1414,14 @@ fn gaussian3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
     let kernel = [1, 2, 1];
-    
+
     let dst_data = dst.data_mut();
     // Use checked operations to prevent integer overflow
     let temp_size = width
         .checked_mul(height)
         .ok_or(VxStatus::ErrorInvalidParameters)?;
     let mut temp = vec![0u8; temp_size];
-    
+
     // Horizontal pass
     for y in 0..height {
         for x in 0..width {
@@ -1415,10 +1434,13 @@ fn gaussian3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
                     weight += kernel[k];
                 }
             }
-            temp[y * width + x] = clamp_u8(sum / weight.max(1));
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = temp.get_mut(idx) {
+                *p = clamp_u8(sum / weight.max(1));
+            }
         }
     }
-    
+
     // Vertical pass
     for y in 0..height {
         for x in 0..width {
@@ -1427,14 +1449,20 @@ fn gaussian3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
             for k in 0..3 {
                 let py = y as isize + k as isize - 1;
                 if py >= 0 && py < height as isize {
-                    sum += temp[py as usize * width + x] as i32 * kernel[k];
-                    weight += kernel[k];
+                    let idx = (py as usize).saturating_mul(width).saturating_add(x);
+                    if let Some(val) = temp.get(idx) {
+                        sum += *val as i32 * kernel[k];
+                        weight += kernel[k];
+                    }
                 }
             }
-            dst_data[y * width + x] = clamp_u8(sum / weight.max(1));
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = clamp_u8(sum / weight.max(1));
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1442,14 +1470,14 @@ fn gaussian5x5(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
     let kernel = [1, 4, 6, 4, 1];
-    
+
     let dst_data = dst.data_mut();
     // Use checked operations to prevent integer overflow
     let temp_size = width
         .checked_mul(height)
         .ok_or(VxStatus::ErrorInvalidParameters)?;
     let mut temp = vec![0u8; temp_size];
-    
+
     // Horizontal pass
     for y in 0..height {
         for x in 0..width {
@@ -1462,10 +1490,13 @@ fn gaussian5x5(src: &Image, dst: &mut Image) -> VxResult<()> {
                     weight += kernel[k];
                 }
             }
-            temp[y * width + x] = clamp_u8(sum / weight.max(1));
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = temp.get_mut(idx) {
+                *p = clamp_u8(sum / weight.max(1));
+            }
         }
     }
-    
+
     // Vertical pass
     for y in 0..height {
         for x in 0..width {
@@ -1474,28 +1505,34 @@ fn gaussian5x5(src: &Image, dst: &mut Image) -> VxResult<()> {
             for k in 0..5 {
                 let py = y as isize + k as isize - 2;
                 if py >= 0 && py < height as isize {
-                    sum += temp[py as usize * width + x] as i32 * kernel[k];
-                    weight += kernel[k];
+                    let idx = (py as usize).saturating_mul(width).saturating_add(x);
+                    if let Some(val) = temp.get(idx) {
+                        sum += *val as i32 * kernel[k];
+                        weight += kernel[k];
+                    }
                 }
             }
-            dst_data[y * width + x] = clamp_u8(sum / weight.max(1));
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = clamp_u8(sum / weight.max(1));
+            }
         }
     }
-    
+
     Ok(())
 }
 
 fn box3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let mut sum: u32 = 0;
             let mut count: u32 = 0;
-            
+
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     let py = y as isize + dy;
@@ -1506,21 +1543,24 @@ fn box3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
                     }
                 }
             }
-            
-            dst_data[y * width + x] = (sum / count.max(1)) as u8;
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = (sum / count.max(1)) as u8;
+            }
         }
     }
-    
+
     Ok(())
 }
 
 fn median3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     let dst_data = dst.data_mut();
     let mut window = [0u8; 9];
-    
+
     for y in 0..height {
         for x in 0..width {
             let mut idx = 0;
@@ -1536,11 +1576,14 @@ fn median3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
                     idx += 1;
                 }
             }
-            
-            dst_data[y * width + x] = quickselect(&mut window, 4);
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = quickselect(&mut window, 4);
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1551,13 +1594,13 @@ fn median3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
 fn dilate3x3(src: &Image, dst: &mut Image, border: BorderMode) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let mut max_val: u8 = 0;
-            
+
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     let px = x as isize + dx;
@@ -1566,24 +1609,27 @@ fn dilate3x3(src: &Image, dst: &mut Image, border: BorderMode) -> VxResult<()> {
                     max_val = max_val.max(val);
                 }
             }
-            
-            dst_data[y * width + x] = max_val;
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = max_val;
+            }
         }
     }
-    
+
     Ok(())
 }
 
 fn erode3x3(src: &Image, dst: &mut Image, border: BorderMode) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let mut min_val: u8 = 255;
-            
+
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     let px = x as isize + dx;
@@ -1592,11 +1638,14 @@ fn erode3x3(src: &Image, dst: &mut Image, border: BorderMode) -> VxResult<()> {
                     min_val = min_val.min(val);
                 }
             }
-            
-            dst_data[y * width + x] = min_val;
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = min_val;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1619,15 +1668,15 @@ const SOBEL_Y: [[i32; 3]; 3] = [
 fn sobel3x3(src: &Image, grad_x: &mut Image, grad_y: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     let gx_data = grad_x.data_mut();
     let gy_data = grad_y.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let mut sum_x: i32 = 0;
             let mut sum_y: i32 = 0;
-            
+
             for ky in 0..3 {
                 for kx in 0..3 {
                     let px = x as isize + kx as isize - 1;
@@ -1637,54 +1686,65 @@ fn sobel3x3(src: &Image, grad_x: &mut Image, grad_y: &mut Image) -> VxResult<()>
                     sum_y += pixel * SOBEL_Y[ky][kx];
                 }
             }
-            
-            gx_data[y * width + x] = clamp_u8((sum_x / 4).max(-128).min(127) + 128);
-            gy_data[y * width + x] = clamp_u8((sum_y / 4).max(-128).min(127) + 128);
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = gx_data.get_mut(idx) {
+                *p = clamp_u8((sum_x / 4).max(-128).min(127) + 128);
+            }
+            if let Some(p) = gy_data.get_mut(idx) {
+                *p = clamp_u8((sum_y / 4).max(-128).min(127) + 128);
+            }
         }
     }
-    
+
     Ok(())
 }
 
 fn magnitude(grad_x: &Image, grad_y: &Image, mag: &mut Image) -> VxResult<()> {
     let width = grad_x.width;
     let height = grad_x.height;
-    
+
     let mag_data = mag.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let gx = grad_x.get_pixel(x, y) as i32 - 128;
             let gy = grad_y.get_pixel(x, y) as i32 - 128;
-            
+
             let magnitude = ((gx * gx + gy * gy) as f32).sqrt() as i32;
-            mag_data[y * width + x] = magnitude.min(255) as u8;
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = mag_data.get_mut(idx) {
+                *p = magnitude.min(255) as u8;
+            }
         }
     }
-    
+
     Ok(())
 }
 
 fn phase_op(grad_x: &Image, grad_y: &Image, phase: &mut Image) -> VxResult<()> {
     let width = grad_x.width;
     let height = grad_y.height;
-    
+
     let phase_data = phase.data_mut();
-    
+
     const DEG_PER_RAD: f32 = 180.0 / std::f32::consts::PI;
-    
+
     for y in 0..height {
         for x in 0..width {
             let gx = grad_x.get_pixel(x, y) as i32 - 128;
             let gy = grad_y.get_pixel(x, y) as i32 - 128;
-            
+
             let phase_deg = (gy as f32).atan2(gx as f32) * DEG_PER_RAD;
             let phase_u8 = ((phase_deg + 360.0) % 360.0) / 360.0 * 255.0;
-            
-            phase_data[y * width + x] = phase_u8 as u8;
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = phase_data.get_mut(idx) {
+                *p = phase_u8 as u8;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1696,20 +1756,23 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width;
     let height = src1.height;
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as u16;
             let b = src2.get_pixel(x, y) as u16;
             let sum = a + b;
-            dst_data[y * width + x] = sum.min(255) as u8;
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = sum.min(255) as u8;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1717,20 +1780,23 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width;
     let height = src1.height;
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as i16;
             let b = src2.get_pixel(x, y) as i16;
             let diff = a - b;
-            dst_data[y * width + x] = diff.max(0).min(255) as u8;
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = diff.max(0).min(255) as u8;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1738,20 +1804,23 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32) -> VxResult
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width;
     let height = src1.height;
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as f32;
             let b = src2.get_pixel(x, y) as f32;
             let product = a * b * scale / 255.0;
-            dst_data[y * width + x] = product.max(0.0).min(255.0) as u8;
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = product.max(0.0).min(255.0) as u8;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1759,22 +1828,25 @@ fn weighted(src1: &Image, src2: &Image, dst: &mut Image, alpha: u8) -> VxResult<
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width;
     let height = src1.height;
     let beta = 255 - alpha;
-    
+
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as u32;
             let b = src2.get_pixel(x, y) as u32;
             let result = (a * alpha as u32 + b * beta as u32) / 256;
-            dst_data[y * width + x] = result as u8;
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = result as u8;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1785,28 +1857,28 @@ fn weighted(src1: &Image, src2: &Image, dst: &mut Image, alpha: u8) -> VxResult<
 fn min_max_loc(src: &Image) -> VxResult<(u8, u8, Coordinate, Coordinate)> {
     let width = src.width;
     let height = src.height;
-    
+
     let mut min_val: u8 = 255;
     let mut max_val: u8 = 0;
     let mut min_loc = Coordinate { x: 0, y: 0 };
     let mut max_loc = Coordinate { x: 0, y: 0 };
-    
+
     for y in 0..height {
         for x in 0..width {
             let val = src.get_pixel(x, y);
-            
+
             if val < min_val {
                 min_val = val;
                 min_loc = Coordinate { x, y };
             }
-            
+
             if val > max_val {
                 max_val = val;
                 max_loc = Coordinate { x, y };
             }
         }
     }
-    
+
     Ok((min_val, max_val, min_loc, max_loc))
 }
 
@@ -1815,7 +1887,7 @@ fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
     let height = src.height;
     // Use saturating_mul to prevent integer overflow
     let pixel_count = width.saturating_mul(height) as f32;
-    
+
     // Compute mean
     let mut sum: u64 = 0;
     for y in 0..height {
@@ -1824,7 +1896,7 @@ fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
         }
     }
     let mean = sum as f32 / pixel_count;
-    
+
     // Compute variance
     let mut sum_sq_diff: f64 = 0.0;
     for y in 0..height {
@@ -1835,7 +1907,7 @@ fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
     }
     let variance = sum_sq_diff as f32 / pixel_count;
     let stddev = variance.sqrt();
-    
+
     Ok((mean, stddev))
 }
 
@@ -1843,36 +1915,43 @@ fn histogram(src: &Image) -> VxResult<[u32; 256]> {
     let width = src.width;
     let height = src.height;
     let mut hist = [0u32; 256];
-    
+
     for y in 0..height {
         for x in 0..width {
             let val = src.get_pixel(x, y);
             hist[val as usize] += 1;
         }
     }
-    
+
     Ok(hist)
 }
 
 fn integral_image(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         let mut row_sum = 0u32;
         for x in 0..width {
             row_sum += src.get_pixel(x, y) as u32;
-            let idx = y * width + x;
-            if y == 0 {
-                dst_data[idx] = (row_sum.min(255) >> 8) as u8;
-            } else {
-                dst_data[idx] = ((row_sum + (dst_data[(y-1)*width + x] as u32 * 256)).min(255) >> 8) as u8;
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if idx < dst_data.len() {
+                let new_val = if y == 0 {
+                    (row_sum.min(255) >> 8) as u8
+                } else {
+                    let prev_idx = (y - 1).saturating_mul(width).saturating_add(x);
+                    let prev_val = dst_data.get(prev_idx).copied().unwrap_or(0);
+                    ((row_sum + (prev_val as u32 * 256)).min(255) >> 8) as u8
+                };
+                if let Some(d) = dst_data.get_mut(idx) {
+                    *d = new_val;
+                }
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1880,20 +1959,23 @@ fn abs_diff(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width;
     let height = src1.height;
     let dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y);
             let b = src2.get_pixel(x, y);
             let diff = if a > b { a - b } else { b - a };
-            dst_data[y * width + x] = diff;
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = diff;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1904,29 +1986,29 @@ fn abs_diff(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
 fn bilinear_interpolate(img: &Image, x: f32, y: f32) -> u8 {
     let width = img.width as i32;
     let height = img.height as i32;
-    
+
     let x0 = x.floor() as i32;
     let y0 = y.floor() as i32;
     let x1 = (x0 + 1).min(width - 1);
     let y1 = (y0 + 1).min(height - 1);
-    
+
     if x0 < 0 || y0 < 0 || x0 >= width || y0 >= height {
         return 0;
     }
-    
+
     let fx = x - x0 as f32;
     let fy = y - y0 as f32;
-    
+
     let p00 = img.get_pixel(x0 as usize, y0 as usize) as f32;
     let p10 = if x1 < width { img.get_pixel(x1 as usize, y0 as usize) as f32 } else { p00 };
     let p01 = if y1 < height { img.get_pixel(x0 as usize, y1 as usize) as f32 } else { p00 };
     let p11 = if x1 < width && y1 < height { img.get_pixel(x1 as usize, y1 as usize) as f32 } else { p00 };
-    
+
     let value = (1.0 - fx) * (1.0 - fy) * p00 +
                 fx * (1.0 - fy) * p10 +
                 (1.0 - fx) * fy * p01 +
                 fx * fy * p11;
-    
+
     clamp_u8(value as i32)
 }
 
@@ -1935,17 +2017,17 @@ fn scale_image(src: &Image, dst: &mut Image, bilinear: bool) -> VxResult<()> {
     let src_height = src.height;
     let dst_width = dst.width;
     let dst_height = dst.height;
-    
+
     let dst_data = dst.data_mut();
-    
+
     let x_scale = src_width as f32 / dst_width as f32;
     let y_scale = src_height as f32 / dst_height as f32;
-    
+
     for y in 0..dst_height {
         for x in 0..dst_width {
             let src_x = (x as f32 + 0.5) * x_scale - 0.5;
             let src_y = (y as f32 + 0.5) * y_scale - 0.5;
-            
+
             let value = if bilinear {
                 bilinear_interpolate(src, src_x, src_y)
             } else {
@@ -1954,11 +2036,14 @@ fn scale_image(src: &Image, dst: &mut Image, bilinear: bool) -> VxResult<()> {
                 let ny = clamp_u8(src_y.round() as i32);
                 src.get_pixel(nx as usize % src_width, ny as usize % src_height)
             };
-            
-            dst_data[y * dst_width + x] = value;
+
+            let idx = y.saturating_mul(dst_width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = value;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1967,34 +2052,39 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image) -> VxResult<()> 
     let dst_height = dst.height;
     let src_width = src.width as f32;
     let src_height = src.height as f32;
-    
+
     let dst_data = dst.data_mut();
-    
+
     let a11 = matrix[0];
     let a12 = matrix[1];
     let a13 = matrix[2];
     let a21 = matrix[3];
     let a22 = matrix[4];
     let a23 = matrix[5];
-    
+
     for y in 0..dst_height {
         for x in 0..dst_width {
             let xf = x as f32;
             let yf = y as f32;
-            
+
             // Inverse mapping
             let src_x = a11 * xf + a12 * yf + a13;
             let src_y = a21 * xf + a22 * yf + a23;
-            
+
+            let idx = y.saturating_mul(dst_width).saturating_add(x);
             if src_x < 0.0 || src_x >= src_width || src_y < 0.0 || src_y >= src_height {
-                dst_data[y * dst_width + x] = 0;
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = 0;
+                }
                 continue;
             }
-            
-            dst_data[y * dst_width + x] = bilinear_interpolate(src, src_x, src_y);
+
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = bilinear_interpolate(src, src_x, src_y);
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -2003,9 +2093,9 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image) -> VxResult
     let dst_height = dst.height;
     let src_width = src.width as f32;
     let src_height = src.height as f32;
-    
+
     let dst_data = dst.data_mut();
-    
+
     let h11 = matrix[0];
     let h12 = matrix[1];
     let h13 = matrix[2];
@@ -2015,31 +2105,38 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image) -> VxResult
     let h31 = matrix[6];
     let h32 = matrix[7];
     let h33 = matrix[8];
-    
+
     for y in 0..dst_height {
         for x in 0..dst_width {
             let xf = x as f32;
             let yf = y as f32;
-            
+
             // Homogeneous coordinates
             let w = h31 * xf + h32 * yf + h33;
+            let idx = y.saturating_mul(dst_width).saturating_add(x);
             if w.abs() < 1e-6 {
-                dst_data[y * dst_width + x] = 0;
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = 0;
+                }
                 continue;
             }
-            
+
             let src_x = (h11 * xf + h12 * yf + h13) / w;
             let src_y = (h21 * xf + h22 * yf + h23) / w;
-            
+
             if src_x < 0.0 || src_x >= src_width || src_y < 0.0 || src_y >= src_height {
-                dst_data[y * dst_width + x] = 0;
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = 0;
+                }
                 continue;
             }
-            
-            dst_data[y * dst_width + x] = bilinear_interpolate(src, src_x, src_y);
+
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = bilinear_interpolate(src, src_x, src_y);
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -2055,49 +2152,51 @@ fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -
         .checked_mul(height)
         .ok_or(VxStatus::ErrorInvalidParameters)?;
     let mut responses = vec![0f32; response_size];
-    
+
     // Compute gradients using Sobel
     let (grad_x, grad_y) = compute_gradients_sobel(image)?;
-    
+
     // Compute structure tensor and corner response
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let mut ixx: f32 = 0.0;
             let mut iyy: f32 = 0.0;
             let mut ixy: f32 = 0.0;
-            
+
             // Sum over 3x3 window
             for wy in -1..=1 {
                 for wx in -1..=1 {
-                    let idx = ((y as isize + wy) as usize) * width + ((x as isize + wx) as usize);
+                    let idx = ((y as isize + wy) as usize)
+                        .saturating_mul(width)
+                        .saturating_add((x as isize + wx) as usize);
                     let ix = grad_x[idx] as f32;
                     let iy = grad_y[idx] as f32;
-                    
+
                     ixx += ix * ix;
                     iyy += iy * iy;
                     ixy += ix * iy;
                 }
             }
-            
+
             // Harris corner response
             let det = ixx * iyy - ixy * ixy;
             let trace = ixx + iyy;
             let response = det - k * trace * trace;
-            
-            responses[y * width + x] = response;
+
+            responses[y.saturating_mul(width).saturating_add(x)] = response;
         }
     }
-    
+
     // Non-maximum suppression
     let mut corners = Vec::new();
     for y in 1..height - 1 {
         for x in 1..width - 1 {
-            let response = responses[y * width + x];
-            
+            let response = responses[y.saturating_mul(width).saturating_add(x)];
+
             if response < threshold {
                 continue;
             }
-            
+
             // Check if local maximum
             let mut is_max = true;
             for dy in -1..=1 {
@@ -2107,7 +2206,8 @@ fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -
                     }
                     let nx = x as isize + dx;
                     let ny = y as isize + dy;
-                    if responses[ny as usize * width + nx as usize] > response {
+                    let idx = (ny as usize).saturating_mul(width).saturating_add(nx as usize);
+                    if responses.get(idx).copied().unwrap_or(0.0) > response {
                         is_max = false;
                         break;
                     }
@@ -2116,7 +2216,7 @@ fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -
                     break;
                 }
             }
-            
+
             if is_max {
                 corners.push(Corner {
                     x,
@@ -2126,10 +2226,10 @@ fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -
             }
         }
     }
-    
+
     // Sort by strength
     corners.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
-    
+
     Ok(corners)
 }
 
@@ -2137,32 +2237,32 @@ fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
     let width = image.width;
     let height = image.height;
     let mut corners = Vec::new();
-    
+
     const CIRCLE_OFFSETS: [(isize, isize); 16] = [
         (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
         (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
     ];
-    
+
     for y in 3..height - 3 {
         for x in 3..width - 3 {
             let center = image.get_pixel(x, y);
             let high = center.saturating_add(threshold);
             let low = center.saturating_sub(threshold);
-            
+
             let mut circle = [0u8; 16];
             for (i, (dx, dy)) in CIRCLE_OFFSETS.iter().enumerate() {
                 let px = (x as isize + dx) as usize;
                 let py = (y as isize + dy) as usize;
                 circle[i] = image.get_pixel(px, py);
             }
-            
+
             // Check for 9 contiguous brighter or darker pixels
             let mut is_corner = false;
-            
+
             for start in 0..16 {
                 let mut brighter_count = 0;
                 let mut darker_count = 0;
-                
+
                 for i in 0..16 {
                     let idx = (start + i) % 16;
                     if circle[idx] > high {
@@ -2175,18 +2275,18 @@ fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
                         brighter_count = 0;
                         darker_count = 0;
                     }
-                    
+
                     if brighter_count >= 9 || darker_count >= 9 {
                         is_corner = true;
                         break;
                     }
                 }
-                
+
                 if is_corner {
                     break;
                 }
             }
-            
+
             if is_corner {
                 let score = compute_fast_score(&circle, center, threshold);
                 corners.push(Corner {
@@ -2197,7 +2297,7 @@ fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
             }
         }
     }
-    
+
     corners.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
     Ok(corners)
 }
@@ -2224,12 +2324,12 @@ fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
     let gradient_size = width.saturating_mul(height);
     let mut grad_x = vec![0f32; gradient_size];
     let mut grad_y = vec![0f32; gradient_size];
-    
+
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let mut gx: i32 = 0;
             let mut gy: i32 = 0;
-            
+
             for ky in 0..3 {
                 for kx in 0..3 {
                     let px = x + kx - 1;
@@ -2239,13 +2339,13 @@ fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
                     gy += pixel * SOBEL_Y[ky][kx];
                 }
             }
-            
-            let idx = y * width + x;
+
+            let idx = y.saturating_mul(width).saturating_add(x);
             grad_x[idx] = gx as f32 / 4.0;
             grad_y[idx] = gy as f32 / 4.0;
         }
     }
-    
+
     Ok((grad_x, grad_y))
 }
 
@@ -2256,18 +2356,18 @@ fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
 fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_threshold: u8) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     // Use checked operations to prevent integer overflow
     let img_size = width
         .checked_mul(height)
         .ok_or(VxStatus::ErrorInvalidParameters)?;
-    
+
     // Step 1: Gaussian blur
     let mut blurred = vec![0u8; img_size];
     {
         let kernel = [1, 2, 1];
         let mut temp = vec![0u8; img_size];
-        
+
         // Horizontal pass
         for y in 0..height {
             for x in 0..width {
@@ -2280,10 +2380,13 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
                         weight += kernel[k];
                     }
                 }
-                temp[y * width + x] = clamp_u8(sum / weight.max(1));
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = temp.get_mut(idx) {
+                    *p = clamp_u8(sum / weight.max(1));
+                }
             }
         }
-        
+
         // Vertical pass
         for y in 0..height {
             for x in 0..width {
@@ -2292,95 +2395,123 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
                 for k in 0..3 {
                     let py = y as isize + k as isize - 1;
                     if py >= 0 && py < height as isize {
-                        sum += temp[py as usize * width + x] as i32 * kernel[k];
-                        weight += kernel[k];
+                        let idx = (py as usize).saturating_mul(width).saturating_add(x);
+                        if let Some(val) = temp.get(idx) {
+                            sum += *val as i32 * kernel[k];
+                            weight += kernel[k];
+                        }
                     }
                 }
-                blurred[y * width + x] = clamp_u8(sum / weight.max(1));
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = blurred.get_mut(idx) {
+                    *p = clamp_u8(sum / weight.max(1));
+                }
             }
         }
     }
-    
+
     // Step 2: Compute gradients
     let mut grad_x = vec![0i32; img_size];
     let mut grad_y = vec![0i32; img_size];
     let mut magnitude = vec![0f32; img_size];
     let mut direction = vec![0f32; img_size];
-    
+
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let mut gx: i32 = 0;
             let mut gy: i32 = 0;
-            
+
             for ky in 0..3 {
                 for kx in 0..3 {
                     let px = x + kx - 1;
                     let py = y + ky - 1;
-                    let pixel = blurred[py * width + px] as i32;
+                    let idx = (py as usize).saturating_mul(width).saturating_add(px);
+                    let pixel = *blurred.get(idx).unwrap_or(&0) as i32;
                     gx += pixel * SOBEL_X[ky][kx];
                     gy += pixel * SOBEL_Y[ky][kx];
                 }
             }
-            
-            let idx = y * width + x;
-            grad_x[idx] = gx;
-            grad_y[idx] = gy;
-            magnitude[idx] = ((gx * gx + gy * gy) as f32).sqrt();
-            direction[idx] = (gy as f32).atan2(gx as f32);
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(gx_p) = grad_x.get_mut(idx) {
+                *gx_p = gx;
+            }
+            if let Some(gy_p) = grad_y.get_mut(idx) {
+                *gy_p = gy;
+            }
+            if let Some(mag_p) = magnitude.get_mut(idx) {
+                *mag_p = ((gx * gx + gy * gy) as f32).sqrt();
+            }
+            if let Some(dir_p) = direction.get_mut(idx) {
+                *dir_p = (gy as f32).atan2(gx as f32);
+            }
         }
     }
-    
+
     // Step 3: Non-maximum suppression
     let mut suppressed = vec![0u8; img_size];
     for y in 1..height - 1 {
         for x in 1..width - 1 {
-            let idx = y * width + x;
-            let mag = magnitude[idx];
-            let dir = direction[idx];
-            
+            let idx = y.saturating_mul(width).saturating_add(x);
+            let mag = *magnitude.get(idx).unwrap_or(&0.0);
+            let dir = *direction.get(idx).unwrap_or(&0.0);
+
             let angle = ((dir + std::f32::consts::PI) * 4.0 / std::f32::consts::PI) as i32 % 4;
-            
+
             let (dx1, dy1, dx2, dy2) = match angle {
                 0 | 2 => (1, 0, -1, 0),
                 1 => (1, 1, -1, -1),
                 3 => (1, -1, -1, 1),
                 _ => (0, 1, 0, -1),
             };
-            
-            let idx1 = ((y as isize + dy1) as usize) * width + ((x as isize + dx1) as usize);
-            let idx2 = ((y as isize + dy2) as usize) * width + ((x as isize + dy2) as usize);
-            
-            if mag >= magnitude[idx1] && mag >= magnitude[idx2] {
-                suppressed[idx] = clamp_u8(mag as i32);
+
+            let idx1 = ((y as isize + dy1) as usize)
+                .saturating_mul(width)
+                .saturating_add((x as isize + dx1) as usize);
+            let idx2 = ((y as isize + dy2) as usize)
+                .saturating_mul(width)
+                .saturating_add((x as isize + dy2) as usize);
+
+            let mag1 = *magnitude.get(idx1).unwrap_or(&0.0);
+            let mag2 = *magnitude.get(idx2).unwrap_or(&0.0);
+            if mag >= mag1 && mag >= mag2 {
+                if let Some(p) = suppressed.get_mut(idx) {
+                    *p = clamp_u8(mag as i32);
+                }
             }
         }
     }
-    
+
     // Step 4: Double threshold and hysteresis
     let mut edges = vec![0u8; img_size];
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
-            let idx = y * width + x;
-            let val = suppressed[idx];
-            
-            if val >= high_threshold {
-                edges[idx] = 2; // Strong edge
-            } else if val >= low_threshold {
-                edges[idx] = 1; // Weak edge
+            let idx = y.saturating_mul(width).saturating_add(x);
+            let val = *suppressed.get(idx).unwrap_or(&0);
+
+            if let Some(e) = edges.get_mut(idx) {
+                if val >= high_threshold {
+                    *e = 2; // Strong edge
+                } else if val >= low_threshold {
+                    *e = 1; // Weak edge
+                }
             }
         }
     }
-    
+
     // Step 5: Edge tracking
     for y in 1..height - 1 {
         for x in 1..width - 1 {
-            let idx = y * width + x;
-            
-            if edges[idx] == 2 {
-                dst_data[idx] = 255;
-            } else if edges[idx] == 1 {
+            let idx = y.saturating_mul(width).saturating_add(x);
+            let edge_val = *edges.get(idx).unwrap_or(&0);
+
+            if edge_val == 2 {
+                if let Some(d) = dst_data.get_mut(idx) {
+                    *d = 255;
+                }
+            } else if edge_val == 1 {
                 let mut connected = false;
                 for dy in -1..=1 {
                     for dx in -1..=1 {
@@ -2389,8 +2520,8 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
                         }
                         let nx = x as isize + dx;
                         let ny = y as isize + dy;
-                        let nidx = (ny as usize) * width + (nx as usize);
-                        if edges[nidx] == 2 {
+                        let nidx = (ny as usize).saturating_mul(width).saturating_add(nx as usize);
+                        if edges.get(nidx).copied().unwrap_or(0) == 2 {
                             connected = true;
                             break;
                         }
@@ -2399,18 +2530,20 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
                         break;
                     }
                 }
-                
-                if connected {
-                    dst_data[idx] = 255;
-                } else {
-                    dst_data[idx] = 0;
+
+                if let Some(d) = dst_data.get_mut(idx) {
+                    if connected {
+                        *d = 255;
+                    } else {
+                        *d = 0;
+                    }
                 }
-            } else {
-                dst_data[idx] = 0;
+            } else if let Some(d) = dst_data.get_mut(idx) {
+                *d = 0;
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -2424,14 +2557,14 @@ fn threshold_image(src: &Image, dst: &mut Image, thresh_type: vx_enum, value: i3
     let width = src.width;
     let height = src.height;
     let dst_data = dst.data_mut();
-    
+
     let true_v = true_val.max(0).min(255) as u8;
     let false_v = false_val.max(0).min(255) as u8;
-    
+
     for y in 0..height {
         for x in 0..width {
             let pixel = src.get_pixel(x, y) as i32;
-            
+
             let output = if thresh_type == 0 { // VX_THRESHOLD_TYPE_BINARY
                 if pixel > value {
                     true_v
@@ -2445,11 +2578,14 @@ fn threshold_image(src: &Image, dst: &mut Image, thresh_type: vx_enum, value: i3
                     true_v
                 }
             };
-            
-            dst_data[y * width + x] = output;
+
+            let idx = y.saturating_mul(width).saturating_add(x);
+            if let Some(p) = dst_data.get_mut(idx) {
+                *p = output;
+            }
         }
     }
-    
+
     Ok(())
 }
 
@@ -2463,21 +2599,21 @@ pub fn vxu_threshold_impl(
     if context.is_null() || input.is_null() || output.is_null() || threshold.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Get threshold values from threshold object
         let t = &*(threshold as *const crate::c_api_data::VxCThresholdData);
-        
+
         let result = threshold_image(
             &src, &mut dst,
             t.thresh_type,
@@ -2487,7 +2623,7 @@ pub fn vxu_threshold_impl(
             t.true_value,
             t.false_value
         );
-        
+
         match result {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -2504,24 +2640,24 @@ pub fn vxu_equalize_histogram_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Compute histogram
         let hist = match histogram(&src) {
             Ok(h) => h,
             Err(_) => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Compute cumulative distribution function (CDF)
         let mut cdf = [0u32; 256];
         let mut sum: u32 = 0;
@@ -2529,28 +2665,31 @@ pub fn vxu_equalize_histogram_impl(
             sum += hist[i];
             cdf[i] = sum;
         }
-        
+
         // Normalize CDF
-        let total_pixels = (src.width * src.height) as u32;
+        let total_pixels = src.width.saturating_mul(src.height) as u32;
         let mut equalized = [0u8; 256];
         if total_pixels > 0 {
             for i in 0..256 {
                 equalized[i] = ((cdf[i] as u64 * 255u64) / total_pixels as u64) as u8;
             }
         }
-        
+
         // Apply equalization
         let width = src.width;
         let height = src.height;
         let dst_data = dst.data_mut();
-        
+
         for y in 0..height {
             for x in 0..width {
                 let pixel = src.get_pixel(x, y);
-                dst_data[y * width + x] = equalized[pixel as usize];
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = equalized[pixel as usize];
+                }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }
@@ -2566,28 +2705,28 @@ pub fn vxu_non_linear_filter_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     // mask_size should be 3, 5, etc.
     let window_size = mask_size as isize;
     let half = window_size / 2;
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let width = src.width;
         let height = src.height;
         let dst_data = dst.data_mut();
         let window_count = (window_size * window_size) as usize;
         let mut window = vec![0u8; window_count];
-        
+
         // function: 0=min, 1=max, 2=median
         for y in 0..height {
             for x in 0..width {
@@ -2601,7 +2740,7 @@ pub fn vxu_non_linear_filter_impl(
                         idx += 1;
                     }
                 }
-                
+
                 let value = match function {
                     0 => {
                         // Min
@@ -2629,11 +2768,14 @@ pub fn vxu_non_linear_filter_impl(
                         window[window_count / 2]
                     }
                 };
-                
-                dst_data[y * width + x] = value;
+
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = value;
+                }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }
@@ -2651,36 +2793,39 @@ pub fn vxu_and_impl(
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Bitwise AND implementation
         let width = dst.width();
         let height = dst.height();
         let mut dst_data = dst.data_mut();
-        
+
         for y in 0..height {
             for x in 0..width {
                 let a = src1.get_pixel(x, y);
                 let b = src2.get_pixel(x, y);
-                dst_data[y * width + x] = a & b;
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = a & b;
+                }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }
@@ -2694,36 +2839,39 @@ pub fn vxu_or_impl(
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Bitwise OR implementation
         let width = dst.width();
         let height = dst.height();
         let mut dst_data = dst.data_mut();
-        
+
         for y in 0..height {
             for x in 0..width {
                 let a = src1.get_pixel(x, y);
                 let b = src2.get_pixel(x, y);
-                dst_data[y * width + x] = a | b;
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = a | b;
+                }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }
@@ -2737,36 +2885,39 @@ pub fn vxu_xor_impl(
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Bitwise XOR implementation
         let width = dst.width();
         let height = dst.height();
         let mut dst_data = dst.data_mut();
-        
+
         for y in 0..height {
             for x in 0..width {
                 let a = src1.get_pixel(x, y);
                 let b = src2.get_pixel(x, y);
-                dst_data[y * width + x] = a ^ b;
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = a ^ b;
+                }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }
@@ -2779,30 +2930,33 @@ pub fn vxu_not_impl(
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Bitwise NOT implementation
         let width = dst.width();
         let height = dst.height();
         let mut dst_data = dst.data_mut();
-        
+
         for y in 0..height {
             for x in 0..width {
                 let a = src.get_pixel(x, y);
-                dst_data[y * width + x] = !a;
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = !a;
+                }
             }
         }
-        
+
         copy_rust_to_c_image(&dst, output)
     }
 }

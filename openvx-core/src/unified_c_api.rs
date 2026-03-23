@@ -15,7 +15,7 @@ use crate::c_api_data::vx_pixel_value_t;
 use std::ffi::{CStr, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ============================================================================
 // Graph State and Management
@@ -696,10 +696,25 @@ pub fn unregister_context(id: u64) {
     }
 }
 
-// Image registry
-static IMAGES: Lazy<Mutex<HashMap<usize, Arc<VxCImage>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
+// Image registry - public for use by openvx-image crate
+// Stores image addresses for type lookup (vxQueryReference)
+pub static IMAGES: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| {
+    Mutex::new(HashSet::new())
 });
+
+/// Register an image address in the unified registry
+pub fn register_image(addr: usize) {
+    if let Ok(mut images) = IMAGES.lock() {
+        images.insert(addr);
+    }
+}
+
+/// Unregister an image address from the unified registry
+pub fn unregister_image(addr: usize) {
+    if let Ok(mut images) = IMAGES.lock() {
+        images.remove(&addr);
+    }
+}
 
 // Array registry
 static ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCArray>>>> = Lazy::new(|| {
@@ -847,7 +862,7 @@ pub extern "C" fn vxQueryReference(
                 
                 // Check images
                 if let Ok(images) = IMAGES.lock() {
-                    if images.contains_key(&addr) {
+                    if images.contains(&addr) {
                         *(ptr as *mut vx_enum) = VX_TYPE_IMAGE;
                         return VX_SUCCESS;
                     }
@@ -1149,7 +1164,7 @@ pub extern "C" fn vxSetReferenceName(
     }
     if !found {
         if let Ok(images) = IMAGES.lock() {
-            if images.contains_key(&addr) { found = true; }
+            if images.contains(&addr) { found = true; }
         }
     }
     if !found {

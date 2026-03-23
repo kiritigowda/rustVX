@@ -1,8 +1,9 @@
 //! C API for OpenVX Image
 
 use std::ffi::c_void;
-use std::sync::RwLock;
+use std::sync::{RwLock, Arc};
 use std::sync::atomic::Ordering;
+use openvx_core::unified_c_api::{register_image, unregister_image};
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_image, vx_status, vx_enum, vx_size, vx_uint32,
     vx_rectangle_t, vx_imagepatch_addressing_t, vx_map_id, vx_df_image,
@@ -21,15 +22,15 @@ use openvx_core::c_api::{
 static IMAGE_ID_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 /// Image struct for C API
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VxCImage {
     width: vx_uint32,
     height: vx_uint32,
     format: vx_df_image,
     is_virtual: bool,
     context: vx_context,
-    data: RwLock<Vec<u8>>,
-    mapped_patches: RwLock<Vec<(vx_map_id, Vec<u8>)>>,
+    data: Arc<RwLock<Vec<u8>>>,
+    mapped_patches: Arc<RwLock<Vec<(vx_map_id, Vec<u8>)>>>,
 }
 
 impl VxCImage {
@@ -113,11 +114,16 @@ pub extern "C" fn vxCreateImage(
         format: color,
         is_virtual: false,
         context,
-        data: RwLock::new(data),
-        mapped_patches: RwLock::new(Vec::new()),
+        data: Arc::new(RwLock::new(data)),
+        mapped_patches: Arc::new(RwLock::new(Vec::new())),
     });
 
-    Box::into_raw(image) as vx_image
+    let image_ptr = Box::into_raw(image) as vx_image;
+    
+    // Register image address in unified registry for type queries (vxQueryReference)
+    register_image(image_ptr as usize);
+    
+    image_ptr
 }
 
 /// Create a virtual image (for graph intermediate results)
@@ -142,11 +148,16 @@ pub extern "C" fn vxCreateVirtualImage(
         format: color,
         is_virtual: true,
         context: std::ptr::null_mut(), // Virtual images use graph context
-        data: RwLock::new(Vec::new()),
-        mapped_patches: RwLock::new(Vec::new()),
+        data: Arc::new(RwLock::new(Vec::new())),
+        mapped_patches: Arc::new(RwLock::new(Vec::new())),
     });
 
-    Box::into_raw(image) as vx_image
+    let image_ptr = Box::into_raw(image) as vx_image;
+    
+    // Register image address in unified registry for type queries (vxQueryReference)
+    register_image(image_ptr as usize);
+    
+    image_ptr
 }
 
 /// Create an image from existing handles
@@ -173,16 +184,17 @@ pub extern "C" fn vxCreateImageFromHandle(
 
         // Calculate size from addressing with overflow protection
         let total_size = if addr.stride_y > 0 {
-            (height as usize).checked_mul(addr.stride_y as usize).unwrap_or(0)
+            (height as usize).checked_mul(addr.stride_y as usize)
+                .and_then(|s| if s > 0 { Some(s) } else { None })
         } else {
             (width as usize)
                 .checked_mul(height as usize)
                 .and_then(|s| s.checked_mul(VxCImage::bytes_per_pixel(color)))
-                .unwrap_or(0)
+                .and_then(|s| if s > 0 { Some(s) } else { None })
         };
-        if total_size == 0 {
+        let Some(total_size) = total_size else {
             return std::ptr::null_mut();
-        }
+        };
 
         // For now, we copy the data. A full implementation might keep references
         let data = vec![0u8; total_size];
@@ -193,11 +205,16 @@ pub extern "C" fn vxCreateImageFromHandle(
             format: color,
             is_virtual: false,
             context,
-            data: RwLock::new(data),
-            mapped_patches: RwLock::new(Vec::new()),
+            data: Arc::new(RwLock::new(data)),
+            mapped_patches: Arc::new(RwLock::new(Vec::new())),
         });
 
-        Box::into_raw(image) as vx_image
+        let image_ptr = Box::into_raw(image) as vx_image;
+        
+        // Register image address in unified registry for type queries (vxQueryReference)
+        register_image(image_ptr as usize);
+        
+        image_ptr
     }
 }
 
@@ -210,6 +227,8 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
 
     unsafe {
         if !(*image).is_null() {
+            // Unregister from unified registry
+            unregister_image(*image as usize);
             let _ = Box::from_raw(*image as *mut VxCImage);
             *image = std::ptr::null_mut();
         }
@@ -342,7 +361,14 @@ pub extern "C" fn vxMapImagePatch(
 
     let bpp = VxCImage::bytes_per_pixel(img.format);
     let stride_x = bpp as i32;
-    let stride_y = (img.width as i32).checked_mul(bpp as i32).unwrap_or(0);
+    let stride_y = (img.width as i32).checked_mul(bpp as i32)
+        .and_then(|s| if s > 0 { Some(s) } else { None })
+        .unwrap_or(0);
+    
+    // If stride_y is 0 due to overflow or invalid dimensions, return error
+    if stride_y == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
 
     // Set addressing structure
     unsafe {
@@ -358,13 +384,23 @@ pub extern "C" fn vxMapImagePatch(
 
     // Get data pointer with overflow-safe calculation
     let data = img.data.read().unwrap();
-    let offset = (rect.start_y as usize)
+    
+    // Calculate offset with proper overflow checking
+    let start_x_offset = (rect.start_x as usize).checked_mul(bpp);
+    let row_offset = (rect.start_y as usize)
         .checked_mul(img.width as usize)
-        .and_then(|s| s.checked_mul(bpp))
-        .and_then(|s| s.checked_add((rect.start_x as usize).checked_mul(bpp).unwrap_or(0)))
-        .unwrap_or(0);
+        .and_then(|s| s.checked_mul(bpp));
+    
+    // If any multiplication overflowed, return error
+    let (Some(row_off), Some(col_off)) = (row_offset, start_x_offset) else {
+        return VX_ERROR_INVALID_PARAMETERS;
+    };
+    
+    let Some(offset) = row_off.checked_add(col_off) else {
+        return VX_ERROR_INVALID_PARAMETERS;
+    };
 
-    if offset >= data.len() || offset == 0 && (rect.start_x > 0 || rect.start_y > 0) {
+    if offset >= data.len() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
