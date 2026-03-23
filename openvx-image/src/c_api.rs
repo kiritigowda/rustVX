@@ -1,7 +1,10 @@
 //! C API for OpenVX Image
 
 use std::ffi::c_void;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Mutex};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use lazy_static::lazy_static;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_image, vx_status, vx_enum, vx_size, vx_uint32,
     vx_rectangle_t, vx_imagepatch_addressing_t, vx_map_id, vx_df_image,
@@ -16,7 +19,14 @@ use openvx_core::c_api::{
     VX_READ_ONLY, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
 
+// Global image registry
+lazy_static! {
+    static ref IMAGES: Mutex<HashMap<usize, Arc<VxCImage>>> = Mutex::new(HashMap::new());
+    static ref IMAGE_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
+}
+
 /// Image struct for C API
+#[derive(Debug)]
 pub struct VxCImage {
     width: vx_uint32,
     height: vx_uint32,
@@ -58,7 +68,26 @@ impl VxCImage {
     }
 
     fn calculate_size(width: vx_uint32, height: vx_uint32, format: vx_df_image) -> usize {
-        (width as usize) * (height as usize) * Self::channels(format)
+        // Validate dimensions to prevent overflow
+        if width == 0 || height == 0 {
+            return 0;
+        }
+        
+        // Check for potential overflow
+        let w = width as usize;
+        let h = height as usize;
+        let channels = Self::channels(format);
+        
+        // Limit maximum allocation to ~1GB (sanity check)
+        let max_size = 1024 * 1024 * 1024; // 1GB
+        let size = w.saturating_mul(h).saturating_mul(channels);
+        
+        if size > max_size {
+            eprintln!("Image size {}x{}x{} = {} exceeds maximum allocation limit", w, h, channels, size);
+            return 0; // Return 0 to trigger null image creation
+        }
+        
+        size
     }
 }
 
@@ -82,6 +111,9 @@ pub extern "C" fn vxCreateImage(
     }
 
     let size = VxCImage::calculate_size(width, height, color);
+    if size == 0 {
+        return std::ptr::null_mut(); // Invalid dimensions or overflow
+    }
     let data = vec![0u8; size];
 
     let image = Box::new(VxCImage {
