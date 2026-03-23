@@ -24,6 +24,7 @@ pub type vx_bool = i32;
 pub type vx_df_image = u32;
 pub type vx_uint64 = u64;
 pub type vx_int32 = i32;
+pub type vx_int8 = i8;
 pub type vx_float32 = f32;
 pub type vx_map_id = usize;
 
@@ -209,23 +210,71 @@ pub extern "C" fn vxCreateContext() -> vx_context {
 /// Register standard OpenVX built-in kernels for a context
 fn register_standard_kernels(context_id: u32) {
     use std::sync::atomic::Ordering;
-    
+
     // Register built-in kernels that are always available
+    // Kernel enums aligned with OpenVX 1.3.1 spec
     let standard_kernels: Vec<(&str, i32)> = vec![
-        ("org.khronos.openvx.color_convert", 0x1i32),
-        ("org.khronos.openvx.channel_extract", 0x2),
-        ("org.khronos.openvx.channel_combine", 0x3),
-        ("org.khronos.openvx.sobel3x3", 0x6),
-        ("org.khronos.openvx.add", 0x7),
-        ("org.khronos.openvx.subtract", 0x8),
-        ("org.khronos.openvx.multiply", 0x9),
-        ("org.khronos.openvx.erode3x3", 0x14),
-        ("org.khronos.openvx.dilate3x3", 0x15),
+        // Color conversions (0x00-0x02)
+        ("org.khronos.openvx.color_convert", 0x00i32),
+        ("org.khronos.openvx.channel_extract", 0x01),
+        ("org.khronos.openvx.channel_combine", 0x02),
+        // Gradient operations (0x03-0x05)
+        ("org.khronos.openvx.sobel3x3", 0x03),
+        ("org.khronos.openvx.magnitude", 0x04),
+        ("org.khronos.openvx.phase", 0x05),
+        // Geometric (0x06)
+        ("org.khronos.openvx.scale_image", 0x06),
+        // Arithmetic (0x07-0x0A)
+        ("org.khronos.openvx.add", 0x07),
+        ("org.khronos.openvx.subtract", 0x08),
+        ("org.khronos.openvx.multiply", 0x09),
+        ("org.khronos.openvx.weighted_average", 0x0A),
+        // Filters (0x0B-0x0E)
+        ("org.khronos.openvx.custom_convolution", 0x0B),
+        ("org.khronos.openvx.gaussian3x3", 0x0C),
+        ("org.khronos.openvx.median3x3", 0x0D),
+        ("org.khronos.openvx.box3x3", 0x0E),
+        // Morphology (0x0F-0x10)
+        ("org.khronos.openvx.dilate3x3", 0x0F),
+        ("org.khronos.openvx.erode3x3", 0x10),
+        // Statistics (0x11-0x16)
+        ("org.khronos.openvx.histogram", 0x11),
+        ("org.khronos.openvx.equalize_histogram", 0x12),
+        ("org.khronos.openvx.integral_image", 0x13),
+        ("org.khronos.openvx.meanstddev", 0x14),
+        ("org.khronos.openvx.minmaxloc", 0x15),
+        ("org.khronos.openvx.absdiff", 0x16),
+        // Additional features (0x17-0x1A)
+        ("org.khronos.openvx.mean_shift", 0x17),
         ("org.khronos.openvx.threshold", 0x18),
-        ("org.khronos.openvx.convolve", 0x21),
-        ("org.khronos.openvx.gaussian3x3", 0x22),
-        ("org.khronos.openvx.median3x3", 0x23),
-        ("org.khronos.openvx.box3x3", 0x24),
+        ("org.khronos.openvx.integral_image_sq", 0x19),
+        ("org.khronos.openvx.gaussian5x5", 0x1A),
+        // Extended filters (0x1B-0x1D)
+        ("org.khronos.openvx.sobel5x5", 0x1B),
+        ("org.khronos.openvx.laplacian", 0x1C),
+        ("org.khronos.openvx.non_linear_filter", 0x1D),
+        // Geometric warping (0x1E-0x1F)
+        ("org.khronos.openvx.warp_affine", 0x1E),
+        ("org.khronos.openvx.warp_perspective", 0x1F),
+        // Feature detection (0x20-0x22)
+        ("org.khronos.openvx.harris_corners", 0x20),
+        ("org.khronos.openvx.fast_corners", 0x21),
+        ("org.khronos.openvx.optical_flow_pyr_lk", 0x22),
+        // Additional geometric (0x23)
+        ("org.khronos.openvx.remap", 0x23),
+        // Extended feature detection (0x24-0x25)
+        ("org.khronos.openvx.corner_min_eigen_val", 0x24),
+        ("org.khronos.openvx.hough_lines_p", 0x25),
+        // Object detection (0x26)
+        ("org.khronos.openvx.canny_edge_detector", 0x26),
+        // Extended morphology (0x27-0x28)
+        ("org.khronos.openvx.dilate5x5", 0x27),
+        ("org.khronos.openvx.erode5x5", 0x28),
+        // Pyramids (0x29-0x2A)
+        ("org.khronos.openvx.gaussian_pyramid", 0x29),
+        ("org.khronos.openvx.laplacian_pyramid", 0x2A),
+        // Reconstruction (0x2B)
+        ("org.khronos.openvx.laplacian_reconstruct", 0x2B),
     ];
     
     if let Ok(mut kernels) = KERNELS.lock() {
@@ -1164,6 +1213,8 @@ pub const VX_TYPE_INT64: vx_enum = 0x008;
 pub const VX_TYPE_FLOAT32: vx_enum = 0x00A;
 pub const VX_TYPE_FLOAT64: vx_enum = 0x00B;
 pub const VX_TYPE_BOOL: vx_enum = 0x010;
+pub const VX_TYPE_ENUM: vx_enum = 0x011;
+pub const VX_TYPE_SIZE: vx_enum = 0x012;
 
 // ============================================================================
 // Attribute Constants

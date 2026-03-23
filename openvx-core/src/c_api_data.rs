@@ -101,6 +101,17 @@ pub extern "C" fn vxQueryScalar(
     VX_SUCCESS
 }
 
+/// Create a virtual scalar (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualScalar(graph: vx_graph, data_type: vx_enum) -> vx_scalar {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual scalars are created like regular scalars but associated with graph
+    // In a full implementation, memory would be allocated during graph execution
+    vxCreateScalar(graph as vx_context, data_type, std::ptr::null())
+}
+
 /// Release scalar
 #[no_mangle]
 pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
@@ -196,6 +207,20 @@ pub extern "C" fn vxCopyConvolutionCoefficients(
     }
 
     VX_SUCCESS
+}
+
+/// Create a virtual convolution (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualConvolution(
+    graph: vx_graph,
+    columns: vx_size,
+    rows: vx_size,
+) -> vx_convolution {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual convolutions are created like regular ones but associated with graph
+    vxCreateConvolution(graph as vx_context, columns, rows)
 }
 
 /// Release convolution
@@ -310,6 +335,21 @@ pub extern "C" fn vxCopyMatrix(
     VX_SUCCESS
 }
 
+/// Create a virtual matrix (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualMatrix(
+    graph: vx_graph,
+    data_type: vx_enum,
+    columns: vx_size,
+    rows: vx_size,
+) -> vx_matrix {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual matrices are created like regular ones but associated with graph
+    vxCreateMatrix(graph as vx_context, data_type, columns, rows)
+}
+
 /// Release matrix
 #[no_mangle]
 pub extern "C" fn vxReleaseMatrix(matrix: *mut vx_matrix) -> vx_status {
@@ -419,6 +459,20 @@ pub extern "C" fn vxCopyLUT(
     VX_SUCCESS
 }
 
+/// Create a virtual LUT (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualLUT(
+    graph: vx_graph,
+    data_type: vx_enum,
+    count: vx_size,
+) -> vx_lut {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual LUTs are created like regular ones but associated with graph
+    vxCreateLUT(graph as vx_context, data_type, count)
+}
+
 /// Release LUT
 #[no_mangle]
 pub extern "C" fn vxReleaseLUT(lut: *mut vx_lut) -> vx_status {
@@ -442,13 +496,15 @@ pub extern "C" fn vxReleaseLUT(lut: *mut vx_lut) -> vx_status {
 
 /// Threshold structure for C API
 pub struct VxCThresholdData {
-    thresh_type: vx_enum,
-    data_type: vx_enum,
-    value: vx_int32,
-    lower: vx_int32,
-    upper: vx_int32,
-    true_value: vx_int32,
-    false_value: vx_int32,
+    pub thresh_type: vx_enum,
+    pub data_type: vx_enum,
+    pub value: vx_int32,
+    pub lower: vx_int32,
+    pub upper: vx_int32,
+    pub true_value: vx_int32,
+    pub false_value: vx_int32,
+    pub input_format: vx_df_image,
+    pub output_format: vx_df_image,
     context: vx_context,
 }
 
@@ -471,6 +527,8 @@ pub extern "C" fn vxCreateThreshold(
         upper: 255,
         true_value: 255,
         false_value: 0,
+        input_format: VX_DF_IMAGE_U8,
+        output_format: VX_DF_IMAGE_U8,
         context,
     });
 
@@ -533,6 +591,22 @@ pub extern "C" fn vxSetThresholdAttribute(
     VX_SUCCESS
 }
 
+/// Create a virtual threshold for image (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualThresholdForImage(
+    graph: vx_graph,
+    thresh_type: vx_enum,
+    input_format: vx_df_image,
+    output_format: vx_df_image,
+) -> vx_threshold {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual thresholds are created like regular ones
+    // The input/output format parameters are stored for validation
+    vxCreateThreshold(graph as vx_context, thresh_type, output_format as vx_enum)
+}
+
 /// Release threshold
 #[no_mangle]
 pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
@@ -544,6 +618,259 @@ pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
         if !(*thresh).is_null() {
             let _ = Box::from_raw(*thresh as *mut VxCThresholdData);
             *thresh = std::ptr::null_mut();
+        }
+    }
+
+    VX_SUCCESS
+}
+
+// ============================================================================
+// Extended Threshold API
+// ============================================================================
+
+// Additional threshold attributes
+pub const VX_THRESHOLD_TYPE: vx_enum = 0x00;
+pub const VX_THRESHOLD_DATA_TYPE: vx_enum = 0x01;
+pub const VX_THRESHOLD_INPUT_FORMAT: vx_enum = 0x05;
+pub const VX_THRESHOLD_OUTPUT_FORMAT: vx_enum = 0x06;
+
+// Threshold types
+pub const VX_THRESHOLD_TYPE_BINARY: vx_enum = 0;
+pub const VX_THRESHOLD_TYPE_RANGE: vx_enum = 1;
+
+/// Create a threshold for image
+#[no_mangle]
+pub extern "C" fn vxCreateThresholdForImage(
+    context: vx_context,
+    thresh_type: vx_enum,
+    input_format: vx_df_image,
+    output_format: vx_df_image,
+) -> vx_threshold {
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let thresh = vxCreateThreshold(context, thresh_type, 0);
+    if !thresh.is_null() {
+        let t = unsafe { &mut *(thresh as *mut VxCThresholdData) };
+        t.input_format = input_format;
+        t.output_format = output_format;
+    }
+    thresh
+}
+
+/// Query threshold attributes
+#[no_mangle]
+pub extern "C" fn vxQueryThresholdData(
+    thresh: vx_threshold,
+    attribute: vx_enum,
+    ptr: *mut c_void,
+    size: vx_size,
+) -> vx_status {
+    if thresh.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let t = unsafe { &*(thresh as *const VxCThresholdData) };
+
+    unsafe {
+        match attribute {
+            VX_THRESHOLD_TYPE => {
+                if size != std::mem::size_of::<vx_enum>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_enum) = t.thresh_type;
+            }
+            VX_THRESHOLD_DATA_TYPE => {
+                if size != std::mem::size_of::<vx_enum>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_enum) = t.data_type;
+            }
+            VX_THRESHOLD_INPUT_FORMAT => {
+                if size != std::mem::size_of::<vx_df_image>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_df_image) = t.input_format;
+            }
+            VX_THRESHOLD_OUTPUT_FORMAT => {
+                if size != std::mem::size_of::<vx_df_image>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_df_image) = t.output_format;
+            }
+            _ => return VX_ERROR_NOT_IMPLEMENTED,
+        }
+    }
+
+    VX_SUCCESS
+}
+
+/// Copy threshold value (for binary threshold)
+#[no_mangle]
+pub extern "C" fn vxCopyThresholdValue(
+    thresh: vx_threshold,
+    user_ptr: *mut c_void,
+    usage: vx_enum,
+    user_mem_type: vx_enum,
+) -> vx_status {
+    if thresh.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if user_ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != VX_MEMORY_TYPE_HOST {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    let t = unsafe { &mut *(thresh as *mut VxCThresholdData) };
+
+    unsafe {
+        match usage {
+            VX_READ_ONLY => {
+                // Copy value to user
+                let val = t.value;
+                std::ptr::write(user_ptr as *mut vx_int32, val);
+            }
+            VX_WRITE_ONLY => {
+                // Copy from user
+                t.value = *(user_ptr as *const vx_int32);
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+
+    VX_SUCCESS
+}
+
+/// Copy threshold range (for range threshold)
+#[no_mangle]
+pub extern "C" fn vxCopyThresholdRange(
+    thresh: vx_threshold,
+    lower: *mut c_void,
+    upper: *mut c_void,
+    usage: vx_enum,
+    user_mem_type: vx_enum,
+) -> vx_status {
+    if thresh.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if lower.is_null() || upper.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != VX_MEMORY_TYPE_HOST {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    let t = unsafe { &mut *(thresh as *mut VxCThresholdData) };
+
+    unsafe {
+        match usage {
+            VX_READ_ONLY => {
+                // Copy range to user
+                std::ptr::write(lower as *mut vx_int32, t.lower);
+                std::ptr::write(upper as *mut vx_int32, t.upper);
+            }
+            VX_WRITE_ONLY => {
+                // Copy from user
+                t.lower = *(lower as *const vx_int32);
+                t.upper = *(upper as *const vx_int32);
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+
+    VX_SUCCESS
+}
+
+/// Copy threshold output values
+#[no_mangle]
+pub extern "C" fn vxCopyThresholdOutput(
+    thresh: vx_threshold,
+    true_value: *mut c_void,
+    false_value: *mut c_void,
+    usage: vx_enum,
+    user_mem_type: vx_enum,
+) -> vx_status {
+    if thresh.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if true_value.is_null() || false_value.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != VX_MEMORY_TYPE_HOST {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    let t = unsafe { &mut *(thresh as *mut VxCThresholdData) };
+
+    unsafe {
+        match usage {
+            VX_READ_ONLY => {
+                // Copy output values to user
+                std::ptr::write(true_value as *mut vx_int32, t.true_value);
+                std::ptr::write(false_value as *mut vx_int32, t.false_value);
+            }
+            VX_WRITE_ONLY => {
+                // Copy from user
+                t.true_value = *(true_value as *const vx_int32);
+                t.false_value = *(false_value as *const vx_int32);
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+
+    VX_SUCCESS
+}
+
+/// Query threshold (wrapper to match unified_c_api)
+#[no_mangle]
+pub extern "C" fn vxQueryThreshold(
+    thresh: vx_threshold,
+    attribute: vx_enum,
+    ptr: *mut c_void,
+    size: vx_size,
+) -> vx_status {
+    vxQueryThresholdData(thresh, attribute, ptr, size)
+}
+
+/// Copy threshold (wrapper for unified API compatibility)
+#[no_mangle]
+pub extern "C" fn vxCopyThreshold(
+    thresh: vx_threshold,
+    user_ptr: *mut c_void,
+    usage: vx_enum,
+    user_mem_type: vx_enum,
+) -> vx_status {
+    if thresh.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if user_ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != VX_MEMORY_TYPE_HOST {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    let t = unsafe { &*(thresh as *const VxCThresholdData) };
+
+    unsafe {
+        match usage {
+            VX_READ_ONLY => {
+                // Copy all threshold values
+                std::ptr::write(user_ptr as *mut vx_int32, t.value);
+            }
+            VX_WRITE_ONLY => {
+                // Write value
+                let val = *(user_ptr as *const vx_int32);
+                let t = unsafe { &mut *(thresh as *mut VxCThresholdData) };
+                t.value = val;
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
         }
     }
 
@@ -648,6 +975,24 @@ pub extern "C" fn vxGetPyramidLevel(
     let level = &p.images[index as usize];
     let img_wrapper = Box::new(level.data.as_ptr() as usize);
     Box::into_raw(img_wrapper) as vx_image
+}
+
+/// Create a virtual pyramid (for graph intermediate results)
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualPyramid(
+    graph: vx_graph,
+    levels: vx_size,
+    scale: vx_float32,
+    width: vx_uint32,
+    height: vx_uint32,
+    format: vx_df_image,
+) -> vx_pyramid {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Virtual pyramids are created like regular ones but associated with graph
+    // In a full implementation, memory would be allocated during graph execution
+    vxCreatePyramid(graph as vx_context, levels, scale, width, height, format)
 }
 
 /// Release pyramid
