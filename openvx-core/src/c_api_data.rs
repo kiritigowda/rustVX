@@ -5,17 +5,32 @@ use std::sync::RwLock;
 use crate::c_api::*;
 
 // Pixel value union (needed for image operations)
+// Match the C OpenVX definition with proper reserved padding
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union vx_pixel_value_t {
-    pub rgb: [u8; 3],
-    pub rgba: [u8; 4],
-    pub yuv: [u8; 3],
-    pub u8: u8,
-    pub u16: u16,
-    pub u32: u32,
-    pub s16: i16,
-    pub s32: i32,
+    /// VX_DF_IMAGE_RGB format in the R,G,B order
+    pub RGB: [u8; 3],
+    /// VX_DF_IMAGE_RGBX format in the R,G,B,X order
+    pub RGBX: [u8; 4],
+    /// VX_DF_IMAGE_RGBA format in the R,G,B,A order
+    pub RGBA: [u8; 4],
+    /// All YUV formats in the Y,U,V order
+    pub YUV: [u8; 3],
+    /// VX_DF_IMAGE_U1
+    pub U1: bool,
+    /// VX_DF_IMAGE_U8
+    pub U8: u8,
+    /// VX_DF_IMAGE_U16
+    pub U16: u16,
+    /// VX_DF_IMAGE_S16
+    pub S16: i16,
+    /// VX_DF_IMAGE_U32
+    pub U32: u32,
+    /// VX_DF_IMAGE_S32
+    pub S32: i32,
+    /// Reserved for future use
+    pub reserved: [u8; 16],
 }
 
 // ============================================================================

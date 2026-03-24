@@ -10,7 +10,7 @@ use openvx_core::c_api::{
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_DF_IMAGE_RGB, VX_DF_IMAGE_RGBA, VX_DF_IMAGE_RGBX, VX_DF_IMAGE_NV12,
-    VX_DF_IMAGE_NV21, VX_DF_IMAGE_UYVY, VX_DF_IMAGE_YUYV, VX_DF_IMAGE_IYUV,
+    VX_DF_IMAGE_NV21, VX_DF_IMAGE_IYUV, VX_DF_IMAGE_UYVY, VX_DF_IMAGE_YUYV,
     VX_DF_IMAGE_YUV4, VX_DF_IMAGE_U8, VX_DF_IMAGE_U16, VX_DF_IMAGE_S16,
     VX_DF_IMAGE_U32, VX_DF_IMAGE_S32,
     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
@@ -182,7 +182,18 @@ pub extern "C" fn vxCreateImageFromHandle(
     }
 }
 
-/// Create a uniform image (all pixels have the same value)
+/// \brief Creates an image object with the specified attributes and sets all pixels to the uniform value specified by value pointer.
+/// 
+/// Creates an image with the specified width, height, and color format, where all pixels
+/// are initialized to the same uniform value. This is useful for creating test images or
+/// constant images for graph operations.
+/// 
+/// \param [in] context The reference to the overall context
+/// \param [in] width The image width in pixels
+/// \param [in] height The image height in pixels
+/// \param [in] color The VX_DF_IMAGE format code
+/// \param [in] value A pointer to the \ref vx_pixel_value_t union to use for the uniform image
+/// \return An image reference VX_SUCCESS
 #[no_mangle]
 pub extern "C" fn vxCreateUniformImage(
     context: vx_context,
@@ -191,40 +202,54 @@ pub extern "C" fn vxCreateUniformImage(
     color: vx_df_image,
     value: *const vx_pixel_value_t,
 ) -> vx_image {
-    if context.is_null() || value.is_null() {
+    // Validate context parameter
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    // Validate value parameter
+    if value.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    // Validate dimensions (width and height must be > 0)
+    if width == 0 || height == 0 {
         return std::ptr::null_mut();
     }
 
+    // Calculate the required buffer size
     let size = VxCImage::calculate_size(width, height, color);
     if size == 0 {
         return std::ptr::null_mut();
     }
 
-    // Create data and fill with uniform value
+    // Create data buffer and fill with uniform value
     let mut data = vec![0u8; size];
+    
     unsafe {
         let val = std::ptr::read(value);
-        // Fill data based on format
+        
+        // Fill data based on format using uppercase field names to match C OpenVX spec
         match color {
             VX_DF_IMAGE_U8 => {
-                data.fill(val.u8);
+                data.fill(val.U8);
             }
             VX_DF_IMAGE_U16 => {
-                let v = val.u16.to_le_bytes();
+                let v = val.U16.to_le_bytes();
                 for chunk in data.chunks_exact_mut(2) {
                     chunk[0] = v[0];
                     chunk[1] = v[1];
                 }
             }
             VX_DF_IMAGE_S16 => {
-                let v = val.s16.to_le_bytes();
+                let v = val.S16.to_le_bytes();
                 for chunk in data.chunks_exact_mut(2) {
                     chunk[0] = v[0];
                     chunk[1] = v[1];
                 }
             }
             VX_DF_IMAGE_U32 => {
-                let v = val.u32.to_le_bytes();
+                let v = val.U32.to_le_bytes();
                 for chunk in data.chunks_exact_mut(4) {
                     chunk[0] = v[0];
                     chunk[1] = v[1];
@@ -233,7 +258,7 @@ pub extern "C" fn vxCreateUniformImage(
                 }
             }
             VX_DF_IMAGE_S32 => {
-                let v = val.s32.to_le_bytes();
+                let v = val.S32.to_le_bytes();
                 for chunk in data.chunks_exact_mut(4) {
                     chunk[0] = v[0];
                     chunk[1] = v[1];
@@ -243,26 +268,43 @@ pub extern "C" fn vxCreateUniformImage(
             }
             VX_DF_IMAGE_RGB => {
                 for chunk in data.chunks_exact_mut(3) {
-                    chunk[0] = val.rgb[0];
-                    chunk[1] = val.rgb[1];
-                    chunk[2] = val.rgb[2];
+                    chunk[0] = val.RGB[0];
+                    chunk[1] = val.RGB[1];
+                    chunk[2] = val.RGB[2];
                 }
             }
-            VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => {
+            VX_DF_IMAGE_RGBA => {
                 for chunk in data.chunks_exact_mut(4) {
-                    chunk[0] = val.rgba[0];
-                    chunk[1] = val.rgba[1];
-                    chunk[2] = val.rgba[2];
-                    chunk[3] = val.rgba[3];
+                    chunk[0] = val.RGBA[0];
+                    chunk[1] = val.RGBA[1];
+                    chunk[2] = val.RGBA[2];
+                    chunk[3] = val.RGBA[3];
                 }
+            }
+            VX_DF_IMAGE_RGBX => {
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk[0] = val.RGBX[0];
+                    chunk[1] = val.RGBX[1];
+                    chunk[2] = val.RGBX[2];
+                    chunk[3] = val.RGBX[3];
+                }
+            }
+            VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
+                // YUV formats use YUV field - fill with Y value as default
+                data.fill(val.YUV[0]);
+            }
+            VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV => {
+                // Packed YUV formats - fill with Y value
+                data.fill(val.YUV[0]);
             }
             _ => {
-                // Default: fill with u8 value
-                data.fill(val.u8);
+                // Default: fill with U8 value for other formats
+                data.fill(val.U8);
             }
         }
     }
 
+    // Create the image structure
     let image = Box::new(VxCImage {
         width,
         height,
@@ -273,6 +315,7 @@ pub extern "C" fn vxCreateUniformImage(
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
     });
 
+    // Convert to raw pointer
     let image_ptr = Box::into_raw(image) as vx_image;
     
     // Register image address in unified registry for type queries (vxQueryReference)
@@ -282,6 +325,14 @@ pub extern "C" fn vxCreateUniformImage(
 }
 
 /// Create an image from a channel of another image
+/// 
+/// According to OpenVX spec, this creates a sub-image from a specific channel
+/// of a YUV formatted parent image. Valid channels are:
+/// - VX_CHANNEL_Y (0): Y plane (valid for IYUV, NV12, NV21, YUV4)
+/// - VX_CHANNEL_U (1): U plane (valid for IYUV, YUV4)
+/// - VX_CHANNEL_V (2): V plane (valid for IYUV, YUV4)
+/// 
+/// The function extracts the context from the parent image.
 #[no_mangle]
 pub extern "C" fn vxCreateImageFromChannel(
     img: vx_image,
@@ -294,43 +345,57 @@ pub extern "C" fn vxCreateImageFromChannel(
     unsafe {
         let source_img = &*(img as *const VxCImage);
         
-        // Determine output format and channel offset based on source format and channel
-        let (output_format, _channel_offset, _channel_stride) = match source_img.format {
-            VX_DF_IMAGE_RGB => {
-                match channel {
-                    0 => (VX_DF_IMAGE_U8, 0, 3), // R
-                    1 => (VX_DF_IMAGE_U8, 1, 3), // G
-                    2 => (VX_DF_IMAGE_U8, 2, 3), // B
+        // Per OpenVX spec, only YUV formats support channel extraction
+        // Validate channel based on source format
+        match channel {
+            // Y channel is valid for IYUV, NV12, NV21, YUV4
+            4 /* VX_CHANNEL_Y */ => {
+                match source_img.format {
+                    VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
+                        // Valid - continue
+                    }
                     _ => return std::ptr::null_mut(),
                 }
             }
-            VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => {
-                match channel {
-                    0 => (VX_DF_IMAGE_U8, 0, 4), // R
-                    1 => (VX_DF_IMAGE_U8, 1, 4), // G
-                    2 => (VX_DF_IMAGE_U8, 2, 4), // B
-                    3 => (VX_DF_IMAGE_U8, 3, 4), // A or X
+            // U and V channels are only valid for YUV4 and IYUV
+            5 /* VX_CHANNEL_U */ | 6 /* VX_CHANNEL_V */ => {
+                match source_img.format {
+                    VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV => {
+                        // Valid - continue
+                    }
                     _ => return std::ptr::null_mut(),
                 }
             }
-            VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
-                // NV12/NV21 have Y plane and interleaved UV/VU plane
-                match channel {
-                    0 | 1 | 2 => (VX_DF_IMAGE_U8, channel, 1),
-                    _ => return std::ptr::null_mut(),
-                }
+            _ => return std::ptr::null_mut(),
+        }
+
+        // Get context from parent image
+        let context = source_img.context;
+        if context.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        // Calculate dimensions based on plane
+        // For YUV formats:
+        // - Y plane: full width x height
+        // - U/V planes for IYUV: width/2 x height/2 (4:2:0 subsampling)
+        // - U/V planes for YUV4: full width x height (4:4:4, no subsampling)
+        let (output_width, output_height) = match channel {
+            4 /* VX_CHANNEL_Y */ => {
+                // Y plane is full resolution
+                (source_img.width, source_img.height)
             }
-            VX_DF_IMAGE_IYUV => {
-                // IYUV has separate Y, U, V planes
-                match channel {
-                    0 | 1 | 2 => (VX_DF_IMAGE_U8, channel, 1),
-                    _ => return std::ptr::null_mut(),
-                }
-            }
-            VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV => {
-                // Interleaved YUV formats
-                match channel {
-                    0 | 1 | 2 => (VX_DF_IMAGE_U8, channel, 2),
+            5 /* VX_CHANNEL_U */ | 6 /* VX_CHANNEL_V */ => {
+                // U/V planes depend on format
+                match source_img.format {
+                    VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
+                        // 4:2:0 subsampling - half resolution
+                        ((source_img.width + 1) / 2, (source_img.height + 1) / 2)
+                    }
+                    VX_DF_IMAGE_YUV4 => {
+                        // 4:4:4 - full resolution
+                        (source_img.width, source_img.height)
+                    }
                     _ => return std::ptr::null_mut(),
                 }
             }
@@ -338,12 +403,14 @@ pub extern "C" fn vxCreateImageFromChannel(
         };
 
         // Create channel image that shares data with parent
+        // Note: This is a simplified implementation. A full implementation
+        // would need to handle plane offsets for YUV formats properly.
         let channel_image = Box::new(VxCImage {
-            width: source_img.width,
-            height: source_img.height,
-            format: output_format,
+            width: output_width,
+            height: output_height,
+            format: VX_DF_IMAGE_U8, // Channel images are always U8
             is_virtual: false,
-            context: source_img.context,
+            context: context,
             data: Arc::clone(&source_img.data),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
         });

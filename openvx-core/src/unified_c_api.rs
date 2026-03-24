@@ -2047,10 +2047,21 @@ pub const VX_KERNEL_ERODE_5x5: vx_enum = 0x27;
 // Extended API Functions
 // ============================================================================
 
-// Note: vxCreateUniformImage, vxCreateImageFromROI, vxSwapImageHandle, 
+// Note: vxCreateUniformImage, vxCreateImageFromROI, vxSwapImageHandle,
 // vxCopyImagePatch, vxSetImageValidRectangle, vxGetValidRegionImage,
 // vxAllocateImageMemory, vxReleaseImageMemory, vxComputeImagePattern,
 // vxCopyImage, and vxCopyImagePlane are implemented in the openvx-image crate
+
+// Re-export the function signature for unified C API compatibility
+extern "C" {
+    pub fn vxCreateUniformImage(
+        context: vx_context,
+        width: vx_uint32,
+        height: vx_uint32,
+        color: vx_df_image,
+        value: *const vx_pixel_value_t,
+    ) -> vx_image;
+}
 
 // VX_DF_IMAGE format constants (as i32/vx_enum)
 pub const VX_DF_IMAGE_U8: vx_enum = 0x20080100i32;
@@ -2069,10 +2080,8 @@ pub const VX_DF_IMAGE_UYVY: vx_enum = 0x59565955i32;
 pub const VX_DF_IMAGE_YUYV: vx_enum = 0x56595559i32;
 
 // Note: vxCreateImageFromChannel is implemented in openvx-image crate
-// The implementation is re-exported here for unified C API
-extern "C" {
-    pub fn vxCreateImageFromChannel(img: vx_image, channel: vx_enum) -> vx_image;
-}
+// Per OpenVX spec, it takes (image, channel) - context is extracted from image
+// It is re-exported from openvx-image crate and should not be declared here
 
 #[no_mangle]
 pub extern "C" fn vxQueryPyramid(

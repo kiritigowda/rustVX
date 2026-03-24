@@ -1291,25 +1291,26 @@ pub const VX_MEMORY_TYPE_HOST: vx_enum = 0;
 pub const VX_MEMORY_TYPE_NONE: vx_enum = 1;
 
 // ============================================================================
-// Image Format Constants
+// Image Format Constants (OpenVX spec values)
+// Format: 0x[dimension][channels][plane0][plane1] - see OpenVX 1.3 spec
 // ============================================================================
 
-pub const VX_DF_IMAGE_U8: vx_df_image = 0x000008u32;
-pub const VX_DF_IMAGE_S8: vx_df_image = 0x800008u32;
-pub const VX_DF_IMAGE_U16: vx_df_image = 0x000010u32;
-pub const VX_DF_IMAGE_S16: vx_df_image = 0x800010u32;
-pub const VX_DF_IMAGE_U32: vx_df_image = 0x000020u32;
-pub const VX_DF_IMAGE_S32: vx_df_image = 0x800020u32;
-pub const VX_DF_IMAGE_RGB: vx_df_image = 0x52474218;
-pub const VX_DF_IMAGE_RGBX: vx_df_image = 0x58424720;
-pub const VX_DF_IMAGE_RGBA: vx_df_image = 0x41424720;
-pub const VX_DF_IMAGE_NV12: vx_df_image = 0x3231564C;
-pub const VX_DF_IMAGE_NV21: vx_df_image = 0x3132564C;
-pub const VX_DF_IMAGE_UYVY: vx_df_image = 0x59555659;
-pub const VX_DF_IMAGE_YUYV: vx_df_image = 0x56595559;
-pub const VX_DF_IMAGE_IYUV: vx_df_image = 0x56555949;
-pub const VX_DF_IMAGE_YUV4: vx_df_image = 0x34555659;
-pub const VX_DF_IMAGE_GRAYSCALE: vx_df_image = 0x0085859;
+pub const VX_DF_IMAGE_U8: vx_df_image = 0x20080100u32;
+pub const VX_DF_IMAGE_S8: vx_df_image = 0x20080200u32;
+pub const VX_DF_IMAGE_U16: vx_df_image = 0x20100100u32;
+pub const VX_DF_IMAGE_S16: vx_df_image = 0x20100200u32;
+pub const VX_DF_IMAGE_U32: vx_df_image = 0x20200100u32;
+pub const VX_DF_IMAGE_S32: vx_df_image = 0x20200200u32;
+pub const VX_DF_IMAGE_RGB: vx_df_image = 0x21000300u32;
+pub const VX_DF_IMAGE_RGBX: vx_df_image = 0x21010400u32;
+pub const VX_DF_IMAGE_RGBA: vx_df_image = 0x21000400u32;
+pub const VX_DF_IMAGE_NV12: vx_df_image = 0x3231564Eu32;  // 'NV12' in ASCII
+pub const VX_DF_IMAGE_NV21: vx_df_image = 0x3132564Eu32;  // 'NV21' in ASCII
+pub const VX_DF_IMAGE_UYVY: vx_df_image = 0x59565955u32;  // 'UYVY' in ASCII
+pub const VX_DF_IMAGE_YUYV: vx_df_image = 0x56595559u32;  // 'YUYV' in ASCII
+pub const VX_DF_IMAGE_IYUV: vx_df_image = 0x56555949u32;  // 'IYUV' in ASCII (same as I420)
+pub const VX_DF_IMAGE_YUV4: vx_df_image = 0x34555659u32;  // 'YUV4' in ASCII
+pub const VX_DF_IMAGE_GRAYSCALE: vx_df_image = 0x20080100u32; // Same as U8
 
 // Virtual image format
 pub const VX_DF_IMAGE_VIRT: vx_df_image = 0xFFFFFFFFu32;
