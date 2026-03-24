@@ -1,9 +1,31 @@
 //! Image module
 
 pub mod c_api;
+pub mod ct_image;
 
 // Re-export from c_api
 pub use c_api::vxCreateImageFromChannel;
+pub use c_api::vxCloneImage;
+pub use c_api::vxCloneImageWithGraph;
+
+// Re-export CT Image functions for conformance testing
+pub use ct_image::{
+    CT_Rect, CT_Image, CT_ImageCopyDirection, CT_ImageData,
+    ct_channels, ct_stride_bytes, ct_image_bits_per_pixel,
+    ct_get_num_planes, ct_image_get_plane_base,
+    ct_image_get_channel_step_x, ct_image_get_channel_step_y,
+    ct_image_get_channel_subsampling_x, ct_image_get_channel_subsampling_y,
+    ct_image_get_channel_plane, ct_image_get_channel_component,
+    ct_get_num_channels, ct_allocate_image, ct_allocate_image_hdr,
+    ct_get_image_roi, ct_get_image_roi_, ct_adjust_roi,
+    ct_image_data_ptr_1u, ct_image_data_replicate_1u, ct_image_data_constant_1u,
+    ct_image_data_ptr_8u, ct_image_data_replicate_8u, ct_image_data_constant_8u,
+    ct_free_image, ct_image_to_vx_image, ct_image_from_vx_image, ct_image_copy,
+    ct_image_create_clone, ct_fill_ct_image_random, ct_allocate_ct_image_random,
+    U8_ct_image_to_U1_ct_image, U1_ct_image_to_U8_ct_image,
+    threshold_U8_ct_image, ct_assert_eq_ctimage, ct_dump_image_info,
+    ct_read_image, ct_write_image, ct_image_read_rect_S32,
+};
 
 use openvx_core::{VxResult, Referenceable, VxType};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -150,4 +172,20 @@ pub fn create_test_image(width: usize, height: usize) -> Image {
         }
     }
     img
+}
+
+/// Clone an image - creates a deep copy
+/// 
+/// This creates a new image with the same dimensions and format,
+/// then copies all pixel data from the source.
+pub fn clone_image(source: &Image) -> Image {
+    let source_data = source.data.read().unwrap();
+    let cloned_data = source_data.clone();
+    
+    Image {
+        width: source.width,
+        height: source.height,
+        format: source.format,
+        data: RwLock::new(cloned_data),
+    }
 }

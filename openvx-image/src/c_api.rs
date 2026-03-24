@@ -1144,3 +1144,132 @@ pub extern "C" fn vxCreateUniformImageFromHandle(
 ) -> vx_image {
     std::ptr::null_mut()
 }
+
+/// Clone an image - creates a deep copy of the source image
+///
+/// This function creates a new image with the same dimensions and format as the source,
+/// then copies all pixel data from the source to the new image.
+///
+/// # Arguments
+/// * `context` - The OpenVX context
+/// * `source` - The source image to clone
+///
+/// # Returns
+/// A new vx_image handle that is a deep copy of the source, or null on error
+#[no_mangle]
+pub extern "C" fn vxCloneImage(
+    context: vx_context,
+    source: vx_image,
+) -> vx_image {
+    // Validate parameters
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    if source.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let source_img = &*(source as *const VxCImage);
+
+        // Get source image properties
+        let width = source_img.width;
+        let height = source_img.height;
+        let format = source_img.format;
+
+        // Handle virtual images - they don't have allocated data
+        // Per OpenVX spec, cloning a virtual image creates a regular image
+        if source_img.is_virtual && source_img.data.read().unwrap().is_empty() {
+            // Virtual image without data - just create regular image with same dimensions
+            return vxCreateImage(context, width, height, format);
+        }
+
+        // Create the destination image
+        let mut dest_image = vxCreateImage(context, width, height, format);
+        if dest_image.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        // Get the destination image data structure
+        let dest_img = &mut *(dest_image as *mut VxCImage);
+
+        // Copy all data from source to destination
+        if let Ok(source_data) = source_img.data.read() {
+            if let Ok(mut dest_data) = dest_img.data.write() {
+                // Ensure destination has enough space
+                if dest_data.len() >= source_data.len() {
+                    // Perform deep copy of pixel data
+                    dest_data.copy_from_slice(&source_data[..source_data.len()]);
+                } else {
+                    // Shouldn't happen if vxCreateImage worked correctly, but handle it
+                    vxReleaseImage(&mut dest_image);
+                    return std::ptr::null_mut();
+                }
+            } else {
+                vxReleaseImage(&mut dest_image);
+                return std::ptr::null_mut();
+            }
+        } else {
+            vxReleaseImage(&mut dest_image);
+            return std::ptr::null_mut();
+        }
+
+        // Also copy mapped patches metadata if any exist
+        if let Ok(source_patches) = source_img.mapped_patches.read() {
+            if let Ok(mut dest_patches) = dest_img.mapped_patches.write() {
+                // Copy the patch metadata (not the actual data which is owned by the patches)
+                *dest_patches = source_patches.clone();
+            }
+        }
+
+        dest_image
+    }
+}
+
+/// Clone an image for use with a specific graph
+///
+/// This variant creates a virtual image if the source is virtual,
+/// otherwise creates a regular image. This is used by CTS for cloning
+/// images within graph contexts.
+///
+/// # Arguments
+/// * `context` - The OpenVX context (used if source is not virtual)
+/// * `graph` - The OpenVX graph (used if source is virtual)
+/// * `source` - The source image to clone
+///
+/// # Returns
+/// A new vx_image handle that is a clone of the source, or null on error
+#[no_mangle]
+pub extern "C" fn vxCloneImageWithGraph(
+    context: vx_context,
+    graph: vx_graph,
+    source: vx_image,
+) -> vx_image {
+    // Validate source
+    if source.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let source_img = &*(source as *const VxCImage);
+        let width = source_img.width;
+        let height = source_img.height;
+        let format = source_img.format;
+        let is_virtual = source_img.is_virtual;
+
+        // Determine if we need a virtual image
+        let needs_virtual = is_virtual || source_img.data.read().unwrap().is_empty();
+
+        if needs_virtual {
+            // Validate graph for virtual image creation
+            if graph.is_null() {
+                return std::ptr::null_mut();
+            }
+            // Create a virtual image with same dimensions
+            vxCreateVirtualImage(graph, width, height, format)
+        } else {
+            // Create a regular image with data copy
+            vxCloneImage(context, source)
+        }
+    }
+}
