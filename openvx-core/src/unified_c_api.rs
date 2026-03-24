@@ -2060,21 +2060,23 @@ fn calculate_image_size(width: u32, height: u32, format: vx_enum) -> usize {
     let w = width as usize;
     let h = height as usize;
 
-    let channels = match format {
+    // Use bytes_per_pixel for allocation, NOT channels
+    // bytes_per_pixel gives the actual memory needed per pixel
+    let bpp = match format {
         VX_DF_IMAGE_U8 => 1,
-        VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16 => 1,
-        VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32 => 1,
+        VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16 => 2,
+        VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32 => 4,
         VX_DF_IMAGE_RGB => 3,
         VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => 4,
-        VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => 3,
-        VX_DF_IMAGE_IYUV => 3,
+        VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => 1,
+        VX_DF_IMAGE_IYUV => 1,
         VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV => 2,
         VX_DF_IMAGE_YUV4 => 3,
         _ => 1,
     };
 
     // Check for overflow
-    let size = w.saturating_mul(h).saturating_mul(channels);
+    let size = w.saturating_mul(h).saturating_mul(bpp);
     let max_size = 1024 * 1024 * 1024; // 1GB limit
     if size > max_size {
         return 0;

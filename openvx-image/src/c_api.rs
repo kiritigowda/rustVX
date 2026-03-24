@@ -39,10 +39,11 @@ impl VxCImage {
         match format {
             VX_DF_IMAGE_U8 => 1,
             VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16 => 2,
-            VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32 | VX_DF_IMAGE_RGB => 4,
+            VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32 => 4,
+            VX_DF_IMAGE_RGB => 3,
             VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => 4,
-            VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => 1, // Luma only
-            VX_DF_IMAGE_IYUV => 1,
+            VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => 1, // Luma plane only per-pixel
+            VX_DF_IMAGE_IYUV => 1,                    // Y plane only per-pixel
             VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV => 2,
             VX_DF_IMAGE_YUV4 => 3,
             _ => 1,
@@ -69,21 +70,23 @@ impl VxCImage {
         if width == 0 || height == 0 {
             return 0;
         }
-        
+
         // Check for potential overflow
         let w = width as usize;
         let h = height as usize;
-        let channels = Self::channels(format);
-        
+        // Use bytes_per_pixel for allocation, NOT channels
+        // channels() returns logical color channels, bytes_per_pixel() returns actual memory needed
+        let bpp = Self::bytes_per_pixel(format);
+
         // Limit maximum allocation to ~1GB (sanity check)
         let max_size = 1024 * 1024 * 1024; // 1GB
-        let size = w.saturating_mul(h).saturating_mul(channels);
-        
+        let size = w.saturating_mul(h).saturating_mul(bpp);
+
         if size > max_size {
-            eprintln!("Image size {}x{}x{} = {} exceeds maximum allocation limit", w, h, channels, size);
+            eprintln!("Image size {}x{}x{} = {} exceeds maximum allocation limit", w, h, bpp, size);
             return 0; // Return 0 to trigger null image creation
         }
-        
+
         size
     }
 }
@@ -602,8 +605,14 @@ pub extern "C" fn vxCreateImageFromChannel(
             // YUV4: 3 planes, separate Y, U, V
             let width = source_img.width as usize;
             let height = source_img.height as usize;
-            let plane_size = width * height;
-            let offset = channel_idx * plane_size;
+            let plane_size = match width.checked_mul(height) {
+                Some(size) if size <= MAX_ALLOCATION_SIZE => size,
+                _ => return std::ptr::null_mut(),
+            };
+            let offset = match channel_idx.checked_mul(plane_size) {
+                Some(off) => off,
+                None => return std::ptr::null_mut(),
+            };
             let stride = 1; // Single channel, no interleaving
             (VX_DF_IMAGE_U8, offset, stride)
         }
@@ -611,14 +620,21 @@ pub extern "C" fn vxCreateImageFromChannel(
             // NV12/NV21: Y plane + interleaved UV
             let width = source_img.width as usize;
             let height = source_img.height as usize;
-            let y_plane_size = width * height;
+            let y_plane_size = match width.checked_mul(height) {
+                Some(size) if size <= MAX_ALLOCATION_SIZE => size,
+                _ => return std::ptr::null_mut(),
+            };
             if channel_idx == 0 {
                 // Y channel - full Y plane
                 (VX_DF_IMAGE_U8, 0, 1)
             } else if channel_idx == 1 || channel_idx == 2 {
                 // U or V channel - interleaved in UV plane
                 // For NV12: UV, for NV21: VU
-                let uv_offset = y_plane_size + if channel_idx == 1 { 0 } else { 1 };
+                let channel_offset = if channel_idx == 1 { 0 } else { 1 };
+                let uv_offset = match y_plane_size.checked_add(channel_offset) {
+                    Some(off) => off,
+                    None => return std::ptr::null_mut(),
+                };
                 (VX_DF_IMAGE_U8, uv_offset, 2)
             } else {
                 return std::ptr::null_mut();
@@ -628,12 +644,21 @@ pub extern "C" fn vxCreateImageFromChannel(
             // IYUV (I420): Y plane + U plane + V plane
             let width = source_img.width as usize;
             let height = source_img.height as usize;
-            let y_plane_size = width * height;
-            let uv_plane_size = (width / 2) * (height / 2);
+            let y_plane_size = match width.checked_mul(height) {
+                Some(size) if size <= MAX_ALLOCATION_SIZE => size,
+                _ => return std::ptr::null_mut(),
+            };
+            let uv_plane_size = match (width / 2).checked_mul(height / 2) {
+                Some(size) if size <= MAX_ALLOCATION_SIZE => size,
+                _ => return std::ptr::null_mut(),
+            };
             let offset = match channel_idx {
                 0 => 0,                                    // Y
                 1 => y_plane_size,                         // U
-                2 => y_plane_size + uv_plane_size,         // V
+                2 => match y_plane_size.checked_add(uv_plane_size) {
+                    Some(off) => off,                      // V
+                    None => return std::ptr::null_mut(),
+                },
                 _ => return std::ptr::null_mut(),
             };
             (VX_DF_IMAGE_U8, offset, 1)
