@@ -12,7 +12,7 @@ fn create_test_image(width: usize, height: usize) -> Image {
     for (i, pixel) in data.iter_mut().enumerate() {
         *pixel = ((i * 17) & 0xFF) as u8;
     }
-    Image::from_data(width, height, ImageFormat::Gray, data).unwrap()
+    Image::from_data(width, height, ImageFormat::Gray, data)
 }
 
 fn create_test_rgb(width: usize, height: usize) -> Image {
@@ -22,7 +22,7 @@ fn create_test_rgb(width: usize, height: usize) -> Image {
     for (i, pixel) in data.iter_mut().enumerate() {
         *pixel = ((i * 13) & 0xFF) as u8;
     }
-    Image::from_data(width, height, ImageFormat::Rgb, data).unwrap()
+    Image::from_data(width, height, ImageFormat::Rgb, data)
 }
 
 // Gaussian 3x3 benchmarks
@@ -33,7 +33,7 @@ fn bench_gaussian3x3(c: &mut Criterion) {
     
     for (width, height) in &sizes {
         let src = create_test_image(*width, *height);
-        let mut dst = Image::new(*width, *height, ImageFormat::Gray).unwrap();
+        let mut dst = Image::new(*width, *height, ImageFormat::Gray);
         
         group.bench_with_input(
             BenchmarkId::new("scalar", format!("{}x{}", width, height)),
@@ -88,7 +88,7 @@ fn bench_box3x3(c: &mut Criterion) {
     
     for (width, height) in &sizes {
         let src = create_test_image(*width, *height);
-        let mut dst = Image::new(*width, *height, ImageFormat::Gray).unwrap();
+        let mut dst = Image::new(*width, *height, ImageFormat::Gray);
         
         group.bench_with_input(
             BenchmarkId::new("scalar", format!("{}x{}", width, height)),
@@ -129,7 +129,7 @@ fn bench_rgb_to_gray(c: &mut Criterion) {
     
     for (width, height) in &sizes {
         let src = create_test_rgb(*width, *height);
-        let mut dst = Image::new(*width, *height, ImageFormat::Gray).unwrap();
+        let mut dst = Image::new(*width, *height, ImageFormat::Gray);
         
         group.bench_with_input(
             BenchmarkId::new("scalar", format!("{}x{}", width, height)),
@@ -185,7 +185,7 @@ fn bench_add_images(c: &mut Criterion) {
     for (width, height) in &sizes {
         let src1 = create_test_image(*width, *height);
         let src2 = create_test_image(*width, *height);
-        let mut dst = Image::new(*width, *height, ImageFormat::Gray).unwrap();
+        let mut dst = Image::new(*width, *height, ImageFormat::Gray);
         
         group.bench_with_input(
             BenchmarkId::new("scalar", format!("{}x{}", width, height)),
@@ -288,7 +288,7 @@ fn bench_weighted_average(c: &mut Criterion) {
     for (width, height) in &sizes {
         let src1 = create_test_image(*width, *height);
         let src2 = create_test_image(*width, *height);
-        let mut dst = Image::new(*width, *height, ImageFormat::Gray).unwrap();
+        let mut dst = Image::new(*width, *height, ImageFormat::Gray);
         
         group.bench_with_input(
             BenchmarkId::new("scalar", format!("{}x{}", width, height)),

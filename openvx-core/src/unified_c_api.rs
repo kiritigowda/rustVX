@@ -49,13 +49,71 @@ pub struct VxCContext {
     pub ref_count: AtomicUsize,
 }
 
-/// Image data
+/// Image data - unified struct used by both openvx-core and openvx-image
+/// This is defined here so vxu_impl can access it without circular dependencies
+#[derive(Debug)]
 pub struct VxCImage {
     pub width: u32,
     pub height: u32,
-    pub format: vx_enum,
-    pub data: RwLock<Vec<u8>>,
-    pub ref_count: AtomicUsize,
+    pub format: u32,  // vx_df_image (u32) format
+    pub is_virtual: bool,
+    pub context: vx_context,
+    pub data: Arc<RwLock<Vec<u8>>>,
+    // map_id, buffer, usage, offset, stride
+    pub mapped_patches: Arc<RwLock<Vec<(usize, Vec<u8>, vx_enum, usize, usize)>>>,
+}
+
+impl VxCImage {
+    pub fn bytes_per_pixel(format: u32) -> usize {
+        match format {
+            0x20080100 => 1, // VX_DF_IMAGE_U8
+            0x20100100 | 0x20100200 => 2, // VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16
+            0x20200100 | 0x20200200 => 4, // VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32
+            0x21000300 => 3, // VX_DF_IMAGE_RGB
+            0x21000400 | 0x21010400 => 4, // VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX
+            0x3231564E | 0x3132564E => 1, // VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 (luma only per-pixel)
+            0x56555949 => 1, // VX_DF_IMAGE_IYUV (Y plane only per-pixel)
+            0x59565955 | 0x56595559 => 2, // VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV
+            0x34555659 => 3, // VX_DF_IMAGE_YUV4
+            _ => 1,
+        }
+    }
+
+    pub fn channels(format: u32) -> usize {
+        match format {
+            0x20080100 => 1, // VX_DF_IMAGE_U8
+            0x20100100 | 0x20100200 => 1, // VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16
+            0x20200100 | 0x20200200 => 1, // VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32
+            0x21000300 => 3, // VX_DF_IMAGE_RGB
+            0x21000400 | 0x21010400 => 4, // VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX
+            0x3231564E | 0x3132564E => 3, // VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21
+            0x56555949 => 3, // VX_DF_IMAGE_IYUV
+            0x59565955 | 0x56595559 => 2, // VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV
+            0x34555659 => 3, // VX_DF_IMAGE_YUV4
+            _ => 1,
+        }
+    }
+
+    pub fn calculate_size(width: u32, height: u32, format: u32) -> usize {
+        // Validate dimensions to prevent overflow
+        if width == 0 || height == 0 {
+            return 0;
+        }
+
+        let w = width as usize;
+        let h = height as usize;
+        let bpp = Self::bytes_per_pixel(format);
+
+        // Limit maximum allocation to ~1GB (sanity check)
+        let max_size = 1024 * 1024 * 1024;
+        let size = w.saturating_mul(h).saturating_mul(bpp);
+
+        if size > max_size {
+            return 0;
+        }
+
+        size
+    }
 }
 
 /// Array data
@@ -1989,173 +2047,10 @@ pub const VX_KERNEL_ERODE_5x5: vx_enum = 0x27;
 // Extended API Functions
 // ============================================================================
 
-#[no_mangle]
-pub extern "C" fn vxCreateUniformImage(
-    context: vx_context,
-    width: u32,
-    height: u32,
-    color: u32,
-    value: *const vx_pixel_value_t,
-) -> vx_image {
-    if context.is_null() || value.is_null() || width == 0 || height == 0 {
-        return std::ptr::null_mut();
-    }
-
-    // Calculate image size based on format
-    let size = calculate_image_size(width, height, color as vx_enum);
-    if size == 0 {
-        return std::ptr::null_mut();
-    }
-
-    // Create image data and fill with uniform value
-    let mut data = vec![0u8; size];
-    let pixel_val = unsafe { std::ptr::read(value) };
-    fill_uniform_data(&mut data, color as vx_enum, &pixel_val);
-
-    // Create the image
-    let image = Box::new(VxCImageUnified {
-        width,
-        height,
-        format: color as vx_enum,
-        is_virtual: false,
-        is_uniform: true,
-        uniform_value: pixel_val,
-        context,
-        data: RwLock::new(data),
-    });
-
-    let image_ptr = Box::into_raw(image) as usize;
-
-    // Register in image registry
-    if let Ok(mut images) = IMAGES.lock() {
-        images.insert(image_ptr);
-    }
-
-    // Store reference count
-    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-        counts.insert(image_ptr, 1);
-    }
-
-    image_ptr as vx_image
-}
-
-/// Image struct for unified C API
-pub struct VxCImageUnified {
-    width: u32,
-    height: u32,
-    format: vx_enum,
-    is_virtual: bool,
-    is_uniform: bool,
-    uniform_value: vx_pixel_value_t,
-    context: vx_context,
-    data: RwLock<Vec<u8>>,
-}
-
-/// Calculate image size based on dimensions and format
-fn calculate_image_size(width: u32, height: u32, format: vx_enum) -> usize {
-    if width == 0 || height == 0 {
-        return 0;
-    }
-
-    let w = width as usize;
-    let h = height as usize;
-
-    // Use bytes_per_pixel for allocation, NOT channels
-    // bytes_per_pixel gives the actual memory needed per pixel
-    let bpp = match format {
-        VX_DF_IMAGE_U8 => 1,
-        VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16 => 2,
-        VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32 => 4,
-        VX_DF_IMAGE_RGB => 3,
-        VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => 4,
-        VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => 1,
-        VX_DF_IMAGE_IYUV => 1,
-        VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV => 2,
-        VX_DF_IMAGE_YUV4 => 3,
-        _ => 1,
-    };
-
-    // Check for overflow
-    let size = w.saturating_mul(h).saturating_mul(bpp);
-    let max_size = 1024 * 1024 * 1024; // 1GB limit
-    if size > max_size {
-        return 0;
-    }
-
-    size
-}
-
-/// Fill data with uniform value
-fn fill_uniform_data(data: &mut [u8], format: vx_enum, value: &vx_pixel_value_t) {
-    unsafe {
-        match format {
-            VX_DF_IMAGE_U8 => {
-                data.fill(value.u8);
-            }
-            VX_DF_IMAGE_U16 => {
-                let val = value.u16.to_le_bytes();
-                for i in (0..data.len()).step_by(2) {
-                    data[i] = val[0];
-                    if i + 1 < data.len() {
-                        data[i + 1] = val[1];
-                    }
-                }
-            }
-            VX_DF_IMAGE_S16 => {
-                let val = value.s16.to_le_bytes();
-                for i in (0..data.len()).step_by(2) {
-                    data[i] = val[0];
-                    if i + 1 < data.len() {
-                        data[i + 1] = val[1];
-                    }
-                }
-            }
-            VX_DF_IMAGE_U32 => {
-                let val = value.u32.to_le_bytes();
-                for i in (0..data.len()).step_by(4) {
-                    for j in 0..4 {
-                        if i + j < data.len() {
-                            data[i + j] = val[j];
-                        }
-                    }
-                }
-            }
-            VX_DF_IMAGE_S32 => {
-                let val = value.s32.to_le_bytes();
-                for i in (0..data.len()).step_by(4) {
-                    for j in 0..4 {
-                        if i + j < data.len() {
-                            data[i + j] = val[j];
-                        }
-                    }
-                }
-            }
-            VX_DF_IMAGE_RGB => {
-                for i in (0..data.len()).step_by(3) {
-                    if i + 2 < data.len() {
-                        data[i] = value.rgb[0];
-                        data[i + 1] = value.rgb[1];
-                        data[i + 2] = value.rgb[2];
-                    }
-                }
-            }
-            VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => {
-                for i in (0..data.len()).step_by(4) {
-                    if i + 3 < data.len() {
-                        data[i] = value.rgba[0];
-                        data[i + 1] = value.rgba[1];
-                        data[i + 2] = value.rgba[2];
-                        data[i + 3] = value.rgba[3];
-                    }
-                }
-            }
-            _ => {
-                // Default: fill with u8 value
-                data.fill(value.u8);
-            }
-        }
-    }
-}
+// Note: vxCreateUniformImage, vxCreateImageFromROI, vxSwapImageHandle, 
+// vxCopyImagePatch, vxSetImageValidRectangle, vxGetValidRegionImage,
+// vxAllocateImageMemory, vxReleaseImageMemory, vxComputeImagePattern,
+// vxCopyImage, and vxCopyImagePlane are implemented in the openvx-image crate
 
 // VX_DF_IMAGE format constants (as i32/vx_enum)
 pub const VX_DF_IMAGE_U8: vx_enum = 0x20080100i32;
@@ -2173,124 +2068,10 @@ pub const VX_DF_IMAGE_YUV4: vx_enum = 0x34555659i32;
 pub const VX_DF_IMAGE_UYVY: vx_enum = 0x59565955i32;
 pub const VX_DF_IMAGE_YUYV: vx_enum = 0x56595559i32;
 
-// Note: VxCChannelImage and vxCreateImageFromChannel are implemented in openvx-image crate
+// Note: vxCreateImageFromChannel is implemented in openvx-image crate
 // The implementation is re-exported here for unified C API
 extern "C" {
     pub fn vxCreateImageFromChannel(img: vx_image, channel: vx_enum) -> vx_image;
-}
-
-#[no_mangle]
-pub extern "C" fn vxCreateImageFromROI(
-    img: vx_image,
-    rect: *const vx_rectangle_t,
-) -> vx_image {
-    if img.is_null() || rect.is_null() {
-        return std::ptr::null_mut();
-    }
-    std::ptr::null_mut()
-}
-
-#[no_mangle]
-pub extern "C" fn vxSwapImageHandle(
-    image: vx_image,
-    new_ptrs: *const *mut c_void,
-    prev_ptrs: *mut *mut c_void,
-    num_planes: u32,
-) -> i32 {
-    if image.is_null() || new_ptrs.is_null() {
-        return -2;
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn vxComputeImagePattern(
-    _image: vx_image,
-    _rect: *const vx_rectangle_t,
-    _num_points: u32,
-    _points: *const vx_keypoint_t,
-    _pattern: *mut i32,
-) -> i32 {
-    -30
-}
-
-#[no_mangle]
-pub extern "C" fn vxCopyImage(
-    image: vx_image,
-    ptr: *mut c_void,
-    usage: i32,
-    mem_type: i32,
-) -> i32 {
-    if image.is_null() || ptr.is_null() {
-        return -2;
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn vxCopyImagePlane(
-    image: vx_image,
-    plane_index: u32,
-    ptr: *mut c_void,
-    usage: i32,
-    mem_type: i32,
-) -> i32 {
-    if image.is_null() || ptr.is_null() {
-        return -2;
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn vxCopyImagePatch(
-    image: vx_image,
-    rect: *const vx_rectangle_t,
-    plane_index: u32,
-    user_addr: *const vx_imagepatch_addressing_t,
-    user_ptr: *mut c_void,
-    usage: i32,
-    mem_type: i32,
-    _flags: u32,
-) -> i32 {
-    if image.is_null() || rect.is_null() || user_addr.is_null() || user_ptr.is_null() {
-        return -2;
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn vxSetImageValidRectangle(
-    _image: vx_image,
-    _rect: *const vx_rectangle_t,
-) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn vxGetValidRegionImage(
-    image: vx_image,
-    rect: *mut vx_rectangle_t,
-) -> i32 {
-    if image.is_null() || rect.is_null() {
-        return -2;
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn vxAllocateImageMemory(
-    _image: vx_image,
-    _type: i32,
-) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn vxReleaseImageMemory(
-    _image: vx_image,
-    _type: i32,
-) -> i32 {
-    0
 }
 
 #[no_mangle]
