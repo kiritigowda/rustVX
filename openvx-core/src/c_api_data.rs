@@ -6,31 +6,36 @@ use crate::c_api::*;
 
 // Pixel value union (needed for image operations)
 // Match the C OpenVX definition with proper reserved padding
+// The reserved array must overlap with the other fields for test compatibility
+// In C, union members share the same starting address, so U8 overlaps with reserved[0]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union vx_pixel_value_t {
+    /// Reserved array that overlaps with other fields (matches C definition)
+    /// When reserved[0]=0x11, reserved[1]=0x22, etc., then:
+    /// - U8 = reserved[0] = 0x11
+    /// - U16 = reserved[0..1] = 0x2211 (little-endian)
+    pub reserved: [u8; 16],
     /// VX_DF_IMAGE_RGB format in the R,G,B order
     pub RGB: [u8; 3],
-    /// VX_DF_IMAGE_RGBX format in the R,G,B,X order
+    /// VX_DF_IMAGE_RGBX format in the R,G,B,X order  
     pub RGBX: [u8; 4],
     /// VX_DF_IMAGE_RGBA format in the R,G,B,A order
     pub RGBA: [u8; 4],
     /// All YUV formats in the Y,U,V order
     pub YUV: [u8; 3],
     /// VX_DF_IMAGE_U1
-    pub U1: bool,
-    /// VX_DF_IMAGE_U8
+    pub U1: u8,
+    /// VX_DF_IMAGE_U8 (overlaps with reserved[0])
     pub U8: u8,
-    /// VX_DF_IMAGE_U16
+    /// VX_DF_IMAGE_U16 (overlaps with reserved[0..1])
     pub U16: u16,
-    /// VX_DF_IMAGE_S16
+    /// VX_DF_IMAGE_S16 (overlaps with reserved[0..1])
     pub S16: i16,
-    /// VX_DF_IMAGE_U32
+    /// VX_DF_IMAGE_U32 (overlaps with reserved[0..3])
     pub U32: u32,
-    /// VX_DF_IMAGE_S32
+    /// VX_DF_IMAGE_S32 (overlaps with reserved[0..3])
     pub S32: i32,
-    /// Reserved for future use
-    pub reserved: [u8; 16],
 }
 
 // ============================================================================

@@ -1287,8 +1287,10 @@ pub const VX_OUTPUT: vx_enum = 1;
 pub const VX_READ_ONLY: vx_enum = 0;
 pub const VX_WRITE_ONLY: vx_enum = 1;
 pub const VX_READ_AND_WRITE: vx_enum = 2;
-pub const VX_MEMORY_TYPE_HOST: vx_enum = 0;
-pub const VX_MEMORY_TYPE_NONE: vx_enum = 1;
+// VX_MEMORY_TYPE_HOST = VX_ENUM_BASE(VX_ID_KHRONOS(0), VX_ENUM_MEMORY_TYPE(0x0E)) + 1
+// VX_ENUM_BASE = (0 << 20) | (0x0E << 12) = 0xE000, +1 = 0xE001
+pub const VX_MEMORY_TYPE_NONE: vx_enum = 0xE000;
+pub const VX_MEMORY_TYPE_HOST: vx_enum = 0xE001;
 
 // ============================================================================
 // Image Format Constants (OpenVX spec values)
