@@ -97,18 +97,144 @@ impl VxCImage {
         }
     }
 
-    pub fn calculate_size(width: u32, height: u32, format: u32) -> usize {
-        // Validate dimensions to prevent overflow
+    /// Check if the format is a planar YUV format
+    pub fn is_planar_format(format: u32) -> bool {
+        matches!(format, 0x3231564E | 0x3132564E | 0x56555949 | 0x34555659)
+            // NV12 | NV21 | IYUV | YUV4
+    }
+
+    /// Get the number of planes for a format
+    pub fn num_planes(format: u32) -> usize {
+        match format {
+            0x3231564E | 0x3132564E => 2, // NV12, NV21: Y plane + interleaved UV plane
+            0x56555949 => 3, // IYUV: Y, U, V planes (I420)
+            0x34555659 => 3, // YUV4: Y, U, V planes (4:4:4)
+            _ => 1, // All other formats are single plane
+        }
+    }
+
+    /// Calculate the size of a specific plane
+    pub fn plane_size(width: u32, height: u32, format: u32, plane_index: usize) -> usize {
         if width == 0 || height == 0 {
             return 0;
         }
 
         let w = width as usize;
         let h = height as usize;
-        let bpp = Self::bytes_per_pixel(format);
+
+        match format {
+            // NV12/NV21: Plane 0 is Y (full size), Plane 1 is UV (half height, full width interleaved)
+            0x3231564E | 0x3132564E => {
+                match plane_index {
+                    0 => w * h, // Y plane
+                    1 => w * (h / 2), // UV interleaved plane
+                    _ => 0,
+                }
+            }
+            // IYUV: Plane 0 is Y (full size), Plane 1 is U (quarter), Plane 2 is V (quarter)
+            0x56555949 => {
+                let half_w = (w + 1) / 2;
+                let half_h = (h + 1) / 2;
+                match plane_index {
+                    0 => w * h, // Y plane
+                    1 => half_w * half_h, // U plane
+                    2 => half_w * half_h, // V plane
+                    _ => 0,
+                }
+            }
+            // YUV4: All planes are full size
+            0x34555659 => {
+                match plane_index {
+                    0 | 1 | 2 => w * h,
+                    _ => 0,
+                }
+            }
+            _ => {
+                if plane_index == 0 {
+                    w * h * Self::bytes_per_pixel(format)
+                } else {
+                    0
+                }
+            }
+        }
+    }
+
+    /// Calculate the offset of a specific plane in the image data
+    pub fn plane_offset(width: u32, height: u32, format: u32, plane_index: usize) -> usize {
+        if plane_index == 0 {
+            return 0;
+        }
+
+        let mut offset = 0usize;
+        for i in 0..plane_index {
+            offset += Self::plane_size(width, height, format, i);
+        }
+        offset
+    }
+
+    /// Get the dimensions of a specific plane
+    pub fn plane_dimensions(width: u32, height: u32, format: u32, plane_index: usize) -> (u32, u32) {
+        if plane_index == 0 {
+            return (width, height);
+        }
+
+        match format {
+            // NV12/NV21: UV plane is same width as Y, half height
+            0x3231564E | 0x3132564E => {
+                if plane_index == 1 {
+                    (width, (height + 1) / 2)
+                } else {
+                    (0, 0)
+                }
+            }
+            // IYUV: U and V planes are half width, half height
+            0x56555949 => {
+                if plane_index == 1 || plane_index == 2 {
+                    ((width + 1) / 2, (height + 1) / 2)
+                } else {
+                    (0, 0)
+                }
+            }
+            // YUV4: All planes full size
+            0x34555659 => {
+                if plane_index >= 1 && plane_index <= 3 {
+                    (width, height)
+                } else {
+                    (0, 0)
+                }
+            }
+            _ => (0, 0),
+        }
+    }
+
+    pub fn calculate_size(width: u32, height: u32, format: u32) -> usize {
+        // Validate dimensions to prevent overflow
+        if width == 0 || height == 0 {
+            return 0;
+        }
 
         // Limit maximum allocation to ~1GB (sanity check)
         let max_size = 1024 * 1024 * 1024;
+
+        // For planar YUV formats, sum the sizes of all planes
+        if Self::is_planar_format(format) {
+            let num_planes = Self::num_planes(format);
+            let mut total_size = 0usize;
+            for i in 0..num_planes {
+                let plane_sz = Self::plane_size(width, height, format, i);
+                total_size = total_size.saturating_add(plane_sz);
+            }
+            if total_size > max_size {
+                return 0;
+            }
+            return total_size;
+        }
+
+        // For packed/interleaved formats, use standard calculation
+        let w = width as usize;
+        let h = height as usize;
+        let bpp = Self::bytes_per_pixel(format);
+
         let size = w.saturating_mul(h).saturating_mul(bpp);
 
         if size > max_size {

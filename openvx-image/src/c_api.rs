@@ -498,12 +498,8 @@ pub extern "C" fn vxQueryImage(
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 // Number of planes based on format
-                let planes = match img.format {
-                    VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 | VX_DF_IMAGE_IYUV => 2,
-                    VX_DF_IMAGE_YUV4 => 3,
-                    _ => 1,
-                };
-                *(ptr as *mut vx_uint32) = planes;
+                let planes = VxCImage::num_planes(img.format);
+                *(ptr as *mut vx_uint32) = planes as vx_uint32;
                 VX_SUCCESS
             }
             VX_IMAGE_IS_UNIFORM => {
@@ -539,7 +535,7 @@ pub extern "C" fn vxSetImageAttribute(
 pub extern "C" fn vxMapImagePatch(
     image: vx_image,
     rect: *const vx_rectangle_t,
-    _plane_index: vx_uint32,
+    plane_index: vx_uint32,
     map_id: *mut vx_map_id,
     addr: *mut vx_imagepatch_addressing_t,
     ptr: *mut *mut c_void,
@@ -578,10 +574,35 @@ pub extern "C" fn vxMapImagePatch(
             Err(_) => return VX_ERROR_INVALID_REFERENCE,
         };
 
-        // Calculate stride and offset
-        let bpp = VxCImage::bytes_per_pixel(img.format);
-        let stride_y = img.width as usize * bpp;
-        let offset = start_y * stride_y + start_x * bpp;
+        // Determine plane-specific parameters for planar YUV formats
+        let is_planar = VxCImage::is_planar_format(img.format);
+        let (plane_width, plane_height) = if is_planar {
+            let (pw, ph) = VxCImage::plane_dimensions(img.width, img.height, img.format, plane_index as usize);
+            (pw as usize, ph as usize)
+        } else {
+            (img.width as usize, img.height as usize)
+        };
+
+        // Validate the plane_index
+        if is_planar && plane_index as usize >= VxCImage::num_planes(img.format) {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Calculate stride and offset based on format and plane
+        let (bpp, stride_y, plane_offset) = if is_planar {
+            // For planar formats, each plane is 1 byte per pixel (luma/chroma)
+            let bpp = 1usize;
+            let stride_y = plane_width * bpp;
+            let plane_offset = VxCImage::plane_offset(img.width, img.height, img.format, plane_index as usize);
+            (bpp, stride_y, plane_offset)
+        } else {
+            // For packed formats, use standard bytes per pixel
+            let bpp = VxCImage::bytes_per_pixel(img.format);
+            let stride_y = plane_width * bpp;
+            (bpp, stride_y, 0)
+        };
+
+        let offset = plane_offset + start_y * stride_y + start_x * bpp;
 
         // Create a copy of the data for the mapped patch
         let patch_size = height * width * bpp;
@@ -600,7 +621,10 @@ pub extern "C" fn vxMapImagePatch(
         // Store the patch
         let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
             let id = patches.len() + 1;
-            patches.push((id, patch_data.clone(), usage, offset, stride_y));
+            // Store plane_index in the offset field (using upper bits) to track which plane was mapped
+            // This is a hack; we encode plane_index * stride_y in the stored stride_y to track it
+            let encoded_stride_y = stride_y | (plane_index as usize) << 48;
+            patches.push((id, patch_data.clone(), usage, offset, encoded_stride_y));
             id
         } else {
             return VX_ERROR_INVALID_REFERENCE;
@@ -645,20 +669,45 @@ pub extern "C" fn vxUnmapImagePatch(
 
     if let Ok(mut patches) = img.mapped_patches.write() {
         if let Some(pos) = patches.iter().position(|(id, _, _, _, _)| *id == map_id) {
-            let (_, patch_data, usage, offset, stride_y) = patches.remove(pos);
+            let (_, patch_data, usage, offset, encoded_stride_y) = patches.remove(pos);
+            
+            // Decode the plane index and actual stride_y
+            let is_planar = VxCImage::is_planar_format(img.format);
+            let (stride_y, plane_index) = if is_planar {
+                // Extract plane index from upper bits
+                let plane_idx = (encoded_stride_y >> 48) as u32;
+                let actual_stride_y = encoded_stride_y & 0xFFFFFFFFFFFF;
+                (actual_stride_y, plane_idx)
+            } else {
+                (encoded_stride_y, 0)
+            };
             
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
                 if let Ok(mut data) = img.data.write() {
-                    let bpp = VxCImage::bytes_per_pixel(img.format);
-                    let width = patch_data.len() / stride_y;
-                    let height = patch_data.len() / (width * bpp);
+                    let bpp = if is_planar {
+                        1 // Planar formats are 1 byte per pixel
+                    } else {
+                        VxCImage::bytes_per_pixel(img.format)
+                    };
+                    
+                    // Calculate width based on stride_y and bpp
+                    let width = if stride_y > 0 {
+                        stride_y / bpp
+                    } else {
+                        0
+                    };
+                    let height = if stride_y > 0 && width > 0 {
+                        patch_data.len() / stride_y
+                    } else {
+                        0
+                    };
                     
                     // Copy data back row by row
                     for y in 0..height {
                         let src_start = y * width * bpp;
                         let dst_start = offset + y * stride_y;
-                        if dst_start + width * bpp <= data.len() {
+                        if dst_start + width * bpp <= data.len() && src_start + width * bpp <= patch_data.len() {
                             data[dst_start..dst_start + width * bpp]
                                 .copy_from_slice(&patch_data[src_start..src_start + width * bpp]);
                         }
@@ -713,9 +762,36 @@ pub extern "C" fn vxCopyImagePatch(
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
-        let bpp = VxCImage::bytes_per_pixel(img.format);
-        let stride_y = img.width as usize * bpp;
-        let offset = start_y * stride_y + start_x * bpp;
+        // Determine plane-specific parameters for planar YUV formats
+        let is_planar = VxCImage::is_planar_format(img.format);
+        
+        // Validate the plane_index
+        if is_planar && plane_index as usize >= VxCImage::num_planes(img.format) {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let (plane_width, plane_height) = if is_planar {
+            let (pw, ph) = VxCImage::plane_dimensions(img.width, img.height, img.format, plane_index as usize);
+            (pw as usize, ph as usize)
+        } else {
+            (img.width as usize, img.height as usize)
+        };
+
+        // Calculate stride and offset based on format and plane
+        let (bpp, stride_y, plane_offset) = if is_planar {
+            // For planar formats, each plane is 1 byte per pixel (luma/chroma)
+            let bpp = 1usize;
+            let stride_y = plane_width * bpp;
+            let plane_offset = VxCImage::plane_offset(img.width, img.height, img.format, plane_index as usize);
+            (bpp, stride_y, plane_offset)
+        } else {
+            // For packed formats, use standard bytes per pixel
+            let bpp = VxCImage::bytes_per_pixel(img.format);
+            let stride_y = plane_width * bpp;
+            (bpp, stride_y, 0)
+        };
+
+        let offset = plane_offset + start_y * stride_y + start_x * bpp;
 
         match usage {
             VX_READ_ONLY => {
@@ -877,33 +953,17 @@ pub extern "C" fn vxCopyImagePlane(
 
     unsafe {
         if let Ok(data) = img.data.read() {
-            // For planar formats, calculate plane offsets
-            let plane_offset = match img.format {
-                VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
-                    match plane_index {
-                        0 => 0, // Y plane
-                        1 => (img.width * img.height) as usize, // UV plane
-                        _ => return VX_ERROR_INVALID_PARAMETERS,
-                    }
-                }
-                VX_DF_IMAGE_IYUV => {
-                    let y_size = (img.width * img.height) as usize;
-                    match plane_index {
-                        0 => 0, // Y plane
-                        1 => y_size, // U plane
-                        2 => y_size + y_size / 4, // V plane
-                        _ => return VX_ERROR_INVALID_PARAMETERS,
-                    }
-                }
-                _ => {
-                    if plane_index != 0 {
-                        return VX_ERROR_INVALID_PARAMETERS;
-                    }
-                    0
-                }
-            };
+            // For planar formats, calculate plane offsets using the unified helper
+            let is_planar = VxCImage::is_planar_format(img.format);
+            if plane_index as usize >= VxCImage::num_planes(img.format) {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            let plane_offset = VxCImage::plane_offset(img.width, img.height, img.format, plane_index as usize);
+            let plane_size = VxCImage::plane_size(img.width, img.height, img.format, plane_index as usize);
 
-            let plane_size = data.len() - plane_offset;
+            if plane_size == 0 || plane_offset + plane_size > data.len() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
 
             match usage {
                 VX_READ_ONLY => {
@@ -1060,11 +1120,7 @@ pub extern "C" fn vxGetImagePlaneCount(
 
     let img = unsafe { &*(image as *const VxCImage) };
     
-    match img.format {
-        VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 | VX_DF_IMAGE_IYUV => 2,
-        VX_DF_IMAGE_YUV4 => 3,
-        _ => 1,
-    }
+    VxCImage::num_planes(img.format) as vx_uint32
 }
 
 /// Create image from ROI handle
