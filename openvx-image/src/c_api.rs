@@ -591,6 +591,9 @@ pub extern "C" fn vxCreateImageFromChannel(
         return std::ptr::null_mut();
     }
 
+    // Maximum allocation size to prevent overflow (1GB)
+    const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024;
+
     // Determine the output format and channel offset
     let (output_format, channel_offset, channel_stride) = match source_img.format {
         VX_DF_IMAGE_RGB => {
