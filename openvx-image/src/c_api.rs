@@ -54,13 +54,14 @@ pub extern "C" fn vxCreateImage(
         context,
         data: Arc::new(RwLock::new(data)),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
+        parent: None,
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
-    
+
     // Register image address in unified registry for type queries (vxQueryReference)
     register_image(image_ptr as usize);
-    
+
     image_ptr
 }
 
@@ -87,13 +88,14 @@ pub extern "C" fn vxCreateVirtualImage(
         context: std::ptr::null_mut(), // Virtual images use graph context
         data: Arc::new(RwLock::new(Vec::new())),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
+        parent: None,
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
-    
+
     // Register image address in unified registry for type queries (vxQueryReference)
     register_image(image_ptr as usize);
-    
+
     image_ptr
 }
 
@@ -171,13 +173,14 @@ pub extern "C" fn vxCreateImageFromHandle(
             context,
             data: Arc::new(RwLock::new(data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
+            parent: None,
         });
 
         let image_ptr = Box::into_raw(image) as vx_image;
-        
+
         // Register image address in unified registry for type queries (vxQueryReference)
         register_image(image_ptr as usize);
-        
+
         image_ptr
     }
 }
@@ -313,6 +316,7 @@ pub extern "C" fn vxCreateUniformImage(
         context,
         data: Arc::new(RwLock::new(data)),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
+        parent: None,
     });
 
     // Convert to raw pointer
@@ -405,6 +409,8 @@ pub extern "C" fn vxCreateImageFromChannel(
         // Create channel image that shares data with parent
         // Note: This is a simplified implementation. A full implementation
         // would need to handle plane offsets for YUV formats properly.
+        // Store the parent image pointer to keep parent alive while sub-image exists
+        let parent_ptr = img as usize;
         let channel_image = Box::new(VxCImage {
             width: output_width,
             height: output_height,
@@ -413,10 +419,11 @@ pub extern "C" fn vxCreateImageFromChannel(
             context: context,
             data: Arc::clone(&source_img.data),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
+            parent: Some(parent_ptr),
         });
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
-        
+
         // Register image address in unified registry for type queries (vxQueryReference)
         register_image(image_ptr as usize);
         
@@ -994,13 +1001,14 @@ pub extern "C" fn vxCreateImageFromROI(
             context: source_img.context,
             data: Arc::new(RwLock::new(roi_data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
+            parent: Some(img as usize), // Store parent reference
         });
 
         let image_ptr = Box::into_raw(roi_image) as vx_image;
-        
+
         // Register image address in unified registry for type queries (vxQueryReference)
         register_image(image_ptr as usize);
-        
+
         image_ptr
     }
 }
