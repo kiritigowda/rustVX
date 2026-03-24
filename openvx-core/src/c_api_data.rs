@@ -6,6 +6,7 @@ use crate::c_api::*;
 
 // Pixel value union (needed for image operations)
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub union vx_pixel_value_t {
     pub rgb: [u8; 3],
     pub rgba: [u8; 4],

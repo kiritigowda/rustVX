@@ -956,6 +956,14 @@ pub extern "C" fn vxQueryReference(
                     }
                 }
                 
+                // Also check c_api NODES registry
+                if let Ok(nodes) = crate::c_api::NODES.lock() {
+                    if nodes.contains_key(&(ref_ as u64)) {
+                        *(ptr as *mut vx_enum) = VX_TYPE_NODE;
+                        return VX_SUCCESS;
+                    }
+                }
+                
                 // Check distributions
                 if let Ok(distributions) = DISTRIBUTIONS.lock() {
                     if distributions.contains_key(&addr) {
@@ -1992,8 +2000,176 @@ pub extern "C" fn vxCreateUniformImage(
     if context.is_null() || value.is_null() || width == 0 || height == 0 {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+
+    // Calculate image size based on format
+    let size = calculate_image_size(width, height, color as vx_enum);
+    if size == 0 {
+        return std::ptr::null_mut();
+    }
+
+    // Create image data and fill with uniform value
+    let mut data = vec![0u8; size];
+    let pixel_val = unsafe { std::ptr::read(value) };
+    fill_uniform_data(&mut data, color as vx_enum, &pixel_val);
+
+    // Create the image
+    let image = Box::new(VxCImageUnified {
+        width,
+        height,
+        format: color as vx_enum,
+        is_virtual: false,
+        is_uniform: true,
+        uniform_value: pixel_val,
+        context,
+        data: RwLock::new(data),
+    });
+
+    let image_ptr = Box::into_raw(image) as usize;
+
+    // Register in image registry
+    if let Ok(mut images) = IMAGES.lock() {
+        images.insert(image_ptr);
+    }
+
+    // Store reference count
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.insert(image_ptr, 1);
+    }
+
+    image_ptr as vx_image
 }
+
+/// Image struct for unified C API
+pub struct VxCImageUnified {
+    width: u32,
+    height: u32,
+    format: vx_enum,
+    is_virtual: bool,
+    is_uniform: bool,
+    uniform_value: vx_pixel_value_t,
+    context: vx_context,
+    data: RwLock<Vec<u8>>,
+}
+
+/// Calculate image size based on dimensions and format
+fn calculate_image_size(width: u32, height: u32, format: vx_enum) -> usize {
+    if width == 0 || height == 0 {
+        return 0;
+    }
+
+    let w = width as usize;
+    let h = height as usize;
+
+    let channels = match format {
+        VX_DF_IMAGE_U8 => 1,
+        VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16 => 1,
+        VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32 => 1,
+        VX_DF_IMAGE_RGB => 3,
+        VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => 4,
+        VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => 3,
+        VX_DF_IMAGE_IYUV => 3,
+        VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV => 2,
+        VX_DF_IMAGE_YUV4 => 3,
+        _ => 1,
+    };
+
+    // Check for overflow
+    let size = w.saturating_mul(h).saturating_mul(channels);
+    let max_size = 1024 * 1024 * 1024; // 1GB limit
+    if size > max_size {
+        return 0;
+    }
+
+    size
+}
+
+/// Fill data with uniform value
+fn fill_uniform_data(data: &mut [u8], format: vx_enum, value: &vx_pixel_value_t) {
+    unsafe {
+        match format {
+            VX_DF_IMAGE_U8 => {
+                data.fill(value.u8);
+            }
+            VX_DF_IMAGE_U16 => {
+                let val = value.u16.to_le_bytes();
+                for i in (0..data.len()).step_by(2) {
+                    data[i] = val[0];
+                    if i + 1 < data.len() {
+                        data[i + 1] = val[1];
+                    }
+                }
+            }
+            VX_DF_IMAGE_S16 => {
+                let val = value.s16.to_le_bytes();
+                for i in (0..data.len()).step_by(2) {
+                    data[i] = val[0];
+                    if i + 1 < data.len() {
+                        data[i + 1] = val[1];
+                    }
+                }
+            }
+            VX_DF_IMAGE_U32 => {
+                let val = value.u32.to_le_bytes();
+                for i in (0..data.len()).step_by(4) {
+                    for j in 0..4 {
+                        if i + j < data.len() {
+                            data[i + j] = val[j];
+                        }
+                    }
+                }
+            }
+            VX_DF_IMAGE_S32 => {
+                let val = value.s32.to_le_bytes();
+                for i in (0..data.len()).step_by(4) {
+                    for j in 0..4 {
+                        if i + j < data.len() {
+                            data[i + j] = val[j];
+                        }
+                    }
+                }
+            }
+            VX_DF_IMAGE_RGB => {
+                for i in (0..data.len()).step_by(3) {
+                    if i + 2 < data.len() {
+                        data[i] = value.rgb[0];
+                        data[i + 1] = value.rgb[1];
+                        data[i + 2] = value.rgb[2];
+                    }
+                }
+            }
+            VX_DF_IMAGE_RGBA | VX_DF_IMAGE_RGBX => {
+                for i in (0..data.len()).step_by(4) {
+                    if i + 3 < data.len() {
+                        data[i] = value.rgba[0];
+                        data[i + 1] = value.rgba[1];
+                        data[i + 2] = value.rgba[2];
+                        data[i + 3] = value.rgba[3];
+                    }
+                }
+            }
+            _ => {
+                // Default: fill with u8 value
+                data.fill(value.u8);
+            }
+        }
+    }
+}
+
+// VX_DF_IMAGE format constants (as i32/vx_enum)
+pub const VX_DF_IMAGE_U8: vx_enum = 0x20080100i32;
+pub const VX_DF_IMAGE_U16: vx_enum = 0x20100100i32;
+pub const VX_DF_IMAGE_S16: vx_enum = 0x20100200i32;
+pub const VX_DF_IMAGE_U32: vx_enum = 0x20200100i32;
+pub const VX_DF_IMAGE_S32: vx_enum = 0x20200200i32;
+pub const VX_DF_IMAGE_RGB: vx_enum = 0x21000300i32;
+pub const VX_DF_IMAGE_RGBA: vx_enum = 0x21000400i32;
+pub const VX_DF_IMAGE_RGBX: vx_enum = 0x21010400i32;
+pub const VX_DF_IMAGE_NV12: vx_enum = 0x3231564Ei32;
+pub const VX_DF_IMAGE_NV21: vx_enum = 0x3132564Ei32;
+pub const VX_DF_IMAGE_IYUV: vx_enum = 0x56555949i32;
+pub const VX_DF_IMAGE_YUV4: vx_enum = 0x34555659i32;
+pub const VX_DF_IMAGE_UYVY: vx_enum = 0x59565955i32;
+pub const VX_DF_IMAGE_YUYV: vx_enum = 0x56595559i32;
 
 // Note: VxCChannelImage and vxCreateImageFromChannel are implemented in openvx-image crate
 // The implementation is re-exported here for unified C API

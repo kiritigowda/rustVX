@@ -139,7 +139,7 @@ pub struct GraphData {
 }
 
 /// Internal node data (stored in Arc)
-struct NodeData {
+pub struct NodeData {
     id: u64,
     context_id: u32,
     graph_id: u64,
@@ -187,7 +187,7 @@ pub static GRAPHS: Lazy<Mutex<std::collections::HashMap<u64, Arc<GraphData>>>> =
     Mutex::new(std::collections::HashMap::new())
 });
 
-static NODES: Lazy<Mutex<std::collections::HashMap<u64, Arc<NodeData>>>> = Lazy::new(|| {
+pub static NODES: Lazy<Mutex<std::collections::HashMap<u64, Arc<NodeData>>>> = Lazy::new(|| {
     Mutex::new(std::collections::HashMap::new())
 });
 

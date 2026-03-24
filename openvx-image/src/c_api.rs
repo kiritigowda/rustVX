@@ -15,14 +15,14 @@ use openvx_core::c_api::{
     VX_DF_IMAGE_U32, VX_DF_IMAGE_S32, VX_DF_IMAGE_VIRT,
     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
     VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE,
-    VX_READ_ONLY, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST,
+    VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST,
 };
 
 // Global image registry
 static IMAGE_ID_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 /// Image struct for C API
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VxCImage {
     width: vx_uint32,
     height: vx_uint32,
@@ -30,7 +30,8 @@ pub struct VxCImage {
     is_virtual: bool,
     context: vx_context,
     data: Arc<RwLock<Vec<u8>>>,
-    mapped_patches: Arc<RwLock<Vec<(vx_map_id, Vec<u8>)>>>,
+    // map_id, buffer, usage, offset, stride
+    mapped_patches: Arc<RwLock<Vec<(vx_map_id, Vec<u8>, vx_enum, usize, usize)>>>,
 }
 
 impl VxCImage {
@@ -137,9 +138,8 @@ pub extern "C" fn vxCreateVirtualImage(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
-    if width == 0 || height == 0 {
-        return std::ptr::null_mut();
-    }
+    // Note: Virtual images CAN have width/height of 0 - they get dimensions
+    // from connected nodes during graph verification
 
     // Virtual images don't allocate memory immediately
     let image = Box::new(VxCImage {
@@ -182,18 +182,34 @@ pub extern "C" fn vxCreateImageFromHandle(
         let width = addr.dim_x;
         let height = addr.dim_y;
 
+        // Validate dimensions
+        if width == 0 || height == 0 {
+            return std::ptr::null_mut();
+        }
+
         // Calculate size from addressing with overflow protection
+        // and sanity limits to prevent massive allocations
+        const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB limit
+        
         let total_size = if addr.stride_y > 0 {
-            (height as usize).checked_mul(addr.stride_y as usize)
-                .and_then(|s| if s > 0 { Some(s) } else { None })
+            // Validate stride_y is reasonable (not larger than a single row * 100)
+            let expected_stride = width as usize * VxCImage::bytes_per_pixel(color);
+            let stride = addr.stride_y as usize;
+            if stride > expected_stride * 100 {
+                // stride_y seems unreasonably large, use calculated stride
+                expected_stride.checked_mul(height as usize)
+            } else {
+                (height as usize).checked_mul(stride)
+            }
         } else {
             (width as usize)
                 .checked_mul(height as usize)
                 .and_then(|s| s.checked_mul(VxCImage::bytes_per_pixel(color)))
-                .and_then(|s| if s > 0 { Some(s) } else { None })
         };
-        let Some(total_size) = total_size else {
-            return std::ptr::null_mut();
+        
+        let total_size = match total_size {
+            Some(size) if size > 0 && size <= MAX_ALLOCATION_SIZE => size,
+            _ => return std::ptr::null_mut(),
         };
 
         // For now, we copy the data. A full implementation might keep references
@@ -341,11 +357,12 @@ pub extern "C" fn vxMapImagePatch(
         return VX_ERROR_NOT_IMPLEMENTED;
     }
 
-    if usage != VX_READ_ONLY && usage != VX_WRITE_ONLY {
+    // Accept READ_ONLY, WRITE_ONLY, or READ_AND_WRITE
+    if usage != VX_READ_ONLY && usage != VX_WRITE_ONLY && usage != VX_READ_AND_WRITE {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
-    let img = unsafe { &*(image as *const VxCImage) };
+    let img = unsafe { &mut *(image as *mut VxCImage) };
     let rect = unsafe { &*rect };
 
     // Validate rectangle
@@ -382,8 +399,10 @@ pub extern "C" fn vxMapImagePatch(
         (*addr).step_y = 1;
     }
 
-    // Get data pointer with overflow-safe calculation
-    let data = img.data.read().unwrap();
+    // Calculate patch dimensions
+    let patch_width = (rect.end_x - rect.start_x) as usize;
+    let patch_height = (rect.end_y - rect.start_y) as usize;
+    let patch_stride = stride_y as usize;
     
     // Calculate offset with proper overflow checking
     let start_x_offset = (rect.start_x as usize).checked_mul(bpp);
@@ -400,21 +419,60 @@ pub extern "C" fn vxMapImagePatch(
         return VX_ERROR_INVALID_PARAMETERS;
     };
 
-    if offset >= data.len() {
+    // For WRITE_ONLY: allocate a temporary buffer to write into
+    // For READ_ONLY: allocate a buffer and copy the data
+    let patch_size = patch_height.saturating_mul(patch_stride);
+    if patch_size == 0 {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-
-    let patch_ptr = unsafe {
-        data.as_ptr().add(offset) as *mut c_void
-    };
-
-    unsafe {
-        *ptr = patch_ptr;
+    
+    // Get mutable access to data for potential copying
+    {
+        let data = img.data.read().unwrap();
+        
+        if offset >= data.len() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        
+        // Check if we have enough data
+        let required_size = offset + patch_size;
+        if required_size > data.len() && usage == VX_READ_ONLY {
+            // Not enough data to read
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
     }
-
+    
+    // Allocate a persistent buffer for the mapped patch
+    // This ensures the pointer remains valid until unmap
+    let mut patch_buffer: Vec<u8> = vec![0; patch_size];
+    
+    if usage == VX_READ_ONLY || usage == VX_READ_AND_WRITE {
+        // Copy data from image to buffer
+        let data = img.data.read().unwrap();
+        for row in 0..patch_height {
+            let src_offset = offset + (row * patch_stride);
+            let row_size = patch_width.saturating_mul(bpp);
+            if src_offset + row_size <= data.len() {
+                let dst_offset = row * patch_stride;
+                patch_buffer[dst_offset..dst_offset + row_size]
+                    .copy_from_slice(&data[src_offset..src_offset + row_size]);
+            }
+        }
+    }
+    
     // Generate map ID
     let id = IMAGE_ID_COUNTER.fetch_add(1, Ordering::SeqCst) as vx_map_id;
+    
+    // Store the patch buffer and metadata, then get pointer from stored buffer
+    let patch_ptr = {
+        let mut mapped = img.mapped_patches.write().unwrap();
+        mapped.push((id, patch_buffer, usage, offset, patch_stride));
+        // Get pointer from the stored buffer
+        mapped.last_mut().unwrap().1.as_mut_ptr() as *mut c_void
+    };
+    
     unsafe {
+        *ptr = patch_ptr;
         *map_id = id;
     }
 
@@ -425,15 +483,42 @@ pub extern "C" fn vxMapImagePatch(
 #[no_mangle]
 pub extern "C" fn vxUnmapImagePatch(
     image: vx_image,
-    _map_id: vx_map_id,
+    map_id: vx_map_id,
 ) -> vx_status {
     if image.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // In this simple implementation, we just validate the image exists
-    // Full implementation would use the map_id to validate and cleanup
-    VX_SUCCESS
+    let img = unsafe { &mut *(image as *mut VxCImage) };
+    
+    let mut mapped = img.mapped_patches.write().unwrap();
+    
+    // Find the patch by map_id
+    if let Some(pos) = mapped.iter().position(|(id, _, _, _, _)| *id == map_id) {
+        let (_, buffer, usage, offset, stride) = mapped.remove(pos);
+        
+        // If this was a write or read-write mapping, copy data back to the image
+        if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
+            let mut data = img.data.write().unwrap();
+            let patch_height = buffer.len() / stride;
+            
+            for row in 0..patch_height {
+                let src_offset = row * stride;
+                let dst_offset = offset + (row * stride);
+                let row_size = stride.min(buffer.len() - src_offset);
+                
+                if dst_offset + row_size <= data.len() && src_offset + row_size <= buffer.len() {
+                    data[dst_offset..dst_offset + row_size]
+                        .copy_from_slice(&buffer[src_offset..src_offset + row_size]);
+                }
+            }
+        }
+        
+        VX_SUCCESS
+    } else {
+        // Map ID not found
+        VX_ERROR_INVALID_PARAMETERS
+    }
 }
 
 /// Channel constants (re-exported from unified_c_api for local use)

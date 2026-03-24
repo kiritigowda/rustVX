@@ -44,6 +44,15 @@ impl Image {
         let size = width
             .saturating_mul(height)
             .saturating_mul(channels);
+        
+        // Add sanity limit to prevent massive allocations
+        const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB
+        let size = if size > MAX_ALLOCATION_SIZE {
+            panic!("Image allocation size {}x{}x{} = {} exceeds maximum allocation limit", width, height, channels, size);
+        } else {
+            size
+        };
+        
         let data = vec![0u8; size];
         Image {
             width,
@@ -118,6 +127,15 @@ pub fn create_uniform_image(width: usize, height: usize, format: ImageFormat, va
     let size = width
         .saturating_mul(height)
         .saturating_mul(format.channels());
+    
+    // Add sanity limit to prevent massive allocations
+    const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB
+    let size = if size > MAX_ALLOCATION_SIZE {
+        panic!("Image allocation size {}x{}x{} = {} exceeds maximum allocation limit", width, height, format.channels(), size);
+    } else {
+        size
+    };
+    
     let data = vec![value; size];
     Image::from_data(width, height, format, data)
 }
