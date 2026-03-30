@@ -38,6 +38,8 @@ pub enum ImageFormat {
     Gray,
     NV12,
     NV21,
+    IYUV,
+    YUV4,
 }
 
 impl ImageFormat {
@@ -46,7 +48,38 @@ impl ImageFormat {
             ImageFormat::Gray => 1,
             ImageFormat::Rgb => 3,
             ImageFormat::Rgba => 4,
-            ImageFormat::NV12 | ImageFormat::NV21 => 3,
+            // NV12, NV21, IYUV are planar formats with different sizing
+            // These need special handling - using 1 here as default for buffer calculation
+            // Planar formats should use format.buffer_size(width, height) instead
+            ImageFormat::NV12 | ImageFormat::NV21 | ImageFormat::IYUV | ImageFormat::YUV4 => 1,
+        }
+    }
+    
+    /// Calculate buffer size for this format with given dimensions
+    /// For planar formats, this accounts for subsampled chroma planes
+    pub fn buffer_size(&self, width: usize, height: usize) -> usize {
+        match self {
+            ImageFormat::Gray => width.saturating_mul(height),
+            ImageFormat::Rgb => width.saturating_mul(height).saturating_mul(3),
+            ImageFormat::Rgba => width.saturating_mul(height).saturating_mul(4),
+            // IYUV/I420: Y (full) + U (quarter) + V (quarter) = 1.5 * width * height
+            ImageFormat::IYUV => {
+                let y_size = width.saturating_mul(height);
+                let half_w = (width + 1) / 2;
+                let half_h = (height + 1) / 2;
+                let uv_size = half_w.saturating_mul(half_h);
+                y_size.saturating_add(uv_size).saturating_add(uv_size)
+            }
+            // NV12/NV21: Y (full) + UV interleaved (quarter * 2) = 1.5 * width * height
+            ImageFormat::NV12 | ImageFormat::NV21 => {
+                let y_size = width.saturating_mul(height);
+                let half_h = (height + 1) / 2;
+                let uv_stride = width; // NV12 uses full width stride for UV
+                let uv_size = uv_stride.saturating_mul(half_h);
+                y_size.saturating_add(uv_size)
+            }
+            // YUV4: Three full-size planes = 3 * width * height
+            ImageFormat::YUV4 => width.saturating_mul(height).saturating_mul(3),
         }
     }
 }
@@ -61,19 +94,17 @@ pub struct Image {
 
 impl Image {
     pub fn new(width: usize, height: usize, format: ImageFormat) -> Self {
-        let channels = format.channels();
-        // Use saturating_mul to prevent integer overflow
-        let size = width
-            .saturating_mul(height)
-            .saturating_mul(channels);
+        // Use format-specific buffer size calculation for planar formats
+        let size = format.buffer_size(width, height);
         
         // Add sanity limit to prevent massive allocations
         const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB
-        let size = if size > MAX_ALLOCATION_SIZE {
-            panic!("Image allocation size {}x{}x{} = {} exceeds maximum allocation limit", width, height, channels, size);
-        } else {
-            size
-        };
+        if size > MAX_ALLOCATION_SIZE {
+            panic!("Image allocation size {}x{} format {:?} = {} exceeds maximum allocation limit", width, height, format, size);
+        }
+        if size == 0 {
+            panic!("Image allocation size is 0 for {}x{} format {:?}", width, height, format);
+        }
         
         let data = vec![0u8; size];
         Image {
@@ -145,18 +176,17 @@ impl Referenceable for Image {
 
 /// Create a uniform image
 pub fn create_uniform_image(width: usize, height: usize, format: ImageFormat, value: u8) -> Image {
-    // Use saturating_mul to prevent integer overflow
-    let size = width
-        .saturating_mul(height)
-        .saturating_mul(format.channels());
+    // Use format-specific buffer size calculation for planar formats
+    let size = format.buffer_size(width, height);
     
     // Add sanity limit to prevent massive allocations
     const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB
-    let size = if size > MAX_ALLOCATION_SIZE {
-        panic!("Image allocation size {}x{}x{} = {} exceeds maximum allocation limit", width, height, format.channels(), size);
-    } else {
-        size
-    };
+    if size > MAX_ALLOCATION_SIZE {
+        panic!("Image allocation size {}x{} format {:?} = {} exceeds maximum allocation limit", width, height, format, size);
+    }
+    if size == 0 {
+        panic!("Image allocation size is 0 for {}x{} format {:?}", width, height, format);
+    }
     
     let data = vec![value; size];
     Image::from_data(width, height, format, data)

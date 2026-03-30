@@ -51,7 +51,7 @@ impl Gaussian3x3Kernel {
 }
 
 impl KernelTrait for Gaussian3x3Kernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.gaussian3x3" }
+    fn get_name(&self) -> &str { "org.khronos.openvx.gaussian_3x3" }
     fn get_enum(&self) -> VxKernel { VxKernel::Gaussian3x3 }
     
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
@@ -82,7 +82,7 @@ impl Gaussian5x5Kernel {
 }
 
 impl KernelTrait for Gaussian5x5Kernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.gaussian5x5" }
+    fn get_name(&self) -> &str { "org.khronos.openvx.gaussian_5x5" }
     fn get_enum(&self) -> VxKernel { VxKernel::Gaussian5x5 }
     
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
@@ -113,7 +113,7 @@ impl Box3x3Kernel {
 }
 
 impl KernelTrait for Box3x3Kernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.box3x3" }
+    fn get_name(&self) -> &str { "org.khronos.openvx.box_3x3" }
     fn get_enum(&self) -> VxKernel { VxKernel::Box3x3 }
     
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
@@ -144,7 +144,7 @@ impl Median3x3Kernel {
 }
 
 impl KernelTrait for Median3x3Kernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.median3x3" }
+    fn get_name(&self) -> &str { "org.khronos.openvx.median_3x3" }
     fn get_enum(&self) -> VxKernel { VxKernel::Median3x3 }
     
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
@@ -193,47 +193,37 @@ pub fn convolve_generic(src: &Image, dst: &Image, kernel: &[[i32; 3]; 3], border
     Ok(())
 }
 
-/// Separable Gaussian 3x3: [1,2,1] horizontal then vertical
+/// Gaussian 3x3: [1,2,1; 2,4,2; 1,2,1] / 16
+/// For VX_BORDER_UNDEFINED, only processes inner region (1..width-1, 1..height-1)
 pub fn gaussian3x3(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    let kernel = [1, 2, 1];
     
     let mut dst_data = dst.data_mut();
     
-    // Temporary buffer for horizontal pass - use saturating_mul to prevent overflow
-    let temp_size = width.saturating_mul(height);
-    let mut temp = vec![0u8; temp_size];
-    
-    // Horizontal pass
-    for y in 0..height {
-        for x in 0..width {
+    // For VX_BORDER_UNDEFINED, only process pixels where full 3x3 neighborhood exists
+    // This matches the OpenVX conformance test expectations
+    for y in 1..height.saturating_sub(1) {
+        for x in 1..width.saturating_sub(1) {
+            // Full 3x3 Gaussian kernel: [1,2,1; 2,4,2; 1,2,1] / 16
             let mut sum: i32 = 0;
-            let mut weight: i32 = 0;
-            for k in 0..3 {
-                let px = x as isize + k as isize - 1;
-                if px >= 0 && px < width as isize {
-                    sum += src.get_pixel(px as usize, y) as i32 * kernel[k];
-                    weight += kernel[k];
-                }
-            }
-            temp[y * width + x] = clamp_u8(sum / weight);
-        }
-    }
-    
-    // Vertical pass
-    for y in 0..height {
-        for x in 0..width {
-            let mut sum: i32 = 0;
-            let mut weight: i32 = 0;
-            for k in 0..3 {
-                let py = y as isize + k as isize - 1;
-                if py >= 0 && py < height as isize {
-                    sum += temp[py as usize * width + x] as i32 * kernel[k];
-                    weight += kernel[k];
-                }
-            }
-            dst_data[y * width + x] = clamp_u8(sum / weight);
+            
+            // Row y-1
+            sum += src.get_pixel(x - 1, y - 1) as i32 * 1;
+            sum += src.get_pixel(x,     y - 1) as i32 * 2;
+            sum += src.get_pixel(x + 1, y - 1) as i32 * 1;
+            
+            // Row y
+            sum += src.get_pixel(x - 1, y) as i32 * 2;
+            sum += src.get_pixel(x,     y) as i32 * 4;
+            sum += src.get_pixel(x + 1, y) as i32 * 2;
+            
+            // Row y+1
+            sum += src.get_pixel(x - 1, y + 1) as i32 * 1;
+            sum += src.get_pixel(x,     y + 1) as i32 * 2;
+            sum += src.get_pixel(x + 1, y + 1) as i32 * 1;
+            
+            dst_data[y * width + x] = (sum >> 4) as u8; // Divide by 16
         }
     }
     

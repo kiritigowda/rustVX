@@ -3,13 +3,18 @@
 //! This module implements the CT_Image framework used by the OpenVX Conformance Test Suite.
 //! CT_Image provides a convenient way to allocate, manipulate, and convert images for testing.
 
+use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use openvx_core::c_api::{
     vx_context, vx_image, vx_df_image, vx_enum, vx_status,
+    vx_rectangle_t, vx_imagepatch_addressing_t, vx_map_id,
+    vx_uint32, vx_uint64, vx_size,
     VX_SUCCESS, VX_ERROR_INVALID_PARAMETERS, VX_ERROR_INVALID_REFERENCE,
+    VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST,
+    VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_FORMAT,
 };
 
 // Import VxCImage from core
@@ -123,6 +128,7 @@ pub struct CT_ImageHdr {
     pub data: CT_ImageData,
     // Private area
     data_begin_: *mut u8,
+    data_size_: usize,  // Size of data buffer for proper deallocation
     refcount_: Arc<AtomicUsize>,
 }
 
@@ -359,14 +365,24 @@ pub extern "C" fn ct_allocate_image(width: u32, height: u32, format: vx_df_image
         return std::ptr::null_mut();
     }
     
-    let bits_per_pixel = ct_image_bits_per_pixel(format);
-    let bytes_per_pixel = (bits_per_pixel + 7) / 8;
-    let stride = width; // In pixels
-    let size = (stride * height * bytes_per_pixel as u32) as usize;
+    // Use VxCImage::calculate_size for accurate planar format sizing
+    let size = VxCImage::calculate_size(width, height, format);
+    if size == 0 {
+        return std::ptr::null_mut();
+    }
     
-    // Allocate data buffer
-    let data_buffer = vec![0u8; size];
-    let data_ptr = Box::into_raw(data_buffer.into_boxed_slice()) as *mut u8;
+    let stride = width; // In pixels (for CT image compatibility)
+    
+    // Allocate data buffer using std::alloc
+    let layout = Layout::from_size_align(size, 1).unwrap();
+    let data_ptr = unsafe { alloc(layout) };
+    if data_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Initialize to zero
+    unsafe {
+        std::ptr::write_bytes(data_ptr, 0, size);
+    }
     
     // Create image header
     let image = Box::new(CT_ImageHdr {
@@ -377,6 +393,7 @@ pub extern "C" fn ct_allocate_image(width: u32, height: u32, format: vx_df_image
         roi: CT_Rect { x: 0, y: 0, width, height },
         data: CT_ImageData { y: data_ptr },
         data_begin_: data_ptr,
+        data_size_: size,
         refcount_: Arc::new(AtomicUsize::new(1)),
     });
     
@@ -396,6 +413,9 @@ pub extern "C" fn ct_allocate_image_hdr(
         return std::ptr::null_mut();
     }
     
+    // Calculate size based on format using VxCImage
+    let size = VxCImage::calculate_size(width, height, format);
+    
     let image = Box::new(CT_ImageHdr {
         width,
         height,
@@ -404,6 +424,7 @@ pub extern "C" fn ct_allocate_image_hdr(
         roi: CT_Rect { x: 0, y: 0, width, height },
         data: CT_ImageData { y: data as *mut u8 },
         data_begin_: data as *mut u8,
+        data_size_: size,
         refcount_: Arc::new(AtomicUsize::new(1)),
     });
     
@@ -428,6 +449,7 @@ pub extern "C" fn ct_get_image_roi(img: CT_Image, roi: CT_Rect) -> CT_Image {
             source.data_begin_.add(offset as usize)
         };
         
+        // ROI images share the parent data, use parent's size
         let roi_image = Box::new(CT_ImageHdr {
             width: roi.width,
             height: roi.height,
@@ -436,6 +458,9 @@ pub extern "C" fn ct_get_image_roi(img: CT_Image, roi: CT_Rect) -> CT_Image {
             roi: CT_Rect { x: roi.x, y: roi.y, width: roi.width, height: roi.height },
             data: CT_ImageData { y: roi_data },
             data_begin_: source.data_begin_,
+            // For ROI images, the data size is shared with parent, but we track it separately
+            // The actual allocated size is still source.data_size_
+            data_size_: 0, // Mark as 0 to indicate this is a sub-image that shouldn't free the data
             refcount_: Arc::clone(&source.refcount_),
         });
         
@@ -597,10 +622,10 @@ pub extern "C" fn ct_free_image(image: CT_Image) {
         
         if new_count == 0 {
             // Last reference, free the data
-            if !img.data_begin_.is_null() {
-                // Reconstruct the Vec to properly drop it
-                // This is a simplification - in real use, track the original size
-                let _ = Vec::from_raw_parts(img.data_begin_, 0, 0);
+            if !img.data_begin_.is_null() && img.data_size_ > 0 {
+                // Deallocate using std::alloc
+                let layout = Layout::from_size_align(img.data_size_, 1).unwrap();
+                dealloc(img.data_begin_, layout);
             }
         }
         
@@ -616,26 +641,237 @@ pub extern "C" fn ct_image_to_vx_image(
     ctimg: CT_Image,
     context: vx_context,
 ) -> vx_image {
+    use crate::c_api::*;
+    
     if ctimg.is_null() || context.is_null() {
         return std::ptr::null_mut();
     }
     
-    // For now, return null - full implementation would create vx_image
-    // and copy data from ctimg
-    std::ptr::null_mut()
+    unsafe {
+        let img = &*ctimg;
+        let width = img.width;
+        let height = img.height;
+        let format = img.format;
+        
+        // Map CT format to VX format
+        let vx_format = match format {
+            0x20080100 => VX_DF_IMAGE_U8,
+            0x21000300 => VX_DF_IMAGE_RGB,
+            0x21000400 => VX_DF_IMAGE_RGBA,
+            0x21010400 => VX_DF_IMAGE_RGBX,
+            0x3231564E => VX_DF_IMAGE_NV12,
+            0x3132564E => VX_DF_IMAGE_NV21,
+            0x56555949 => VX_DF_IMAGE_IYUV,
+            0x59565955 => VX_DF_IMAGE_UYVY,
+            0x56595559 => VX_DF_IMAGE_YUYV,
+            0x34555659 => VX_DF_IMAGE_YUV4,
+            _ => return std::ptr::null_mut(),
+        };
+        
+        // Create vx_image
+        let vximg = vxCreateImage(context, width, height, vx_format);
+        if vximg.is_null() {
+            return std::ptr::null_mut();
+        }
+        
+        // For planar formats, copy all planes
+        let is_planar = VxCImage::is_planar_format(vx_format);
+        let num_planes = VxCImage::num_planes(vx_format);
+        
+        if is_planar {
+            // Copy each plane separately
+            for plane_idx in 0..num_planes {
+                let mut addr = std::mem::zeroed::<vx_imagepatch_addressing_t>();
+                let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+                
+                // Get plane dimensions
+                let (plane_width, plane_height) = VxCImage::plane_dimensions(width, height, vx_format, plane_idx);
+                let rect = vx_rectangle_t { 
+                    start_x: 0, start_y: 0, 
+                    end_x: plane_width, end_y: plane_height 
+                };
+                let mut map_id: vx_map_id = 0;
+                
+                let status = vxMapImagePatch(vximg, &rect, plane_idx as vx_uint32, 
+                                             &mut map_id, &mut addr, &mut ptr, 
+                                             VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST, 0);
+                if status != VX_SUCCESS {
+                    let mut img_ptr = vximg;
+                    vxReleaseImage(&mut img_ptr);
+                    return std::ptr::null_mut();
+                }
+                
+                // Copy data row by row
+                if !ptr.is_null() && !img.data_begin_.is_null() {
+                    let plane_offset = VxCImage::plane_offset(width, height, vx_format, plane_idx);
+                    
+                    // For planar formats, each pixel is 1 byte
+                    let row_size = plane_width as usize;  // Bytes to copy per row
+                    let dst_stride = addr.stride_y as usize;
+                    
+                    for y in 0..plane_height as usize {
+                        let src_row = img.data_begin_.add(plane_offset + y * plane_width as usize);
+                        let dst_row = (ptr as *mut u8).add(y * dst_stride);
+                        if row_size > 0 && plane_offset + y * plane_width as usize + row_size <= img.data_size_ {
+                            std::ptr::copy_nonoverlapping(src_row, dst_row, row_size);
+                        }
+                    }
+                }
+                
+                vxUnmapImagePatch(vximg, map_id);
+            }
+        } else {
+            // Single plane format - use vxMapImagePatch
+            let mut addr = std::mem::zeroed::<vx_imagepatch_addressing_t>();
+            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let rect = vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height };
+            let mut map_id: vx_map_id = 0;
+            
+            let status = vxMapImagePatch(vximg, &rect, 0, &mut map_id, &mut addr, &mut ptr, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST, 0);
+            if status != VX_SUCCESS {
+                let mut img_ptr = vximg;
+                vxReleaseImage(&mut img_ptr);
+                return std::ptr::null_mut();
+            }
+            
+            // Copy data row by row (accounting for stride)
+            if !ptr.is_null() && !img.data_begin_.is_null() {
+                let bpp = VxCImage::bytes_per_pixel(vx_format);
+                let row_size = width as usize * bpp;  // Bytes to copy per row
+                let src_stride = img.stride as usize * bpp;  // CT stride in bytes
+                let dst_stride = addr.stride_y as usize;
+                
+                for y in 0..height as usize {
+                    let src_row = img.data_begin_.add(y * src_stride);
+                    let dst_row = (ptr as *mut u8).add(y * dst_stride);
+                    std::ptr::copy_nonoverlapping(src_row, dst_row, row_size);
+                }
+            }
+            
+            vxUnmapImagePatch(vximg, map_id);
+        }
+        
+        vximg
+    }
 }
 
 /// Convert VX Image to CT Image
 /// Note: This creates a copy of the data
 #[no_mangle]
 pub extern "C" fn ct_image_from_vx_image(vximg: vx_image) -> CT_Image {
+    use crate::c_api::*;
+    
     if vximg.is_null() {
         return std::ptr::null_mut();
     }
     
-    // For now, return null - full implementation would query vx_image attributes
-    // and copy data to a new CT_Image
-    std::ptr::null_mut()
+    unsafe {
+        // Query image attributes
+        let mut width: vx_uint32 = 0;
+        let mut height: vx_uint32 = 0;
+        let mut format: vx_df_image = 0;
+        
+        if vxQueryImage(vximg, VX_IMAGE_WIDTH, &mut width as *mut _ as *mut std::ffi::c_void, 
+                       std::mem::size_of::<vx_uint32>()) != VX_SUCCESS {
+            return std::ptr::null_mut();
+        }
+        
+        if vxQueryImage(vximg, VX_IMAGE_HEIGHT, &mut height as *mut _ as *mut std::ffi::c_void,
+                       std::mem::size_of::<vx_uint32>()) != VX_SUCCESS {
+            return std::ptr::null_mut();
+        }
+        
+        if vxQueryImage(vximg, VX_IMAGE_FORMAT, &mut format as *mut _ as *mut std::ffi::c_void,
+                       std::mem::size_of::<vx_df_image>()) != VX_SUCCESS {
+            return std::ptr::null_mut();
+        }
+        
+        // Create CT_Image
+        let ctimg = ct_allocate_image(width, height, format);
+        if ctimg.is_null() {
+            return std::ptr::null_mut();
+        }
+        
+        let img = &mut *ctimg;
+        
+        // For planar formats, copy all planes
+        let is_planar = VxCImage::is_planar_format(format);
+        let num_planes = VxCImage::num_planes(format);
+        
+        if is_planar {
+            // Copy each plane separately
+            let mut total_copied = 0usize;
+            for plane_idx in 0..num_planes {
+                let mut addr = std::mem::zeroed::<vx_imagepatch_addressing_t>();
+                let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+                
+                // Get plane dimensions
+                let (plane_width, plane_height) = VxCImage::plane_dimensions(width, height, format, plane_idx);
+                let rect = vx_rectangle_t { 
+                    start_x: 0, start_y: 0, 
+                    end_x: plane_width, end_y: plane_height 
+                };
+                let mut map_id: vx_map_id = 0;
+                
+                let status = vxMapImagePatch(vximg, &rect, plane_idx as vx_uint32, &mut map_id, &mut addr, &mut ptr, VX_READ_ONLY, VX_MEMORY_TYPE_HOST, 0);
+                if status != VX_SUCCESS {
+                    ct_free_image(ctimg);
+                    return std::ptr::null_mut();
+                }
+                
+                // Copy data row by row
+                if !ptr.is_null() && !img.data_begin_.is_null() {
+                    let plane_offset = VxCImage::plane_offset(width, height, format, plane_idx);
+                    let plane_size = VxCImage::plane_size(width, height, format, plane_idx);
+                    
+                    // For planar formats, each pixel is 1 byte
+                    let row_size = plane_width as usize;  // Bytes to copy per row
+                    let src_stride = addr.stride_y as usize;
+                    
+                    for y in 0..plane_height as usize {
+                        let dst_row = img.data_begin_.add(plane_offset + y * plane_width as usize);
+                        let src_row = (ptr as *const u8).add(y * src_stride);
+                        if row_size > 0 && plane_offset + y * plane_width as usize + row_size <= img.data_size_ {
+                            std::ptr::copy_nonoverlapping(src_row, dst_row, row_size);
+                        }
+                    }
+                    total_copied += plane_size;
+                }
+                
+                vxUnmapImagePatch(vximg, map_id);
+            }
+        } else {
+            // Single plane format - use vxMapImagePatch
+            let mut addr = std::mem::zeroed::<vx_imagepatch_addressing_t>();
+            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let rect = vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height };
+            let mut map_id: vx_map_id = 0;
+            
+            let status = vxMapImagePatch(vximg, &rect, 0, &mut map_id, &mut addr, &mut ptr, VX_READ_ONLY, VX_MEMORY_TYPE_HOST, 0);
+            if status != VX_SUCCESS {
+                ct_free_image(ctimg);
+                return std::ptr::null_mut();
+            }
+            
+            // Copy data row by row (accounting for stride)
+            if !ptr.is_null() && !img.data_begin_.is_null() {
+                let bpp = VxCImage::bytes_per_pixel(format);
+                let row_size = width as usize * bpp;  // Bytes to copy per row
+                let dst_stride = img.stride as usize * bpp;  // CT stride in bytes
+                let src_stride = addr.stride_y as usize;
+                
+                for y in 0..height as usize {
+                    let dst_row = img.data_begin_.add(y * dst_stride);
+                    let src_row = (ptr as *const u8).add(y * src_stride);
+                    std::ptr::copy_nonoverlapping(src_row, dst_row, row_size);
+                }
+            }
+            
+            vxUnmapImagePatch(vximg, map_id);
+        }
+        
+        ctimg
+    }
 }
 
 /// Copy between CT Image and VX Image
@@ -670,10 +906,9 @@ pub extern "C" fn ct_image_create_clone(image: CT_Image) -> CT_Image {
         let cl = &mut *clone;
         cl.roi = img.roi;
         
-        // Copy data
-        let size = (img.stride * img.height * (ct_image_bits_per_pixel(img.format) / 8) as u32) as usize;
-        if !img.data_begin_.is_null() && !cl.data_begin_.is_null() && size > 0 {
-            std::ptr::copy_nonoverlapping(img.data_begin_, cl.data_begin_, size);
+        // Copy data - use the stored data_size_ for accurate copying
+        if !img.data_begin_.is_null() && !cl.data_begin_.is_null() && img.data_size_ > 0 {
+            std::ptr::copy_nonoverlapping(img.data_begin_, cl.data_begin_, img.data_size_.min(cl.data_size_));
         }
         
         clone

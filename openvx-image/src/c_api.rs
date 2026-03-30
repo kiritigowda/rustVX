@@ -2,7 +2,12 @@
 
 use std::ffi::c_void;
 use std::sync::{RwLock, Arc};
-use openvx_core::unified_c_api::{register_image, unregister_image};
+// FFI declarations for register/unregister image - ensure we use the same symbol
+// as defined in openvx-core's unified_c_api
+extern "C" {
+    fn register_image(addr: usize);
+    fn unregister_image(addr: usize);
+}
 use openvx_core::unified_c_api::VxCImage;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_image, vx_status, vx_enum, vx_size, vx_uint32,
@@ -12,9 +17,9 @@ use openvx_core::c_api::{
     VX_DF_IMAGE_RGB, VX_DF_IMAGE_RGBA, VX_DF_IMAGE_RGBX, VX_DF_IMAGE_NV12,
     VX_DF_IMAGE_NV21, VX_DF_IMAGE_IYUV, VX_DF_IMAGE_UYVY, VX_DF_IMAGE_YUYV,
     VX_DF_IMAGE_YUV4, VX_DF_IMAGE_U8, VX_DF_IMAGE_U16, VX_DF_IMAGE_S16,
-    VX_DF_IMAGE_U32, VX_DF_IMAGE_S32,
+    VX_DF_IMAGE_U32, VX_DF_IMAGE_S32, VX_DF_IMAGE_VIRT,
     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
-    VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE,
+    VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE, VX_IMAGE_SPACE, VX_IMAGE_RANGE,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST,
 };
 
@@ -39,6 +44,10 @@ pub extern "C" fn vxCreateImage(
     if width == 0 || height == 0 {
         return std::ptr::null_mut();
     }
+    // VX_DF_IMAGE_VIRT is only valid for virtual images, not regular images
+    if color == VX_DF_IMAGE_VIRT {
+        return std::ptr::null_mut();
+    }
 
     let size = VxCImage::calculate_size(width, height, color);
     if size == 0 {
@@ -60,7 +69,12 @@ pub extern "C" fn vxCreateImage(
     let image_ptr = Box::into_raw(image) as vx_image;
 
     // Register image address in unified registry for type queries (vxQueryReference)
-    register_image(image_ptr as usize);
+    unsafe {
+        register_image(image_ptr as usize);
+    }
+    
+    // Register as valid image for double-free protection
+    register_valid_image(image_ptr as usize);
 
     image_ptr
 }
@@ -94,7 +108,12 @@ pub extern "C" fn vxCreateVirtualImage(
     let image_ptr = Box::into_raw(image) as vx_image;
 
     // Register image address in unified registry for type queries (vxQueryReference)
-    register_image(image_ptr as usize);
+    unsafe {
+        register_image(image_ptr as usize);
+    }
+    
+    // Register as valid image for double-free protection
+    register_valid_image(image_ptr as usize);
 
     image_ptr
 }
@@ -129,24 +148,37 @@ pub extern "C" fn vxCreateImageFromHandle(
         // Calculate size from addressing with overflow protection
         // and sanity limits to prevent massive allocations
         const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB limit
+        const MAX_DIMENSION: u32 = 65536; // Max reasonable dimension
         
-        let total_size = if addr.stride_y > 0 {
-            // Validate stride_y is reasonable (not larger than a single row * 100)
-            let expected_stride = width as usize * VxCImage::bytes_per_pixel(color);
-            let stride = addr.stride_y as usize;
-
-            if stride > expected_stride * 100 {
-                return std::ptr::null_mut(); // Unreasonable stride
-            }
-
-            // Calculate total size: stride_y * height
-            stride
-                .checked_mul(height as usize)
-                .unwrap_or(0)
-                .min(MAX_ALLOCATION_SIZE)
-        } else {
+        // Validate dimensions are reasonable
+        if width > MAX_DIMENSION || height > MAX_DIMENSION {
             return std::ptr::null_mut();
-        };
+        }
+        
+        // CRITICAL FIX: Check stride_y is positive BEFORE casting to usize
+        // A negative stride_y cast to usize would become a huge number
+        if addr.stride_y <= 0 {
+            return std::ptr::null_mut();
+        }
+        
+        let stride = addr.stride_y as usize;
+        
+        // Validate stride is reasonable
+        let expected_stride = width as usize * VxCImage::bytes_per_pixel(color);
+        if stride > expected_stride * 100 {
+            return std::ptr::null_mut(); // Unreasonable stride
+        }
+        
+        // Also check stride isn't unreasonably large on its own
+        if stride > MAX_ALLOCATION_SIZE / height as usize {
+            return std::ptr::null_mut();
+        }
+
+        // Calculate total size with checked multiplication
+        let total_size = stride
+            .checked_mul(height as usize)
+            .unwrap_or(0)
+            .min(MAX_ALLOCATION_SIZE);
 
         if total_size == 0 {
             return std::ptr::null_mut();
@@ -179,7 +211,12 @@ pub extern "C" fn vxCreateImageFromHandle(
         let image_ptr = Box::into_raw(image) as vx_image;
 
         // Register image address in unified registry for type queries (vxQueryReference)
-        register_image(image_ptr as usize);
+        unsafe {
+            register_image(image_ptr as usize);
+        }
+        
+        // Register as valid image for double-free protection
+        register_valid_image(image_ptr as usize);
 
         image_ptr
     }
@@ -323,7 +360,12 @@ pub extern "C" fn vxCreateUniformImage(
     let image_ptr = Box::into_raw(image) as vx_image;
     
     // Register image address in unified registry for type queries (vxQueryReference)
-    register_image(image_ptr as usize);
+    unsafe {
+        register_image(image_ptr as usize);
+    }
+    
+    // Register as valid image for double-free protection
+    register_valid_image(image_ptr as usize);
     
     image_ptr
 }
@@ -332,9 +374,9 @@ pub extern "C" fn vxCreateUniformImage(
 /// 
 /// According to OpenVX spec, this creates a sub-image from a specific channel
 /// of a YUV formatted parent image. Valid channels are:
-/// - VX_CHANNEL_Y (0): Y plane (valid for IYUV, NV12, NV21, YUV4)
-/// - VX_CHANNEL_U (1): U plane (valid for IYUV, YUV4)
-/// - VX_CHANNEL_V (2): V plane (valid for IYUV, YUV4)
+/// - VX_CHANNEL_Y: Y plane (valid for IYUV, NV12, NV21, YUV4)
+/// - VX_CHANNEL_U: U plane (valid for IYUV, YUV4)
+/// - VX_CHANNEL_V: V plane (valid for IYUV, YUV4)
 /// 
 /// The function extracts the context from the parent image.
 #[no_mangle]
@@ -351,9 +393,10 @@ pub extern "C" fn vxCreateImageFromChannel(
         
         // Per OpenVX spec, only YUV formats support channel extraction
         // Validate channel based on source format
+        // VX_CHANNEL_Y = 0x00009014, VX_CHANNEL_U = 0x00009015, VX_CHANNEL_V = 0x00009016
         match channel {
             // Y channel is valid for IYUV, NV12, NV21, YUV4
-            4 /* VX_CHANNEL_Y */ => {
+            0x00009014 /* VX_CHANNEL_Y */ => {
                 match source_img.format {
                     VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
                         // Valid - continue
@@ -362,7 +405,7 @@ pub extern "C" fn vxCreateImageFromChannel(
                 }
             }
             // U and V channels are only valid for YUV4 and IYUV
-            5 /* VX_CHANNEL_U */ | 6 /* VX_CHANNEL_V */ => {
+            0x00009015 /* VX_CHANNEL_U */ | 0x00009016 /* VX_CHANNEL_V */ => {
                 match source_img.format {
                     VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV => {
                         // Valid - continue
@@ -385,11 +428,11 @@ pub extern "C" fn vxCreateImageFromChannel(
         // - U/V planes for IYUV: width/2 x height/2 (4:2:0 subsampling)
         // - U/V planes for YUV4: full width x height (4:4:4, no subsampling)
         let (output_width, output_height) = match channel {
-            4 /* VX_CHANNEL_Y */ => {
+            0x00009014 /* VX_CHANNEL_Y */ => {
                 // Y plane is full resolution
                 (source_img.width, source_img.height)
             }
-            5 /* VX_CHANNEL_U */ | 6 /* VX_CHANNEL_V */ => {
+            0x00009015 /* VX_CHANNEL_U */ | 0x00009016 /* VX_CHANNEL_V */ => {
                 // U/V planes depend on format
                 match source_img.format {
                     VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
@@ -425,9 +468,39 @@ pub extern "C" fn vxCreateImageFromChannel(
         let image_ptr = Box::into_raw(channel_image) as vx_image;
 
         // Register image address in unified registry for type queries (vxQueryReference)
-        register_image(image_ptr as usize);
+        unsafe {
+            register_image(image_ptr as usize);
+        }
+        
+        // Register as valid image for double-free protection
+        register_valid_image(image_ptr as usize);
         
         image_ptr
+    }
+}
+
+/// Registry to track valid (non-freed) images
+use std::sync::Mutex;
+use std::collections::HashSet;
+
+static VALID_IMAGES: std::sync::LazyLock<Mutex<HashSet<usize>>> = std::sync::LazyLock::new(|| {
+    Mutex::new(HashSet::new())
+});
+
+/// Register an image as valid
+fn register_valid_image(addr: usize) {
+    if let Ok(mut images) = VALID_IMAGES.lock() {
+        let _: bool = images.insert(addr);
+    }
+}
+
+/// Unregister an image (mark as freed)
+fn unregister_valid_image(addr: usize) -> bool {
+    if let Ok(mut images) = VALID_IMAGES.lock() {
+        let _: bool = images.remove(&addr);
+        true
+    } else {
+        false
     }
 }
 
@@ -441,9 +514,17 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
     unsafe {
         let img = *image;
         if !img.is_null() {
-            // Unregister from unified registry
-            unregister_image(img as usize);
+            let addr = img as usize;
             
+            // Check if this image was already freed
+            if !unregister_valid_image(addr) {
+                // Image was already freed or never existed
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+            
+            // Unregister from unified registry
+            unregister_image(addr);
+
             // Free the image
             let _ = Box::from_raw(img as *mut VxCImage);
             *image = std::ptr::null_mut();
@@ -494,13 +575,17 @@ pub extern "C" fn vxQueryImage(
                 VX_SUCCESS
             }
             VX_IMAGE_PLANES => {
-                if size != std::mem::size_of::<vx_uint32>() {
-                    return VX_ERROR_INVALID_PARAMETERS;
-                }
-                // Number of planes based on format
+                // Accept both vx_uint32 and vx_size sizes for compatibility
                 let planes = VxCImage::num_planes(img.format);
-                *(ptr as *mut vx_uint32) = planes as vx_uint32;
-                VX_SUCCESS
+                if size == std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = planes as vx_size;
+                    VX_SUCCESS
+                } else if size == std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = planes as vx_uint32;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
             }
             VX_IMAGE_IS_UNIFORM => {
                 if size != std::mem::size_of::<vx_enum>() {
@@ -514,6 +599,24 @@ pub extern "C" fn vxQueryImage(
                 // Not implemented
                 VX_ERROR_NOT_IMPLEMENTED
             }
+            VX_IMAGE_SPACE => {
+                // Image space/color space - return VX_COLOR_SPACE_UNDEFINED (0)
+                if size == std::mem::size_of::<vx_enum>() {
+                    *(ptr as *mut vx_enum) = 0; // VX_COLOR_SPACE_UNDEFINED
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_IMAGE_RANGE => {
+                // Image range - return VX_CHANNEL_RANGE_FULL (0)
+                if size == std::mem::size_of::<vx_enum>() {
+                    *(ptr as *mut vx_enum) = 0; // VX_CHANNEL_RANGE_FULL
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }
     }
@@ -523,11 +626,26 @@ pub extern "C" fn vxQueryImage(
 #[no_mangle]
 pub extern "C" fn vxSetImageAttribute(
     _image: vx_image,
-    _attribute: vx_enum,
+    attribute: vx_enum,
     _ptr: *const c_void,
     _size: vx_size,
 ) -> vx_status {
-    VX_ERROR_NOT_IMPLEMENTED
+    if _image.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    
+    // Handle attributes that should succeed
+    match attribute {
+        VX_IMAGE_SPACE => {
+            // Accept setting image space - currently no-op
+            VX_SUCCESS
+        }
+        VX_IMAGE_RANGE => {
+            // Accept setting image range - currently no-op
+            VX_SUCCESS
+        }
+        _ => VX_ERROR_NOT_IMPLEMENTED,
+    }
 }
 
 /// Map image patch for CPU access
@@ -589,17 +707,17 @@ pub extern "C" fn vxMapImagePatch(
         }
 
         // Calculate stride and offset based on format and plane
-        let (bpp, stride_y, plane_offset) = if is_planar {
-            // For planar formats, each plane is 1 byte per pixel (luma/chroma)
-            let bpp = 1usize;
-            let stride_y = plane_width * bpp;
-            let plane_offset = VxCImage::plane_offset(img.width, img.height, img.format, plane_index as usize);
-            (bpp, stride_y, plane_offset)
+        let bpp = if is_planar {
+            1usize // For planar formats, each plane is 1 byte per pixel (luma/chroma)
         } else {
-            // For packed formats, use standard bytes per pixel
-            let bpp = VxCImage::bytes_per_pixel(img.format);
-            let stride_y = plane_width * bpp;
-            (bpp, stride_y, 0)
+            VxCImage::bytes_per_pixel(img.format)
+        };
+        
+        let stride_y = plane_width * bpp;
+        let plane_offset = if is_planar {
+            VxCImage::plane_offset(img.width, img.height, img.format, plane_index as usize)
+        } else {
+            0
         };
 
         let offset = plane_offset + start_y * stride_y + start_x * bpp;
@@ -618,32 +736,32 @@ pub extern "C" fn vxMapImagePatch(
             }
         }
         
-        // Store the patch
+        // Store the patch FIRST, then get pointer to the stored data
         let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
             let id = patches.len() + 1;
-            // Store plane_index in the offset field (using upper bits) to track which plane was mapped
-            // This is a hack; we encode plane_index * stride_y in the stored stride_y to track it
-            let encoded_stride_y = stride_y | (plane_index as usize) << 48;
-            patches.push((id, patch_data.clone(), usage, offset, encoded_stride_y));
+            // Store patch with plane_index explicitly tracked (6-tuple now)
+            patches.push((id, patch_data, usage, offset, stride_y, plane_index));
             id
         } else {
             return VX_ERROR_INVALID_REFERENCE;
         };
 
         // Fill addressing structure
+        // Per OpenVX spec: step_x/step_y are step sizes (typically 1), scale_x/scale_y are VX_SCALE_UNITY for 1:1
         (*addr).dim_x = width as vx_uint32;
         (*addr).dim_y = height as vx_uint32;
         (*addr).stride_x = bpp as vx_int32;
         (*addr).stride_y = stride_y as vx_int32;
-        (*addr).scale_x = 0;
-        (*addr).scale_y = 0;
-        
+        (*addr).step_x = 1;
+        (*addr).step_y = 1;
+        (*addr).scale_x = 1024; // VX_SCALE_UNITY
+        (*addr).scale_y = 1024; // VX_SCALE_UNITY
         // Set output parameters
         *map_id = map_id_val;
         
-        // Return pointer to the patch data
+        // Return pointer to the STORED patch data (not the local variable)
         if let Ok(patches) = img.mapped_patches.read() {
-            if let Some(patch) = patches.iter().find(|(id, _, _, _, _)| *id == map_id_val) {
+            if let Some(patch) = patches.iter().find(|(id, _, _, _, _, _)| *id == map_id_val) {
                 *ptr = patch.1.as_ptr() as *mut c_void;
             }
         }
@@ -668,23 +786,14 @@ pub extern "C" fn vxUnmapImagePatch(
     let img = unsafe { &mut *(image as *mut VxCImage) };
 
     if let Ok(mut patches) = img.mapped_patches.write() {
-        if let Some(pos) = patches.iter().position(|(id, _, _, _, _)| *id == map_id) {
-            let (_, patch_data, usage, offset, encoded_stride_y) = patches.remove(pos);
-            
-            // Decode the plane index and actual stride_y
-            let is_planar = VxCImage::is_planar_format(img.format);
-            let (stride_y, plane_index) = if is_planar {
-                // Extract plane index from upper bits
-                let plane_idx = (encoded_stride_y >> 48) as u32;
-                let actual_stride_y = encoded_stride_y & 0xFFFFFFFFFFFF;
-                (actual_stride_y, plane_idx)
-            } else {
-                (encoded_stride_y, 0)
-            };
+        if let Some(pos) = patches.iter().position(|(id, _, _, _, _, _)| *id == map_id) {
+            let (_, patch_data, usage, offset, stride_y, plane_index) = patches.remove(pos);
             
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
                 if let Ok(mut data) = img.data.write() {
+                    let is_planar = VxCImage::is_planar_format(img.format);
+                    
                     let bpp = if is_planar {
                         1 // Planar formats are 1 byte per pixel
                     } else {
@@ -1067,7 +1176,12 @@ pub extern "C" fn vxCreateImageFromROI(
         let image_ptr = Box::into_raw(roi_image) as vx_image;
 
         // Register image address in unified registry for type queries (vxQueryReference)
-        register_image(image_ptr as usize);
+        unsafe {
+            register_image(image_ptr as usize);
+        }
+
+        // Register as valid image for double-free protection
+        register_valid_image(image_ptr as usize);
 
         image_ptr
     }

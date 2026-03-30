@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
 use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData};
 use crate::unified_c_api::REFERENCE_COUNTS;
+use crate::c_api_data::vx_pixel_value_t;
 
 // ============================================================================
 // Type Aliases (C-compatible)
@@ -140,24 +141,26 @@ pub struct GraphData {
 
 /// Internal node data (stored in Arc)
 pub struct NodeData {
-    id: u64,
-    context_id: u32,
-    graph_id: u64,
-    kernel_id: u64,
-    parameters: Mutex<Vec<Option<u64>>>, // Store reference IDs
-    callback: Mutex<Option<vx_nodecomplete_f>>,
-    status: std::sync::atomic::AtomicI32,
-    ref_count: std::sync::atomic::AtomicUsize,
+    pub id: u64,
+    pub context_id: u32,
+    pub graph_id: u64,
+    pub kernel_id: u64,
+    pub parameters: Mutex<Vec<Option<u64>>>, // Store reference IDs
+    pub callback: Mutex<Option<vx_nodecomplete_f>>,
+    pub status: std::sync::atomic::AtomicI32,
+    pub ref_count: std::sync::atomic::AtomicUsize,
+    /// Node-specific border mode (overrides context border)
+    pub border_mode: Mutex<crate::unified_c_api::vx_border_t>,
 }
 
 /// Internal kernel data (stored in Arc)
 pub struct KernelData {
-    id: u64,
-    context_id: u32,
-    name: String,
-    kernel_enum: i32,
-    num_params: u32,
-    ref_count: std::sync::atomic::AtomicUsize,
+    pub id: u64,
+    pub context_id: u32,
+    pub name: String,
+    pub kernel_enum: i32,
+    pub num_params: u32,
+    pub ref_count: std::sync::atomic::AtomicUsize,
 }
 
 /// Internal parameter data (stored in Arc)
@@ -227,6 +230,10 @@ pub extern "C" fn vxCreateContext() -> vx_context {
         unified_ctxs.insert(ptr as usize, Arc::new(VxCContext {
             id,
             ref_count: std::sync::atomic::AtomicUsize::new(1),
+            border_mode: std::sync::RwLock::new(crate::unified_c_api::vx_border_t {
+                mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
+                constant_value: vx_pixel_value_t { U32: 0 },
+            }),
         }));
     }
     // Initialize reference count to 1 (the creation itself counts as a reference)
@@ -244,80 +251,81 @@ fn register_standard_kernels(context_id: u32) {
     use std::sync::atomic::Ordering;
 
     // Register built-in kernels that are always available
+    // Format: (name, enum, num_params)
     // Kernel enums aligned with OpenVX 1.3.1 spec
-    let standard_kernels: Vec<(&str, i32)> = vec![
+    let standard_kernels: Vec<(&str, i32, u32)> = vec![
         // Color conversions (0x00-0x02)
-        ("org.khronos.openvx.color_convert", 0x00i32),
-        ("org.khronos.openvx.channel_extract", 0x01),
-        ("org.khronos.openvx.channel_combine", 0x02),
+        ("org.khronos.openvx.color_convert", 0x00i32, 2),
+        ("org.khronos.openvx.channel_extract", 0x01, 3),
+        ("org.khronos.openvx.channel_combine", 0x02, 5),
         // Gradient operations (0x03-0x05)
-        ("org.khronos.openvx.sobel3x3", 0x03),
-        ("org.khronos.openvx.magnitude", 0x04),
-        ("org.khronos.openvx.phase", 0x05),
+        ("org.khronos.openvx.sobel_3x3", 0x03, 3),
+        ("org.khronos.openvx.magnitude", 0x04, 3),
+        ("org.khronos.openvx.phase", 0x05, 3),
         // Geometric (0x06)
-        ("org.khronos.openvx.scale_image", 0x06),
+        ("org.khronos.openvx.scale_image", 0x06, 3),
         // Arithmetic (0x07-0x0A)
-        ("org.khronos.openvx.add", 0x07),
-        ("org.khronos.openvx.subtract", 0x08),
-        ("org.khronos.openvx.multiply", 0x09),
-        ("org.khronos.openvx.weighted_average", 0x0A),
+        ("org.khronos.openvx.add", 0x07, 4),
+        ("org.khronos.openvx.subtract", 0x08, 4),
+        ("org.khronos.openvx.multiply", 0x09, 4),
+        ("org.khronos.openvx.weighted_average", 0x0A, 4),
         // Filters (0x0B-0x0E)
-        ("org.khronos.openvx.custom_convolution", 0x0B),
-        ("org.khronos.openvx.gaussian3x3", 0x0C),
-        ("org.khronos.openvx.median3x3", 0x0D),
-        ("org.khronos.openvx.box3x3", 0x0E),
+        ("org.khronos.openvx.convolve", 0x0B, 3),
+        ("org.khronos.openvx.gaussian_3x3", 0x0C, 2),
+        ("org.khronos.openvx.median_3x3", 0x0D, 2),
+        ("org.khronos.openvx.box_3x3", 0x0E, 2),
         // Morphology (0x0F-0x10)
-        ("org.khronos.openvx.dilate3x3", 0x0F),
-        ("org.khronos.openvx.erode3x3", 0x10),
+        ("org.khronos.openvx.dilate_3x3", 0x0F, 2),
+        ("org.khronos.openvx.erode_3x3", 0x10, 2),
         // Statistics (0x11-0x16)
-        ("org.khronos.openvx.histogram", 0x11),
-        ("org.khronos.openvx.equalize_histogram", 0x12),
-        ("org.khronos.openvx.integral_image", 0x13),
-        ("org.khronos.openvx.meanstddev", 0x14),
-        ("org.khronos.openvx.minmaxloc", 0x15),
-        ("org.khronos.openvx.absdiff", 0x16),
+        ("org.khronos.openvx.histogram", 0x11, 2),
+        ("org.khronos.openvx.equalize_histogram", 0x12, 2),
+        ("org.khronos.openvx.integral_image", 0x13, 2),
+        ("org.khronos.openvx.mean_stddev", 0x14, 4),
+        ("org.khronos.openvx.minmaxloc", 0x15, 6),
+        ("org.khronos.openvx.absdiff", 0x16, 3),
         // Additional features (0x17-0x1A)
-        ("org.khronos.openvx.mean_shift", 0x17),
-        ("org.khronos.openvx.threshold", 0x18),
-        ("org.khronos.openvx.integral_image_sq", 0x19),
-        ("org.khronos.openvx.gaussian5x5", 0x1A),
+        ("org.khronos.openvx.mean_shift", 0x17, 5),
+        ("org.khronos.openvx.threshold", 0x18, 3), // Threshold needs 3 params: input, thresh, output
+        ("org.khronos.openvx.integral_image_sq", 0x19, 2),
+        ("org.khronos.openvx.gaussian_5x5", 0x1A, 2),
         // Extended filters (0x1B-0x1D)
-        ("org.khronos.openvx.sobel5x5", 0x1B),
-        ("org.khronos.openvx.laplacian", 0x1C),
-        ("org.khronos.openvx.non_linear_filter", 0x1D),
+        ("org.khronos.openvx.sobel_5x5", 0x1B, 3),
+        ("org.khronos.openvx.laplacian", 0x1C, 3),
+        ("org.khronos.openvx.non_linear_filter", 0x1D, 4),
         // Geometric warping (0x1E-0x1F)
-        ("org.khronos.openvx.warp_affine", 0x1E),
-        ("org.khronos.openvx.warp_perspective", 0x1F),
+        ("org.khronos.openvx.warp_affine", 0x1E, 4),
+        ("org.khronos.openvx.warp_perspective", 0x1F, 4),
         // Feature detection (0x20-0x22)
-        ("org.khronos.openvx.harris_corners", 0x20),
-        ("org.khronos.openvx.fast_corners", 0x21),
-        ("org.khronos.openvx.optical_flow_pyr_lk", 0x22),
+        ("org.khronos.openvx.harris_corners", 0x20, 4),
+        ("org.khronos.openvx.fast_corners", 0x21, 3),
+        ("org.khronos.openvx.optical_flow_pyr_lk", 0x22, 7),
         // Additional geometric (0x23)
-        ("org.khronos.openvx.remap", 0x23),
+        ("org.khronos.openvx.remap", 0x23, 4),
         // Extended feature detection (0x24-0x25)
-        ("org.khronos.openvx.corner_min_eigen_val", 0x24),
-        ("org.khronos.openvx.hough_lines_p", 0x25),
+        ("org.khronos.openvx.corner_min_eigen_val", 0x24, 3),
+        ("org.khronos.openvx.hough_lines_p", 0x25, 6),
         // Object detection (0x26)
-        ("org.khronos.openvx.canny_edge_detector", 0x26),
+        ("org.khronos.openvx.canny_edge_detector", 0x26, 4),
         // Extended morphology (0x27-0x28)
-        ("org.khronos.openvx.dilate5x5", 0x27),
-        ("org.khronos.openvx.erode5x5", 0x28),
+        ("org.khronos.openvx.dilate_5x5", 0x27, 2),
+        ("org.khronos.openvx.erode_5x5", 0x28, 2),
         // Pyramids (0x29-0x2A)
-        ("org.khronos.openvx.gaussian_pyramid", 0x29),
-        ("org.khronos.openvx.laplacian_pyramid", 0x2A),
+        ("org.khronos.openvx.gaussian_pyramid", 0x29, 2),
+        ("org.khronos.openvx.laplacian_pyramid", 0x2A, 2),
         // Reconstruction (0x2B)
-        ("org.khronos.openvx.laplacian_reconstruct", 0x2B),
+        ("org.khronos.openvx.laplacian_reconstruct", 0x2B, 3),
     ];
     
     if let Ok(mut kernels) = KERNELS.lock() {
-        for (name, kernel_enum) in standard_kernels {
+        for (name, kernel_enum, num_params) in standard_kernels {
             let kernel_id = generate_id();
             let kernel = Arc::new(KernelData {
                 id: kernel_id,
                 context_id,
                 name: name.to_string(),
                 kernel_enum: kernel_enum as i32,
-                num_params: 2,
+                num_params,
                 ref_count: std::sync::atomic::AtomicUsize::new(1),
             });
             kernels.insert(kernel_id, kernel);
@@ -437,6 +445,21 @@ pub extern "C" fn vxGetStatus(ref_: vx_reference) -> vx_status {
         }
     }
     
+    // Check images in unified registry
+    use crate::unified_c_api::{IMAGES};
+    if let Ok(images) = IMAGES.lock() {
+        if images.contains(&addr) {
+            return VX_SUCCESS;
+        }
+    }
+    
+    // Check thresholds in unified registry
+    if let Ok(thresholds) = crate::unified_c_api::THRESHOLDS.lock() {
+        if thresholds.contains(&addr) {
+            return VX_SUCCESS;
+        }
+    }
+    
     VX_ERROR_INVALID_REFERENCE
 }
 
@@ -447,6 +470,20 @@ pub extern "C" fn vxGetContext(ref_: vx_reference) -> vx_context {
     }
     unsafe {
         let id = ref_ as u64;
+        let addr = ref_ as usize;
+        
+        // Check if it's an image - use the unified registry FIRST
+        // This is critical because images are allocated as heap pointers
+        // and we need to validate them before treating as IDs
+        use crate::unified_c_api::{IMAGES};
+        if let Ok(images) = IMAGES.lock() {
+            if images.contains(&addr) {
+                // The image stores context directly in the VxCImage struct
+                let img = &*(ref_ as *const crate::unified_c_api::VxCImage);
+                return img.context;
+            }
+        }
+        
         // Check if it's a node
         if let Ok(nodes) = NODES.lock() {
             if let Some(node) = nodes.get(&id) {
@@ -603,22 +640,47 @@ pub extern "C" fn vxQueryNode(
     VX_ERROR_NOT_IMPLEMENTED
 }
 
+pub const VX_NODE_BORDER: vx_enum = 0x00220006; // VX_NODE_BORDER attribute
+
 #[no_mangle]
 pub extern "C" fn vxSetNodeAttribute(
     node: vx_node,
-    _attribute: vx_enum,
-    _ptr: *const c_void,
-    _size: vx_size,
+    attribute: vx_enum,
+    ptr: *const c_void,
+    size: vx_size,
 ) -> vx_status {
     if node.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // For now, we just validate the parameters
-    if _ptr.is_null() {
+    if ptr.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    // TODO: Implement actual attribute setting
-    VX_SUCCESS
+    
+    unsafe {
+        let id = node as u64;
+        if let Ok(nodes) = NODES.lock() {
+            if let Some(node_data) = nodes.get(&id) {
+                match attribute {
+                    VX_NODE_BORDER => {
+                        if size != std::mem::size_of::<crate::unified_c_api::vx_border_t>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let border = *(ptr as *const crate::unified_c_api::vx_border_t);
+                        if let Ok(mut border_lock) = node_data.border_mode.lock() {
+                            *border_lock = border;
+                            return VX_SUCCESS;
+                        }
+                        return VX_ERROR_INVALID_REFERENCE;
+                    }
+                    _ => {
+                        // For other attributes, just validate and return success
+                        return VX_SUCCESS;
+                    }
+                }
+            }
+        }
+    }
+    VX_ERROR_INVALID_REFERENCE
 }
 
 #[no_mangle]
@@ -740,16 +802,31 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
         callback: Mutex::new(None),
         status: std::sync::atomic::AtomicI32::new(0),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
+        border_mode: Mutex::new(crate::unified_c_api::vx_border_t {
+            mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
+            constant_value: crate::c_api_data::vx_pixel_value_t { U32: 0 },
+        }),
     });
     
     if let Ok(mut nodes) = NODES.lock() {
-        nodes.insert(id, node);
+        nodes.insert(id, node.clone());
     }
     
-    // Add to graph
-    if let Ok(graphs) = GRAPHS.lock() {
-        if let Some(g) = graphs.get(&graph_id) {
-            if let Ok(mut graph_nodes) = g.nodes.lock() {
+    // Add to graph in c_api registry
+    {
+        if let Ok(graphs) = GRAPHS.lock() {
+            if let Some(g) = graphs.get(&graph_id) {
+                if let Ok(mut graph_nodes) = g.nodes.lock() {
+                    graph_nodes.push(id);
+                }
+            }
+        }
+    }
+    
+    // Also add to unified graph registry for vxProcessGraph
+    if let Ok(graphs_data) = GRAPHS_DATA.lock() {
+        if let Some(g) = graphs_data.get(&graph_id) {
+            if let Ok(mut graph_nodes) = g.nodes.write() {
                 graph_nodes.push(id);
             }
         }
@@ -1283,39 +1360,55 @@ pub const VX_OUTPUT: vx_enum = 1;
 // ============================================================================
 // Memory and Copy Constants
 // ============================================================================
-
-pub const VX_READ_ONLY: vx_enum = 0;
-pub const VX_WRITE_ONLY: vx_enum = 1;
-pub const VX_READ_AND_WRITE: vx_enum = 2;
+// VX_ENUM_BASE(VX_ID_KHRONOS(0), VX_ENUM_ACCESSOR(0x11)) = (0 << 20) | (0x11 << 12) = 0x11000
+pub const VX_READ_ONLY: vx_enum = 0x11001;       // VX_ENUM_BASE(0, 0x11) + 1
+pub const VX_WRITE_ONLY: vx_enum = 0x11002;    // VX_ENUM_BASE(0, 0x11) + 2
+pub const VX_READ_AND_WRITE: vx_enum = 0x11003; // VX_ENUM_BASE(0, 0x11) + 3
 // VX_MEMORY_TYPE_HOST = VX_ENUM_BASE(VX_ID_KHRONOS(0), VX_ENUM_MEMORY_TYPE(0x0E)) + 1
 // VX_ENUM_BASE = (0 << 20) | (0x0E << 12) = 0xE000, +1 = 0xE001
 pub const VX_MEMORY_TYPE_NONE: vx_enum = 0xE000;
 pub const VX_MEMORY_TYPE_HOST: vx_enum = 0xE001;
 
 // ============================================================================
-// Image Format Constants (OpenVX spec values)
-// Format: 0x[dimension][channels][plane0][plane1] - see OpenVX 1.3 spec
+// Image Format Constants (OpenVX spec FourCC values)
+// Format: VX_DF_IMAGE(a,b,c,d) = ((vx_uint32)(vx_uint8)(a) | ((vx_uint32)(vx_uint8)(b) << 8U) |
+//                                 ((vx_uint32)(vx_uint8)(c) << 16U) | ((vx_uint32)(vx_uint8)(d) << 24U))
 // ============================================================================
 
-pub const VX_DF_IMAGE_U8: vx_df_image = 0x20080100u32;
-pub const VX_DF_IMAGE_S8: vx_df_image = 0x20080200u32;
-pub const VX_DF_IMAGE_U16: vx_df_image = 0x20100100u32;
-pub const VX_DF_IMAGE_S16: vx_df_image = 0x20100200u32;
-pub const VX_DF_IMAGE_U32: vx_df_image = 0x20200100u32;
-pub const VX_DF_IMAGE_S32: vx_df_image = 0x20200200u32;
-pub const VX_DF_IMAGE_RGB: vx_df_image = 0x21000300u32;
-pub const VX_DF_IMAGE_RGBX: vx_df_image = 0x21010400u32;
-pub const VX_DF_IMAGE_RGBA: vx_df_image = 0x21000400u32;
-pub const VX_DF_IMAGE_NV12: vx_df_image = 0x3231564Eu32;  // 'NV12' in ASCII
-pub const VX_DF_IMAGE_NV21: vx_df_image = 0x3132564Eu32;  // 'NV21' in ASCII
-pub const VX_DF_IMAGE_UYVY: vx_df_image = 0x59565955u32;  // 'UYVY' in ASCII
-pub const VX_DF_IMAGE_YUYV: vx_df_image = 0x56595559u32;  // 'YUYV' in ASCII
-pub const VX_DF_IMAGE_IYUV: vx_df_image = 0x56555949u32;  // 'IYUV' in ASCII (same as I420)
-pub const VX_DF_IMAGE_YUV4: vx_df_image = 0x34555659u32;  // 'YUV4' in ASCII
-pub const VX_DF_IMAGE_GRAYSCALE: vx_df_image = 0x20080100u32; // Same as U8
+// Format: 'U008' = 0x38303055
+pub const VX_DF_IMAGE_U8: vx_df_image = 0x38303055u32;
+// Format: 'S008' = 0x38303053
+pub const VX_DF_IMAGE_S8: vx_df_image = 0x38303053u32;
+// Format: 'U016' = 0x36313055
+pub const VX_DF_IMAGE_U16: vx_df_image = 0x36313055u32;
+// Format: 'S016' = 0x36313053
+pub const VX_DF_IMAGE_S16: vx_df_image = 0x36313053u32;
+// Format: 'U032' = 0x32333055
+pub const VX_DF_IMAGE_U32: vx_df_image = 0x32333055u32;
+// Format: 'S032' = 0x32333053
+pub const VX_DF_IMAGE_S32: vx_df_image = 0x32333053u32;
+// Format: 'RGB2' = 0x32424752
+pub const VX_DF_IMAGE_RGB: vx_df_image = 0x32424752u32;
+// Format: 'RGBA' = 0x41424752
+pub const VX_DF_IMAGE_RGBX: vx_df_image = 0x41424752u32;
+pub const VX_DF_IMAGE_RGBA: vx_df_image = 0x41424752u32;  // Same as RGBX per spec
+// Format: 'NV12' = 0x3231564E
+pub const VX_DF_IMAGE_NV12: vx_df_image = 0x3231564Eu32;
+// Format: 'NV21' = 0x3132564E
+pub const VX_DF_IMAGE_NV21: vx_df_image = 0x3132564Eu32;
+// Format: 'UYVY' = 0x59565955
+pub const VX_DF_IMAGE_UYVY: vx_df_image = 0x59565955u32;
+// Format: 'YUYV' = 0x56595559
+pub const VX_DF_IMAGE_YUYV: vx_df_image = 0x56595559u32;
+// Format: 'IYUV' = 0x56555949
+pub const VX_DF_IMAGE_IYUV: vx_df_image = 0x56555949u32;
+// Format: 'YUV4' = 0x34555659
+pub const VX_DF_IMAGE_YUV4: vx_df_image = 0x34555659u32;
+// Same as U8
+pub const VX_DF_IMAGE_GRAYSCALE: vx_df_image = 0x38303055u32;
 
-// Virtual image format
-pub const VX_DF_IMAGE_VIRT: vx_df_image = 0xFFFFFFFFu32;
+// Virtual image format (VIRT as FourCC)
+pub const VX_DF_IMAGE_VIRT: vx_df_image = 0x54524956u32; // 'VIRT' in ASCII
 
 // ============================================================================
 // ============================================================================
@@ -1369,4 +1462,5 @@ pub struct vx_imagepatch_addressing_t {
     pub scale_y: vx_uint32,
     pub step_x: vx_uint32,
     pub step_y: vx_uint32,
+    pub stride_x_bits: vx_int32,
 }

@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 use std::sync::RwLock;
-use crate::c_api::*;
+pub use crate::c_api::*;
 
 // Pixel value union (needed for image operations)
 // Match the C OpenVX definition with proper reserved padding
@@ -36,6 +36,17 @@ pub union vx_pixel_value_t {
     pub U32: u32,
     /// VX_DF_IMAGE_S32 (overlaps with reserved[0..3])
     pub S32: i32,
+}
+
+// Implement Debug manually since unions don't derive Debug
+impl std::fmt::Debug for vx_pixel_value_t {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        unsafe {
+            f.debug_struct("vx_pixel_value_t")
+                .field("U32", &self.U32)
+                .finish()
+        }
+    }
 }
 
 // ============================================================================
@@ -585,7 +596,12 @@ pub extern "C" fn vxCreateThreshold(
         context,
     });
 
-    Box::into_raw(threshold) as vx_threshold
+    let thresh_ptr = Box::into_raw(threshold) as vx_threshold;
+    
+    // Register in unified THRESHOLDS registry for type tracking
+    crate::unified_c_api::register_threshold(thresh_ptr as usize);
+    
+    thresh_ptr
 }
 
 /// Set threshold attribute
@@ -669,6 +685,8 @@ pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
 
     unsafe {
         if !(*thresh).is_null() {
+            // Unregister from unified THRESHOLDS registry
+            crate::unified_c_api::unregister_threshold(*thresh as usize);
             let _ = Box::from_raw(*thresh as *mut VxCThresholdData);
             *thresh = std::ptr::null_mut();
         }
@@ -682,14 +700,20 @@ pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
 // ============================================================================
 
 // Additional threshold attributes
+// VX_ATTRIBUTE_BASE(VX_ID_KHRONOS=0, VX_TYPE_THRESHOLD=0x80A) = 0x80A00
+// VX_THRESHOLD_INPUT_FORMAT = 0x80A00 + 7 = 0x80A07
+// VX_THRESHOLD_OUTPUT_FORMAT = 0x80A00 + 8 = 0x80A08
 pub const VX_THRESHOLD_TYPE: vx_enum = 0x00;
 pub const VX_THRESHOLD_DATA_TYPE: vx_enum = 0x01;
-pub const VX_THRESHOLD_INPUT_FORMAT: vx_enum = 0x05;
-pub const VX_THRESHOLD_OUTPUT_FORMAT: vx_enum = 0x06;
+pub const VX_THRESHOLD_INPUT_FORMAT: vx_enum = 0x80A07;
+pub const VX_THRESHOLD_OUTPUT_FORMAT: vx_enum = 0x80A08;
 
 // Threshold types
-pub const VX_THRESHOLD_TYPE_BINARY: vx_enum = 0;
-pub const VX_THRESHOLD_TYPE_RANGE: vx_enum = 1;
+// VX_ENUM_BASE(VX_ID_KHRONOS=0, VX_ENUM_THRESHOLD_TYPE=0x0B) = 0x0B000
+// VX_THRESHOLD_TYPE_BINARY = 0x0B000 + 0 = 0x0B000 (45056)
+// VX_THRESHOLD_TYPE_RANGE = 0x0B000 + 1 = 0x0B001 (45057)
+pub const VX_THRESHOLD_TYPE_BINARY: vx_enum = 0x0B000;
+pub const VX_THRESHOLD_TYPE_RANGE: vx_enum = 0x0B001;
 
 /// Create a threshold for image
 #[no_mangle]
