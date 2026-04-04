@@ -129,16 +129,17 @@ pub fn sobel3x3(src: &Image, grad_x: &Image, grad_y: &Image) -> VxResult<()> {
     let mut gx_data = grad_x.data_mut();
     let mut gy_data = grad_y.data_mut();
     
-    for y in 0..height {
-        for x in 0..width {
+    // Only process inner pixels (skip border)
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
             let mut sum_x: i32 = 0;
             let mut sum_y: i32 = 0;
             
             for ky in 0..3 {
                 for kx in 0..3 {
-                    let px = x as isize + kx as isize - 1;
-                    let py = y as isize + ky as isize - 1;
-                    let pixel = get_pixel_bordered(src, px, py, BorderMode::Replicate) as i32;
+                    let px = x + kx - 1;
+                    let py = y + ky - 1;
+                    let pixel = src.get_pixel(px, py) as i32;
                     sum_x += pixel * SOBEL_X[ky][kx];
                     sum_y += pixel * SOBEL_Y[ky][kx];
                 }
