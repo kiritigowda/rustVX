@@ -1262,15 +1262,23 @@ pub extern "C" fn vxReleaseKernel(kernel: *mut vx_kernel) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = k as u64;
-        let mut count = 0;
-        if let Ok(kernels) = KERNELS.lock() {
+        
+        // First get the count, then drop the lock
+        let count = if let Ok(kernels) = KERNELS.lock() {
             if let Some(kernel_data) = kernels.get(&id) {
-                count = kernel_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                kernel_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            } else {
+                0
             }
-        }
+        } else {
+            0
+        };
+        
         if count <= 1 {
-            // Last reference - remove from KERNELS and unified registries
+            // Last reference - remove from KERNELS first (this drops the Arc properly)
+            // then clean up other registries
             if let Ok(mut kernels_mut) = KERNELS.lock() {
+                // This will drop the Arc<KernelData> properly
                 kernels_mut.remove(&id);
             }
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -1280,7 +1288,7 @@ pub extern "C" fn vxReleaseKernel(kernel: *mut vx_kernel) -> vx_status {
                 types.remove(&(id as usize));
             }
         } else {
-            // Decrement unified reference count
+            // Just update reference count
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get_mut(&(id as usize)) {
                     cnt.store(count - 1, std::sync::atomic::Ordering::SeqCst);
