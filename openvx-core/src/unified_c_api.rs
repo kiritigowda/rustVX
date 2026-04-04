@@ -1062,8 +1062,16 @@ pub extern "C" fn vxQueryContext(
                         }
                     }
                     
-                    // Count other references... (nodes, images, etc.)
-                    // For now, return the count we have
+                    // Count all references in REFERENCE_COUNTS for this context
+                    // Since REFERENCE_COUNTS uses address as key, we need to iterate
+                    // through all registries to count per-context objects
+                    // For now, just count total references as a baseline
+                    if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                        count = counts.len() as vx_uint32;
+                    }
+                    
+                    *(ptr as *mut vx_uint32) = count;
+                    
                     *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS
                 } else {
@@ -1311,8 +1319,13 @@ static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, CString>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
-// Reference counting storage - maps address to reference count
-pub static REFERENCE_COUNTS: Lazy<Mutex<HashMap<usize, usize>>> = Lazy::new(|| {
+// Reference counting storage - maps address to reference count (using AtomicUsize for thread-safe operations)
+pub static REFERENCE_COUNTS: Lazy<Mutex<HashMap<usize, AtomicUsize>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Reference type storage - maps address to type enum
+pub static REFERENCE_TYPES: Lazy<Mutex<HashMap<usize, vx_enum>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -1548,6 +1561,14 @@ pub extern "C" fn vxQueryReference(
                     }
                 }
                 
+                // Check REFERENCE_TYPES registry (for objects created in other crates)
+                if let Ok(types) = REFERENCE_TYPES.lock() {
+                    if let Some(&type_enum) = types.get(&addr) {
+                        *(ptr as *mut vx_enum) = type_enum;
+                        return VX_SUCCESS;
+                    }
+                }
+                
                 // Default to generic reference if not found in any registry
                 *(ptr as *mut vx_enum) = VX_TYPE_REFERENCE;
                 VX_SUCCESS
@@ -1559,7 +1580,7 @@ pub extern "C" fn vxQueryReference(
                 // Get actual reference count from REFERENCE_COUNTS registry
                 let addr = ref_ as usize;
                 let count = if let Ok(counts) = REFERENCE_COUNTS.lock() {
-                    counts.get(&addr).copied().unwrap_or(1) as vx_uint32
+                    counts.get(&addr).map(|c| c.load(Ordering::SeqCst)).unwrap_or(1) as vx_uint32
                 } else {
                     1
                 };
@@ -1592,6 +1613,7 @@ pub extern "C" fn vxQueryReference(
 }
 
 /// Release reference (decrement reference count)
+/// Returns VX_SUCCESS
 #[no_mangle]
 pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
     if ref_.is_null() {
@@ -1605,12 +1627,12 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
             
             // Decrement reference count
             let mut count_reached_zero = false;
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                if let Some(count) = counts.get_mut(&addr) {
-                    if *count > 1 {
-                        *count -= 1;
+            if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(count) = counts.get(&addr) {
+                    let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 1 {
+                        count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
                     } else {
-                        counts.remove(&addr); // Remove entry when count reaches zero
                         count_reached_zero = true;
                     }
                 }
@@ -1618,21 +1640,18 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
             
             // Clean up if count reached zero
             if count_reached_zero {
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
                 if let Ok(mut names) = REFERENCE_NAMES.lock() {
                     names.remove(&addr);
-                }
-                // Also remove from registries
-                let id = inner_ref as u64;
-                if let Ok(mut graphs) = GRAPHS_DATA.lock() {
-                    graphs.remove(&id);
-                }
-                if let Ok(mut graphs) = crate::c_api::GRAPHS.lock() {
-                    graphs.remove(&id);
                 }
             }
             
             // Always set the caller's pointer to null
             *ref_ = std::ptr::null_mut();
+            
+            return VX_SUCCESS;
         }
     }
 
@@ -3221,8 +3240,10 @@ pub extern "C" fn vxReleaseDelay(delay: *mut vx_delay) -> vx_status {
             // Decrement reference count
             let count_reached_zero = if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 if let Some(count) = counts.get_mut(&addr) {
-                    if *count > 1 {
-                        *count -= 1;
+                    let current = count.load(Ordering::SeqCst);
+                    if current > 1 {
+                        let new_count = current - 1;
+                        count.store(new_count, Ordering::SeqCst);
                         false
                     } else {
                         counts.remove(&addr);

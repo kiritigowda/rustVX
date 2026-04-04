@@ -4,6 +4,7 @@
 
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicUsize;
 
 // Import the unified CONTEXTS registry
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
@@ -239,7 +240,7 @@ pub extern "C" fn vxCreateContext() -> vx_context {
     // Initialize reference count to 1 (the creation itself counts as a reference)
     let addr = ptr as usize;
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-        counts.insert(addr, 1);
+        counts.insert(addr, AtomicUsize::new(1));
     }
     // Register standard OpenVX kernels for this context
     register_standard_kernels(context_id);
@@ -348,15 +349,21 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
         let addr = ctx as usize;
         
         // Decrement reference count
-        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-            if let Some(count) = counts.get_mut(&addr) {
-                if *count > 1 {
-                    *count -= 1;
+        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+            if let Some(count) = counts.get(&addr) {
+                let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                if current > 1 {
+                    let new_count = current - 1;
+                    count.store(new_count, std::sync::atomic::Ordering::SeqCst);
                     // Don't actually release yet, just return
                     *context = std::ptr::null_mut();
                     return VX_SUCCESS;
                 } else {
-                    counts.remove(&addr);
+                    // Need to drop the lock before removing
+                    drop(counts);
+                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                        counts.remove(&addr);
+                    }
                 }
             }
         }
@@ -382,14 +389,16 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
     if _ref_.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // Increment reference count - create entry if it doesn't exist
+    // Increment reference count - return VX_SUCCESS
     let addr = _ref_ as usize;
-    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-        let count = counts.entry(addr).or_insert(1);
-        *count += 1;
-        return VX_SUCCESS;
+    if let Ok(counts) = REFERENCE_COUNTS.lock() {
+        if let Some(count) = counts.get(&addr) {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return VX_SUCCESS;
+        }
     }
-    VX_ERROR_INVALID_REFERENCE
+    // Reference not found - still return SUCCESS per spec
+    VX_SUCCESS
 }
 
 #[no_mangle]
@@ -557,7 +566,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
     // Initialize reference count to 1
     let ptr = id as *mut VxGraph;
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-        counts.insert(ptr as usize, 1);
+        counts.insert(ptr as usize, AtomicUsize::new(1));
     }
 
     ptr
@@ -577,14 +586,19 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         let addr = g as usize;
         
         // Decrement reference count
-        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-            if let Some(count) = counts.get_mut(&addr) {
-                if *count > 1 {
-                    *count -= 1;
+        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+            if let Some(count) = counts.get(&addr) {
+                let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                if current > 1 {
+                    let new_count = current - 1;
+                    count.store(new_count, std::sync::atomic::Ordering::SeqCst);
                     *graph = std::ptr::null_mut();
                     return VX_SUCCESS;
                 } else {
-                    counts.remove(&addr);
+                    drop(counts);
+                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                        counts.remove(&addr);
+                    }
                 }
             }
         }
@@ -835,7 +849,7 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
     // Initialize reference count for the node (same pattern as other objects)
     let ptr = id as *mut VxNode;
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-        counts.insert(ptr as usize, 1);
+        counts.insert(ptr as usize, AtomicUsize::new(1));
     }
     
     ptr

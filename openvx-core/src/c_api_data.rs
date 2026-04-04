@@ -3,6 +3,12 @@
 use std::ffi::c_void;
 use std::sync::RwLock;
 pub use crate::c_api::*;
+use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES};
+use crate::unified_c_api::{
+    VX_TYPE_CONVOLUTION, VX_TYPE_MATRIX, VX_TYPE_LUT, 
+    VX_TYPE_THRESHOLD, VX_TYPE_PYRAMID, VX_TYPE_DISTRIBUTION
+};
+use std::sync::atomic::AtomicUsize;
 
 // Pixel value union (needed for image operations)
 // Match the C OpenVX definition with proper reserved padding
@@ -202,7 +208,19 @@ pub extern "C" fn vxCreateConvolution(
         context,
     });
 
-    Box::into_raw(conv) as vx_convolution
+    let conv_ptr = Box::into_raw(conv) as vx_convolution;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(conv_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(conv_ptr as usize, VX_TYPE_CONVOLUTION);
+        }
+    }
+    
+    conv_ptr
 }
 
 /// Copy convolution coefficients
@@ -340,7 +358,19 @@ pub extern "C" fn vxCreateMatrix(
         context,
     });
 
-    Box::into_raw(matrix) as vx_matrix
+    let matrix_ptr = Box::into_raw(matrix) as vx_matrix;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(matrix_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(matrix_ptr as usize, VX_TYPE_MATRIX);
+        }
+    }
+    
+    matrix_ptr
 }
 
 /// Copy matrix data
@@ -476,7 +506,19 @@ pub extern "C" fn vxCreateLUT(
         context,
     });
 
-    Box::into_raw(lut) as vx_lut
+    let lut_ptr = Box::into_raw(lut) as vx_lut;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(lut_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(lut_ptr as usize, VX_TYPE_LUT);
+        }
+    }
+    
+    lut_ptr
 }
 
 /// Copy LUT data
@@ -600,6 +642,16 @@ pub extern "C" fn vxCreateThreshold(
     
     // Register in unified THRESHOLDS registry for type tracking
     crate::unified_c_api::register_threshold(thresh_ptr as usize);
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(thresh_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(thresh_ptr as usize, VX_TYPE_THRESHOLD);
+        }
+    }
     
     thresh_ptr
 }

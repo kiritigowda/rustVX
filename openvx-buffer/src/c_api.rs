@@ -12,7 +12,8 @@ use openvx_core::c_api::{
     VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
-use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution};
+use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES};
+use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
 
 /// Array struct for C API
 pub struct VxCArray {
@@ -39,6 +40,7 @@ impl VxCArray {
 
 // Internal storage for arrays
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 static ARRAY_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Create an array
@@ -74,7 +76,23 @@ pub extern "C" fn vxCreateArray(
         mapped_ranges: RwLock::new(HashMap::new()),
     });
 
-    Box::into_raw(array) as vx_array
+    let array_ptr = Box::into_raw(array) as vx_array;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(array_ptr as usize, AtomicUsize::new(1));
+        }
+    }
+    
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(array_ptr as usize, VX_TYPE_ARRAY);
+        }
+    }
+    
+    array_ptr
 }
 
 /// Add items to array

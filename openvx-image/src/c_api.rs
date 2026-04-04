@@ -22,6 +22,7 @@ use openvx_core::c_api::{
     VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE, VX_IMAGE_SPACE, VX_IMAGE_RANGE,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST,
 };
+use openvx_core::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES, VX_TYPE_IMAGE};
 
 // Re-export pixel value type and keypoint type
 pub use openvx_core::c_api_data::vx_pixel_value_t;
@@ -75,6 +76,20 @@ pub extern "C" fn vxCreateImage(
     
     // Register as valid image for double-free protection
     register_valid_image(image_ptr as usize);
+
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(image_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+    }
+
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(image_ptr as usize, VX_TYPE_IMAGE);
+        }
+    }
 
     image_ptr
 }
