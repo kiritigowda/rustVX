@@ -36,6 +36,7 @@ pub enum ImageFormat {
     Rgb,
     Rgba,
     Gray,
+    S16, // Signed 16-bit for gradients
     NV12,
     NV21,
     IYUV,
@@ -45,7 +46,7 @@ pub enum ImageFormat {
 impl ImageFormat {
     pub fn channels(&self) -> usize {
         match self {
-            ImageFormat::Gray => 1,
+            ImageFormat::Gray | ImageFormat::S16 => 1,
             ImageFormat::Rgb => 3,
             ImageFormat::Rgba => 4,
             // NV12, NV21, IYUV are planar formats with different sizing
@@ -60,6 +61,7 @@ impl ImageFormat {
     pub fn buffer_size(&self, width: usize, height: usize) -> usize {
         match self {
             ImageFormat::Gray => width.saturating_mul(height),
+            ImageFormat::S16 => width.saturating_mul(height).saturating_mul(2), // 2 bytes per pixel
             ImageFormat::Rgb => width.saturating_mul(height).saturating_mul(3),
             ImageFormat::Rgba => width.saturating_mul(height).saturating_mul(4),
             // IYUV/I420: Y (full) + U (quarter) + V (quarter) = 1.5 * width * height
@@ -160,6 +162,30 @@ impl Image {
     
     pub fn pixels(&self) -> Vec<u8> {
         self.data.read().unwrap().iter().cloned().collect()
+    }
+    
+    /// Get pixel as i16 (for S16 format)
+    pub fn get_pixel_i16(&self, x: usize, y: usize) -> i16 {
+        let idx = (y * self.width + x) * 2; // 2 bytes per i16
+        let data = self.data.read().unwrap();
+        i16::from_le_bytes([data[idx], data[idx + 1]])
+    }
+    
+    /// Set pixel as i16 (for S16 format)
+    pub fn set_pixel_i16(&self, x: usize, y: usize, value: i16) {
+        let idx = (y * self.width + x) * 2; // 2 bytes per i16
+        let bytes = value.to_le_bytes();
+        let mut data = self.data.write().unwrap();
+        data[idx] = bytes[0];
+        data[idx + 1] = bytes[1];
+    }
+    
+    /// Get mutable data as i16 slice (for S16 format)
+    pub fn data_mut_i16(&self) -> Vec<i16> {
+        let data = self.data.write().unwrap();
+        data.chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect()
     }
 }
 
