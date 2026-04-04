@@ -104,7 +104,19 @@ pub extern "C" fn vxCreateScalar(
         context,
     });
 
-    Box::into_raw(scalar) as vx_scalar
+    let scalar_ptr = Box::into_raw(scalar) as vx_scalar;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(scalar_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(scalar_ptr as usize, VX_TYPE_SCALAR);
+        }
+    }
+    
+    scalar_ptr
 }
 
 /// Query scalar attributes
@@ -1088,7 +1100,19 @@ pub extern "C" fn vxCreatePyramid(
         context,
     });
 
-    Box::into_raw(pyramid) as vx_pyramid
+    let pyramid_ptr = Box::into_raw(pyramid) as vx_pyramid;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(pyramid_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(pyramid_ptr as usize, VX_TYPE_PYRAMID);
+        }
+    }
+    
+    pyramid_ptr
 }
 
 /// Get pyramid level as image

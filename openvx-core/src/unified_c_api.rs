@@ -2682,7 +2682,37 @@ pub extern "C" fn vxCreateDistribution(
     if context.is_null() || bins == 0 || range == 0 {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+    
+    let distribution = Box::new(VxCDistribution {
+        bins,
+        offset,
+        range,
+        data: RwLock::new(vec![0u32; bins]),
+        ref_count: AtomicUsize::new(1),
+    });
+    
+    let dist_ptr = Box::into_raw(distribution) as vx_distribution;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(dist_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(dist_ptr as usize, VX_TYPE_DISTRIBUTION);
+        }
+        if let Ok(mut distributions) = DISTRIBUTIONS.lock() {
+            distributions.insert(dist_ptr as usize, Arc::new(VxCDistribution {
+                bins,
+                offset,
+                range,
+                data: RwLock::new(vec![0u32; bins]),
+                ref_count: AtomicUsize::new(1),
+            }));
+        }
+    }
+    
+    dist_ptr
 }
 
 #[no_mangle]
@@ -2695,6 +2725,32 @@ pub extern "C" fn vxQueryDistribution(
     if distribution.is_null() || ptr.is_null() {
         return -2;
     }
+    
+    unsafe {
+        let dist = &*(distribution as *const VxCDistribution);
+        match attribute {
+            VX_DISTRIBUTION_BINS => {
+                if size >= std::mem::size_of::<usize>() {
+                    *(ptr as *mut usize) = dist.bins;
+                    return 0;
+                }
+            }
+            VX_DISTRIBUTION_OFFSET => {
+                if size >= std::mem::size_of::<u32>() {
+                    *(ptr as *mut u32) = dist.offset;
+                    return 0;
+                }
+            }
+            VX_DISTRIBUTION_RANGE => {
+                if size >= std::mem::size_of::<u32>() {
+                    *(ptr as *mut u32) = dist.range;
+                    return 0;
+                }
+            }
+            _ => {}
+        }
+    }
+    
     -30
 }
 
@@ -2733,7 +2789,28 @@ pub extern "C" fn vxCreateRemap(
     if context.is_null() {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+    
+    let remap = Box::new(VxCRemap {
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        ref_count: AtomicUsize::new(1),
+    });
+    
+    let remap_ptr = Box::into_raw(remap) as vx_remap;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(remap_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(remap_ptr as usize, VX_TYPE_REMAP);
+        }
+    }
+    
+    remap_ptr
 }
 
 #[no_mangle]
@@ -5495,6 +5572,22 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
     if node.is_null() {
         return std::ptr::null_mut();
     }
+    
+    let node_id = node as u64;
+    
+    // Check c_api NODES registry - it has parameters field
+    if let Ok(c_api_nodes) = crate::c_api::NODES.lock() {
+        if let Some(node_data) = c_api_nodes.get(&node_id) {
+            if let Ok(params) = node_data.parameters.lock() {
+                if (index as usize) < params.len() {
+                    if let Some(param_id) = params[index as usize] {
+                        return param_id as vx_parameter;
+                    }
+                }
+            }
+        }
+    }
+    
     std::ptr::null_mut()
 }
 
