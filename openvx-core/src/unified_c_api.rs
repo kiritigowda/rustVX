@@ -766,6 +766,27 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 VX_ERROR_INVALID_PARAMETERS
             }
         }
+        // Warp Perspective
+        "org.khronos.openvx.warp_perspective" => {
+            if params.len() >= 4 {
+                let input = params[0] as vx_image;
+                let matrix = params[1] as vx_matrix;
+                let output = params[3] as vx_image;
+                if !input.is_null() && !matrix.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_warp_perspective_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        matrix,
+                        0, // interpolation
+                        output
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
         // Threshold
         "org.khronos.openvx.threshold" => {
             if params.len() >= 3 {

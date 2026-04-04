@@ -338,11 +338,11 @@ pub extern "C" fn vxReleaseConvolution(conv: *mut vx_convolution) -> vx_status {
 
 /// Matrix structure for C API
 pub struct VxCMatrixData {
-    data_type: vx_enum,
-    columns: vx_size,
-    rows: vx_size,
+    pub data_type: vx_enum,
+    pub columns: vx_size,
+    pub rows: vx_size,
     data: RwLock<Vec<u8>>,
-    context: vx_context,
+    pub context: vx_context,
 }
 
 impl VxCMatrixData {
@@ -354,6 +354,34 @@ impl VxCMatrixData {
             0x009 | 0x008 | 0x00B => 8, // VX_TYPE_UINT64 | VX_TYPE_INT64 | VX_TYPE_FLOAT64
             _ => 4,
         }
+    }
+    
+    /// Get matrix data as a slice of f32 values
+    pub fn as_f32_slice(&self) -> Option<Vec<f32>> {
+        if self.data_type != VX_TYPE_FLOAT32 {
+            return None;
+        }
+        let data = self.data.read().ok()?;
+        let len = data.len() / 4;
+        let mut result = Vec::with_capacity(len);
+        for i in 0..len {
+            let bytes = [
+                data[i * 4],
+                data[i * 4 + 1],
+                data[i * 4 + 2],
+                data[i * 4 + 3],
+            ];
+            result.push(f32::from_le_bytes(bytes));
+        }
+        Some(result)
+    }
+    
+    /// Create a reference from a raw pointer
+    pub fn from_ptr(ptr: vx_matrix) -> Option<&'static VxCMatrixData> {
+        if ptr.is_null() {
+            return None;
+        }
+        Some(unsafe { &*(ptr as *const VxCMatrixData) })
     }
 }
 

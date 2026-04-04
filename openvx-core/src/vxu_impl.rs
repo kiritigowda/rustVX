@@ -2142,7 +2142,20 @@ pub fn vxu_scale_image_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match scale_image(&src, &mut dst, true) {
+        // Get border mode from context
+        let border = get_border_from_context(context);
+
+        // Parse interpolation type
+        // VX_INTERPOLATION_NEAREST_NEIGHBOR = 0x4000
+        // VX_INTERPOLATION_BILINEAR = 0x4001 (default)
+        // VX_INTERPOLATION_AREA = 0x4002
+        let interpolation = match _interpolation {
+            0x4000 => InterpolationType::NearestNeighbor,
+            0x4002 => InterpolationType::Area,
+            _ => InterpolationType::Bilinear, // Default
+        };
+
+        match scale_image(&src, &mut dst, interpolation, border) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -2203,8 +2216,29 @@ pub fn vxu_warp_perspective_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Default identity perspective
-        let persp_matrix: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        // Read the actual matrix data from the vx_matrix handle
+        let persp_matrix: [f32; 9] = {
+            let m = crate::c_api_data::VxCMatrixData::from_ptr(_matrix);
+            if m.is_none() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            let m = m.unwrap();
+            if m.data_type != 0x00A || m.rows != 3 || m.columns != 3 {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            let data = m.as_f32_slice();
+            if data.is_none() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            let data = data.unwrap();
+            if data.len() < 9 {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            // OpenVX stores matrices in COLUMN-MAJOR order:
+            // data[0-2] = first column, data[3-5] = second column, data[6-8] = third column
+            // Pass the data as-is to warp_perspective which handles column-major
+            [data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8]]
+        };
 
         match warp_perspective(&src, &persp_matrix, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
@@ -3182,7 +3216,7 @@ fn bilinear_interpolate(img: &Image, x: f32, y: f32) -> u8 {
     clamp_u8(value as i32)
 }
 
-fn scale_image(src: &Image, dst: &mut Image, bilinear: bool) -> VxResult<()> {
+fn scale_image(src: &Image, dst: &mut Image, interpolation: InterpolationType, border: BorderMode) -> VxResult<()> {
     let src_width = src.width;
     let src_height = src.height;
     let dst_width = dst.width;
@@ -3190,21 +3224,27 @@ fn scale_image(src: &Image, dst: &mut Image, bilinear: bool) -> VxResult<()> {
 
     let dst_data = dst.data_mut();
 
+    // Backward mapping: for each output pixel, compute corresponding source pixel
     let x_scale = src_width as f32 / dst_width as f32;
     let y_scale = src_height as f32 / dst_height as f32;
 
     for y in 0..dst_height {
         for x in 0..dst_width {
-            let src_x = (x as f32 + 0.5) * x_scale - 0.5;
-            let src_y = (y as f32 + 0.5) * y_scale - 0.5;
+            // Map from destination to source
+            let src_x = x as f32 * x_scale;
+            let src_y = y as f32 * y_scale;
 
-            let value = if bilinear {
-                bilinear_interpolate(src, src_x, src_y)
-            } else {
-                // Nearest neighbor
-                let nx = clamp_u8(src_x.round() as i32);
-                let ny = clamp_u8(src_y.round() as i32);
-                src.get_pixel(nx as usize % src_width, ny as usize % src_height)
+            let value = match interpolation {
+                InterpolationType::NearestNeighbor => {
+                    nearest_neighbor_interpolate(src, src_x, src_y, border)
+                }
+                InterpolationType::Bilinear => {
+                    bilinear_interpolate_with_border(src, src_x, src_y, border)
+                }
+                InterpolationType::Area => {
+                    // For downsampling, compute average of source region
+                    area_interpolate(src, src_x, src_y, x_scale, y_scale, border)
+                }
             };
 
             let idx = y.saturating_mul(dst_width).saturating_add(x);
@@ -3215,6 +3255,119 @@ fn scale_image(src: &Image, dst: &mut Image, bilinear: bool) -> VxResult<()> {
     }
 
     Ok(())
+}
+
+fn nearest_neighbor_interpolate(img: &Image, x: f32, y: f32, border: BorderMode) -> u8 {
+    let width = img.width as i32;
+    let height = img.height as i32;
+    
+    // Round to nearest integer
+    let nx = x.round() as i32;
+    let ny = y.round() as i32;
+    
+    // Check bounds
+    if nx < 0 || nx >= width || ny < 0 || ny >= height {
+        return match border {
+            BorderMode::Constant(val) => val,
+            BorderMode::Replicate => {
+                let clamped_x = nx.clamp(0, width - 1) as usize;
+                let clamped_y = ny.clamp(0, height - 1) as usize;
+                img.get_pixel(clamped_x, clamped_y)
+            }
+            BorderMode::Undefined => 0,
+        };
+    }
+    
+    img.get_pixel(nx as usize, ny as usize)
+}
+
+fn bilinear_interpolate_with_border(img: &Image, x: f32, y: f32, border: BorderMode) -> u8 {
+    let width = img.width as i32;
+    let height = img.height as i32;
+
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let x1 = x0 + 1;
+    let y1 = y0 + 1;
+
+    let fx = x - x0 as f32;
+    let fy = y - y0 as f32;
+
+    // Handle border modes
+    let get_pixel_bilinear = |px: i32, py: i32| -> u8 {
+        if px >= 0 && px < width && py >= 0 && py < height {
+            img.get_pixel(px as usize, py as usize)
+        } else {
+            match border {
+                BorderMode::Constant(val) => val,
+                BorderMode::Replicate => {
+                    let clamped_x = px.clamp(0, width - 1) as usize;
+                    let clamped_y = py.clamp(0, height - 1) as usize;
+                    img.get_pixel(clamped_x, clamped_y)
+                }
+                BorderMode::Undefined => 0,
+            }
+        }
+    };
+
+    let p00 = get_pixel_bilinear(x0, y0) as f32;
+    let p10 = get_pixel_bilinear(x1, y0) as f32;
+    let p01 = get_pixel_bilinear(x0, y1) as f32;
+    let p11 = get_pixel_bilinear(x1, y1) as f32;
+
+    let value = (1.0 - fx) * (1.0 - fy) * p00 +
+                fx * (1.0 - fy) * p10 +
+                (1.0 - fx) * fy * p01 +
+                fx * fy * p11;
+
+    clamp_u8(value.round() as i32)
+}
+
+fn area_interpolate(img: &Image, x: f32, y: f32, x_scale: f32, y_scale: f32, border: BorderMode) -> u8 {
+    // For area interpolation (used when downscaling), compute the average
+    // over the source region that maps to this output pixel
+    let x_start = x.floor() as i32;
+    let y_start = y.floor() as i32;
+    let x_end = ((x + x_scale).ceil() as i32).min(img.width as i32);
+    let y_end = ((y + y_scale).ceil() as i32).min(img.height as i32);
+    
+    let mut sum: u32 = 0;
+    let mut count: u32 = 0;
+    
+    for py in y_start..y_end {
+        for px in x_start..x_end {
+            if px >= 0 && px < img.width as i32 && py >= 0 && py < img.height as i32 {
+                sum += img.get_pixel(px as usize, py as usize) as u32;
+                count += 1;
+            } else {
+                // Out of bounds - use border value
+                let pixel = match border {
+                    BorderMode::Constant(val) => val,
+                    BorderMode::Replicate => {
+                        let clamped_x = px.clamp(0, img.width as i32 - 1) as usize;
+                        let clamped_y = py.clamp(0, img.height as i32 - 1) as usize;
+                        img.get_pixel(clamped_x, clamped_y)
+                    }
+                    BorderMode::Undefined => 0,
+                };
+                sum += pixel as u32;
+                count += 1;
+            }
+        }
+    }
+    
+    if count > 0 {
+        ((sum + count / 2) / count) as u8  // Round to nearest
+    } else {
+        0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum InterpolationType {
+    NearestNeighbor,
+    Bilinear,
+    Area,
 }
 
 fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image) -> VxResult<()> {
@@ -3266,33 +3419,45 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image) -> VxResult
 
     let dst_data = dst.data_mut();
 
-    let h11 = matrix[0];
-    let h12 = matrix[1];
-    let h13 = matrix[2];
-    let h21 = matrix[3];
-    let h22 = matrix[4];
-    let h23 = matrix[5];
-    let h31 = matrix[6];
-    let h32 = matrix[7];
-    let h33 = matrix[8];
+    // OpenVX stores matrices in COLUMN-MAJOR order:
+    // matrix[0-2] = first column (h00, h10, h20)
+    // matrix[3-5] = second column (h01, h11, h21)
+    // matrix[6-8] = third column (h02, h12, h22)
+    //
+    // Test code uses:
+    //   x0 = m[0]*x + m[3]*y + m[6]  (first elements of each column)
+    //   y0 = m[1]*x + m[4]*y + m[7]  (second elements of each column)
+    //   z0 = m[2]*x + m[5]*y + m[8]  (third elements of each column)
+    let h00 = matrix[0];
+    let h10 = matrix[1];
+    let h20 = matrix[2];
+    let h01 = matrix[3];
+    let h11 = matrix[4];
+    let h21 = matrix[5];
+    let h02 = matrix[6];
+    let h12 = matrix[7];
+    let h22 = matrix[8];
 
     for y in 0..dst_height {
         for x in 0..dst_width {
             let xf = x as f32;
             let yf = y as f32;
 
-            // Homogeneous coordinates
-            let w = h31 * xf + h32 * yf + h33;
+            // Column-major matrix multiplication (matches OpenVX test)
+            let x_h = h00 * xf + h01 * yf + h02;
+            let y_h = h10 * xf + h11 * yf + h12;
+            let w_h = h20 * xf + h21 * yf + h22;
+            
             let idx = y.saturating_mul(dst_width).saturating_add(x);
-            if w.abs() < 1e-6 {
+            if w_h.abs() < 1e-6 {
                 if let Some(p) = dst_data.get_mut(idx) {
                     *p = 0;
                 }
                 continue;
             }
 
-            let src_x = (h11 * xf + h12 * yf + h13) / w;
-            let src_y = (h21 * xf + h22 * yf + h23) / w;
+            let src_x = x_h / w_h;
+            let src_y = y_h / w_h;
 
             if src_x < 0.0 || src_x >= src_width || src_y < 0.0 || src_y >= src_height {
                 if let Some(p) = dst_data.get_mut(idx) {
