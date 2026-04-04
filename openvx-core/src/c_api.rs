@@ -987,14 +987,34 @@ pub extern "C" fn vxUnloadKernels(context: vx_context, module: *const vx_char) -
         
         // Unregister kernels from this module
         let context_id_u32 = context as u32;
-        if let Ok(mut kernels) = KERNELS.lock() {
-            // Remove all kernels that belong to this context and module
-            // For the test module, we remove kernels with names matching the module pattern
-            if module_name == "test-testmodule" {
-                kernels.retain(|_id, k| {
-                    // Keep kernels that don't match the test module pattern or don't belong to this context
-                    k.context_id != context_id_u32 || k.name != "org.khronos.test.testmodule"
-                });
+        if module_name == "test-testmodule" {
+            // Get list of kernels to remove first
+            let mut kernels_to_remove: Vec<u64> = Vec::new();
+            {
+                if let Ok(kernels) = KERNELS.lock() {
+                    for (id, k) in kernels.iter() {
+                        if k.context_id == context_id_u32 && k.name == "org.khronos.test.testmodule" {
+                            kernels_to_remove.push(*id);
+                        }
+                    }
+                }
+            }
+            
+            // Now remove them with proper cleanup
+            if let Ok(mut kernels) = KERNELS.lock() {
+                for id in kernels_to_remove {
+                    if let Some(kernel) = kernels.remove(&id) {
+                        // Clean up kernel resources
+                        drop(kernel);
+                    }
+                    // Remove from reference tracking
+                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                        counts.remove(&(id as usize));
+                    }
+                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                        types.remove(&(id as usize));
+                    }
+                }
             }
         }
         
