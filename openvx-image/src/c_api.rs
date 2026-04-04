@@ -540,6 +540,14 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
             // Unregister from unified registry
             unregister_image(addr);
 
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+
             // Free the image
             let _ = Box::from_raw(img as *mut VxCImage);
             *image = std::ptr::null_mut();

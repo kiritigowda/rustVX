@@ -171,6 +171,16 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
 
     unsafe {
         if !(*scalar).is_null() {
+            let addr = *scalar as usize;
+            
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            
             let _ = Box::from_raw(*scalar as *mut VxCScalarData);
             *scalar = std::ptr::null_mut();
         }
@@ -304,6 +314,16 @@ pub extern "C" fn vxReleaseConvolution(conv: *mut vx_convolution) -> vx_status {
 
     unsafe {
         if !(*conv).is_null() {
+            let addr = *conv as usize;
+            
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            
             let _ = Box::from_raw(*conv as *mut VxCConvolutionData);
             *conv = std::ptr::null_mut();
         }
@@ -456,6 +476,16 @@ pub extern "C" fn vxReleaseMatrix(matrix: *mut vx_matrix) -> vx_status {
 
     unsafe {
         if !(*matrix).is_null() {
+            let addr = *matrix as usize;
+            
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            
             let _ = Box::from_raw(*matrix as *mut VxCMatrixData);
             *matrix = std::ptr::null_mut();
         }
@@ -600,6 +630,16 @@ pub extern "C" fn vxReleaseLUT(lut: *mut vx_lut) -> vx_status {
 
     unsafe {
         if !(*lut).is_null() {
+            let addr = *lut as usize;
+            
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            
             let _ = Box::from_raw(*lut as *mut VxCLUTData);
             *lut = std::ptr::null_mut();
         }
@@ -749,8 +789,19 @@ pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
 
     unsafe {
         if !(*thresh).is_null() {
+            let addr = *thresh as usize;
+            
             // Unregister from unified THRESHOLDS registry
-            crate::unified_c_api::unregister_threshold(*thresh as usize);
+            crate::unified_c_api::unregister_threshold(addr);
+            
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            
             let _ = Box::from_raw(*thresh as *mut VxCThresholdData);
             *thresh = std::ptr::null_mut();
         }
@@ -1165,6 +1216,16 @@ pub extern "C" fn vxReleasePyramid(pyr: *mut vx_pyramid) -> vx_status {
 
     unsafe {
         if !(*pyr).is_null() {
+            let addr = *pyr as usize;
+
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+
             let _ = Box::from_raw(*pyr as *mut VxCPyramidData);
             *pyr = std::ptr::null_mut();
         }

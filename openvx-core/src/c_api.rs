@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicUsize;
 // Import the unified CONTEXTS registry
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
 use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData};
-use crate::unified_c_api::REFERENCE_COUNTS;
+use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES};
 use crate::c_api_data::vx_pixel_value_t;
 
 // ============================================================================
@@ -149,7 +149,7 @@ pub struct NodeData {
     pub parameters: Mutex<Vec<Option<u64>>>, // Store reference IDs
     pub callback: Mutex<Option<vx_nodecomplete_f>>,
     pub status: std::sync::atomic::AtomicI32,
-    pub ref_count: std::sync::atomic::AtomicUsize,
+    pub(crate) ref_count: std::sync::atomic::AtomicUsize,
     /// Node-specific border mode (overrides context border)
     pub border_mode: Mutex<crate::unified_c_api::vx_border_t>,
 }
@@ -161,20 +161,20 @@ pub struct KernelData {
     pub name: String,
     pub kernel_enum: i32,
     pub num_params: u32,
-    pub ref_count: std::sync::atomic::AtomicUsize,
+    pub(crate) ref_count: std::sync::atomic::AtomicUsize,
 }
 
 /// Internal parameter data (stored in Arc)
 pub struct ParameterData {
-    id: u64,
-    context_id: u32,
-    kernel_id: u64,
-    index: u32,
-    direction: vx_enum,
-    data_type: vx_enum,
-    state: vx_enum,
-    value: Mutex<Option<u64>>, // Store reference ID
-    ref_count: std::sync::atomic::AtomicUsize,
+    pub id: u64,
+    pub context_id: u32,
+    pub kernel_id: u64,
+    pub index: u32,
+    pub direction: vx_enum,
+    pub data_type: vx_enum,
+    pub state: vx_enum,
+    pub value: Mutex<Option<u64>>, // Store reference ID
+    pub ref_count: std::sync::atomic::AtomicUsize,
 }
 
 // ============================================================================
@@ -253,69 +253,70 @@ fn register_standard_kernels(context_id: u32) {
 
     // Register built-in kernels that are always available
     // Format: (name, enum, num_params)
-    // Kernel enums aligned with OpenVX 1.3.1 spec
+    // Kernel enums aligned with OpenVX 1.3.1 spec (VX_KERNEL_BASE values)
+    // VX_KERNEL_BASE(vendor, lib) = ((vendor) << 20) | ((lib) << 12)
+    // For VX_ID_KHRONOS=0 and VX_LIBRARY_KHR_BASE=0: VX_KERNEL_BASE = 0
+    // Kernel enums are then VX_KERNEL_BASE + offset
     let standard_kernels: Vec<(&str, i32, u32)> = vec![
-        // Color conversions (0x00-0x02)
+        // Color conversions
         ("org.khronos.openvx.color_convert", 0x00i32, 2),
         ("org.khronos.openvx.channel_extract", 0x01, 3),
-        ("org.khronos.openvx.channel_combine", 0x02, 5),
-        // Gradient operations (0x03-0x05)
+        ("org.khronos.openvx.channel_combine", 0x02, 4),
+        // Gradient operations
         ("org.khronos.openvx.sobel_3x3", 0x03, 3),
         ("org.khronos.openvx.magnitude", 0x04, 3),
         ("org.khronos.openvx.phase", 0x05, 3),
-        // Geometric (0x06)
+        // Geometric
         ("org.khronos.openvx.scale_image", 0x06, 3),
-        // Arithmetic (0x07-0x0A)
-        ("org.khronos.openvx.add", 0x07, 4),
-        ("org.khronos.openvx.subtract", 0x08, 4),
-        ("org.khronos.openvx.multiply", 0x09, 4),
-        ("org.khronos.openvx.weighted_average", 0x0A, 4),
-        // Filters (0x0B-0x0E)
-        ("org.khronos.openvx.convolve", 0x0B, 3),
-        ("org.khronos.openvx.gaussian_3x3", 0x0C, 2),
-        ("org.khronos.openvx.median_3x3", 0x0D, 2),
-        ("org.khronos.openvx.box_3x3", 0x0E, 2),
-        // Morphology (0x0F-0x10)
-        ("org.khronos.openvx.dilate_3x3", 0x0F, 2),
-        ("org.khronos.openvx.erode_3x3", 0x10, 2),
-        // Statistics (0x11-0x16)
-        ("org.khronos.openvx.histogram", 0x11, 2),
-        ("org.khronos.openvx.equalize_histogram", 0x12, 2),
-        ("org.khronos.openvx.integral_image", 0x13, 2),
-        ("org.khronos.openvx.mean_stddev", 0x14, 4),
-        ("org.khronos.openvx.minmaxloc", 0x15, 6),
-        ("org.khronos.openvx.absdiff", 0x16, 3),
-        // Additional features (0x17-0x1A)
-        ("org.khronos.openvx.mean_shift", 0x17, 5),
-        ("org.khronos.openvx.threshold", 0x18, 3), // Threshold needs 3 params: input, thresh, output
-        ("org.khronos.openvx.integral_image_sq", 0x19, 2),
-        ("org.khronos.openvx.gaussian_5x5", 0x1A, 2),
-        // Extended filters (0x1B-0x1D)
-        ("org.khronos.openvx.sobel_5x5", 0x1B, 3),
-        ("org.khronos.openvx.laplacian", 0x1C, 3),
-        ("org.khronos.openvx.non_linear_filter", 0x1D, 4),
-        // Geometric warping (0x1E-0x1F)
-        ("org.khronos.openvx.warp_affine", 0x1E, 4),
-        ("org.khronos.openvx.warp_perspective", 0x1F, 4),
-        // Feature detection (0x20-0x22)
-        ("org.khronos.openvx.harris_corners", 0x20, 4),
-        ("org.khronos.openvx.fast_corners", 0x21, 3),
-        ("org.khronos.openvx.optical_flow_pyr_lk", 0x22, 7),
-        // Additional geometric (0x23)
-        ("org.khronos.openvx.remap", 0x23, 4),
-        // Extended feature detection (0x24-0x25)
-        ("org.khronos.openvx.corner_min_eigen_val", 0x24, 3),
-        ("org.khronos.openvx.hough_lines_p", 0x25, 6),
-        // Object detection (0x26)
-        ("org.khronos.openvx.canny_edge_detector", 0x26, 4),
-        // Extended morphology (0x27-0x28)
-        ("org.khronos.openvx.dilate_5x5", 0x27, 2),
-        ("org.khronos.openvx.erode_5x5", 0x28, 2),
-        // Pyramids (0x29-0x2A)
-        ("org.khronos.openvx.gaussian_pyramid", 0x29, 2),
-        ("org.khronos.openvx.laplacian_pyramid", 0x2A, 2),
-        // Reconstruction (0x2B)
-        ("org.khronos.openvx.laplacian_reconstruct", 0x2B, 3),
+        ("org.khronos.openvx.warp_affine", 0x07, 4),
+        ("org.khronos.openvx.warp_perspective", 0x08, 4),
+        // Arithmetic
+        ("org.khronos.openvx.add", 0x09, 4),
+        ("org.khronos.openvx.subtract", 0x0A, 4),
+        ("org.khronos.openvx.multiply", 0x0B, 4),
+        ("org.khronos.openvx.weighted_average", 0x0C, 4),
+        // Filters
+        ("org.khronos.openvx.convolve", 0x0D, 3),
+        ("org.khronos.openvx.gaussian_3x3", 0x0E, 2),
+        ("org.khronos.openvx.median_3x3", 0x0F, 2),
+        // Morphology
+        ("org.khronos.openvx.sobel_5x5", 0x10, 3),
+        ("org.khronos.openvx.box_3x3", 0x12, 2),  // Correct per OpenVX spec: 0x12
+        ("org.khronos.openvx.gaussian_5x5", 0x13, 2),  // 0x13
+        ("org.khronos.openvx.harris_corners", 0x14, 4),  // 0x14
+        // Feature detection
+        ("org.khronos.openvx.fast_corners", 0x15, 3),  // 0x15
+        ("org.khronos.openvx.optical_flow_pyr_lk", 0x16, 7),  // 0x16
+        ("org.khronos.openvx.laplacian", 0x17, 3),  // 0x17
+        ("org.khronos.openvx.non_linear_filter", 0x18, 4),  // 0x18
+        ("org.khronos.openvx.dilate_3x3", 0x19, 2),  // 0x19
+        ("org.khronos.openvx.erode_3x3", 0x1A, 2),  // 0x1A
+        ("org.khronos.openvx.median_3x3", 0x1B, 2),  // 0x1B
+        // Statistics
+        ("org.khronos.openvx.histogram", 0x1C, 2),  // 0x1C
+        ("org.khronos.openvx.equalize_histogram", 0x1D, 2),  // 0x1D
+        ("org.khronos.openvx.integral_image", 0x1E, 2),  // 0x1E
+        ("org.khronos.openvx.mean_stddev", 0x1F, 4),  // 0x1F
+        ("org.khronos.openvx.minmaxloc", 0x20, 6),  // 0x20
+        // Additional features
+        ("org.khronos.openvx.absdiff", 0x21, 3),  // 0x21
+        ("org.khronos.openvx.mean_shift", 0x22, 5),  // 0x22
+        ("org.khronos.openvx.threshold", 0x23, 3),  // 0x23
+        ("org.khronos.openvx.integral_image_sq", 0x24, 2),  // 0x24
+        ("org.khronos.openvx.dilate_5x5", 0x25, 2),  // 0x25
+        ("org.khronos.openvx.erode_5x5", 0x26, 2),  // 0x26
+        // Pyramids
+        ("org.khronos.openvx.gaussian_pyramid", 0x27, 2),  // 0x27
+        ("org.khronos.openvx.laplacian_pyramid", 0x28, 2),  // 0x28
+        // Reconstruction
+        ("org.khronos.openvx.laplacian_reconstruct", 0x29, 3),  // 0x29
+        // Geometric
+        ("org.khronos.openvx.remap", 0x2A, 4),  // 0x2A
+        // Extended feature detection
+        ("org.khronos.openvx.corner_min_eigen_val", 0x2B, 3),  // 0x2B
+        ("org.khronos.openvx.hough_lines_p", 0x2C, 6),  // 0x2C
+        // Object detection
+        ("org.khronos.openvx.canny_edge_detector", 0x2D, 4),  // 0x2D
     ];
     
     if let Ok(mut kernels) = KERNELS.lock() {
@@ -330,6 +331,14 @@ fn register_standard_kernels(context_id: u32) {
                 ref_count: std::sync::atomic::AtomicUsize::new(1),
             });
             kernels.insert(kernel_id, kernel);
+            
+            // Register kernel in REFERENCE_COUNTS and REFERENCE_TYPES
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.insert(kernel_id as usize, AtomicUsize::new(1));
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.insert(kernel_id as usize, crate::unified_c_api::VX_TYPE_KERNEL);
+            }
         }
     }
 }
@@ -389,15 +398,17 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
     if _ref_.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // Increment reference count - return VX_SUCCESS
     let addr = _ref_ as usize;
+    
+    // Increment reference count in unified registry
     if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if let Some(count) = counts.get(&addr) {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            return VX_SUCCESS;
+        } else {
+            return VX_ERROR_INVALID_REFERENCE;
         }
     }
-    // Reference not found - still return SUCCESS per spec
+    
     VX_SUCCESS
 }
 
@@ -599,6 +610,9 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                         counts.remove(&addr);
                     }
+                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                        types.remove(&addr);
+                    }
                 }
             }
         }
@@ -718,14 +732,28 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = n as u64;
+        let mut count = 0;
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
-                let count = node_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if count <= 1 {
-                    drop(nodes);
-                    if let Ok(mut nodes_mut) = NODES.lock() {
-                        nodes_mut.remove(&id);
-                    }
+                count = node_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        if count <= 1 {
+            // Last reference - remove from NODES and unified registries
+            if let Ok(mut nodes_mut) = NODES.lock() {
+                nodes_mut.remove(&id);
+            }
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&(id as usize));
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&(id as usize));
+            }
+        } else {
+            // Decrement unified reference count
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get_mut(&(id as usize)) {
+                    cnt.store(count - 1, std::sync::atomic::Ordering::SeqCst);
                 }
             }
         }
@@ -858,8 +886,13 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
     
     // Initialize reference count for the node (same pattern as other objects)
     let ptr = id as *mut VxNode;
-    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-        counts.insert(ptr as usize, AtomicUsize::new(1));
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(ptr as usize, crate::unified_c_api::VX_TYPE_NODE);
+        }
     }
     
     ptr
@@ -909,6 +942,13 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
             });
             if let Ok(mut kernels) = KERNELS.lock() {
                 kernels.insert(test_kernel_id, test_kernel);
+            }
+            // Register test kernel in REFERENCE_COUNTS and REFERENCE_TYPES
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.insert(test_kernel_id as usize, AtomicUsize::new(1));
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.insert(test_kernel_id as usize, crate::unified_c_api::VX_TYPE_KERNEL);
             }
             VX_SUCCESS
         } else if module_name == "openvx-core" || module_name == "openvx-vision" || module_name.is_empty() {
@@ -992,6 +1032,7 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
 
 #[no_mangle]
 pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> vx_kernel {
+    eprintln!("DEBUG vxGetKernelByEnum: context={:?}, kernel_e=0x{:x}={}", context, kernel_e, kernel_e);
     if context.is_null() {
         return std::ptr::null_mut();
     }
@@ -999,28 +1040,59 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
     
     // Look up kernel by enum
     if let Ok(kernels) = KERNELS.lock() {
+        eprintln!("DEBUG vxGetKernelByEnum: {} kernels in registry", kernels.len());
         for (id, kernel) in kernels.iter() {
+            eprintln!("DEBUG vxGetKernelByEnum: checking kernel 0x{:x} (enum=0x{:x}, ctx={})", id, kernel.kernel_enum, kernel.context_id);
             if kernel.kernel_enum == kernel_e && kernel.context_id == context_id {
                 kernel.ref_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Also increment reference count in unified registry
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    if let Some(count) = counts.get_mut(&(*id as usize)) {
+                        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+                eprintln!("DEBUG vxGetKernelByEnum: found kernel, returning id=0x{:x}", id);
                 return *id as *mut VxKernel;
             }
         }
+        eprintln!("DEBUG vxGetKernelByEnum: kernel not found, will create new one");
     }
     
     // Kernel not found - create it
     let id = generate_id();
+    // Determine num_params based on kernel enum
+    let num_params = match kernel_e {
+        // 2-parameter kernels
+        0x0E | 0x11 | 0x13 | 0x15 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x24 | 0x25 | 0x26 | 0x27 | 0x28 | 0x2A => 2,
+        // 3-parameter kernels
+        0x00 | 0x03 | 0x04 | 0x05 | 0x06 | 0x10 | 0x16 | 0x17 | 0x20 | 0x21 | 0x22 | 0x23 | 0x29 => 3,
+        // 4-parameter kernels
+        0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x14 | 0x1F | 0x2B | 0x2D => 4,
+        // Default
+        _ => 4,
+    };
     let kernel_name = format!("kernel_{}", kernel_e);
     let kernel = Arc::new(KernelData {
         id,
         context_id,
         name: kernel_name,
         kernel_enum: kernel_e,
-        num_params: 4,
+        num_params,
         ref_count: std::sync::atomic::AtomicUsize::new(1),
     });
     
     if let Ok(mut kernels) = KERNELS.lock() {
         kernels.insert(id, kernel);
+    }
+    
+    // Initialize reference count and type for the kernel
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(id as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(id as usize, crate::unified_c_api::VX_TYPE_KERNEL);
+        }
     }
     
     id as *mut VxKernel
@@ -1033,15 +1105,21 @@ pub extern "C" fn vxQueryKernel(
     ptr: *mut c_void,
     size: vx_size,
 ) -> vx_status {
+    eprintln!("DEBUG vxQueryKernel: kernel={:?}, attribute=0x{:x}={}", kernel, attribute, attribute);
     if kernel.is_null() || ptr.is_null() {
+        eprintln!("DEBUG vxQueryKernel: null kernel or ptr");
         return VX_ERROR_INVALID_REFERENCE;
     }
     unsafe {
         let id = kernel as u64;
+        eprintln!("DEBUG vxQueryKernel: id={}, VX_KERNEL_PARAMETERS=0x{:x}={}", id, VX_KERNEL_PARAMETERS, VX_KERNEL_PARAMETERS);
         if let Ok(kernels) = KERNELS.lock() {
+            eprintln!("DEBUG vxQueryKernel: {} kernels registered", kernels.len());
             if let Some(kernel_data) = kernels.get(&id) {
+                eprintln!("DEBUG vxQueryKernel: found kernel_data: num_params={}, name={}, enum=0x{:x}", kernel_data.num_params, kernel_data.name, kernel_data.kernel_enum);
                 match attribute {
                     VX_KERNEL_PARAMETERS => { // VX_KERNEL_PARAMETERS
+                        eprintln!("DEBUG vxQueryKernel: handling VX_KERNEL_PARAMETERS, size={}", size);
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1113,6 +1191,16 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
         params.insert(id, param);
     }
     
+    // Initialize reference count and type for the parameter
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(id as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(id as usize, crate::unified_c_api::VX_TYPE_PARAMETER);
+        }
+    }
+    
     id as *mut VxParameter
 }
 
@@ -1127,14 +1215,28 @@ pub extern "C" fn vxReleaseKernel(kernel: *mut vx_kernel) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = k as u64;
+        let mut count = 0;
         if let Ok(kernels) = KERNELS.lock() {
             if let Some(kernel_data) = kernels.get(&id) {
-                let count = kernel_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if count <= 1 {
-                    drop(kernels);
-                    if let Ok(mut kernels_mut) = KERNELS.lock() {
-                        kernels_mut.remove(&id);
-                    }
+                count = kernel_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        if count <= 1 {
+            // Last reference - remove from KERNELS and unified registries
+            if let Ok(mut kernels_mut) = KERNELS.lock() {
+                kernels_mut.remove(&id);
+            }
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&(id as usize));
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&(id as usize));
+            }
+        } else {
+            // Decrement unified reference count
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get_mut(&(id as usize)) {
+                    cnt.store(count - 1, std::sync::atomic::Ordering::SeqCst);
                 }
             }
         }
@@ -1159,6 +1261,8 @@ pub extern "C" fn vxQueryParameter(
     }
     unsafe {
         let id = param as u64;
+        
+        // First check c_api.rs's PARAMETERS
         if let Ok(params) = PARAMETERS.lock() {
             if let Some(param_data) = params.get(&id) {
                 match attribute {
@@ -1214,6 +1318,34 @@ pub extern "C" fn vxQueryParameter(
                 }
             }
         }
+        
+        // Also check unified_c_api's PARAMETERS via helper function
+        if attribute == VX_PARAMETER_REF {
+            if let Some(ref_value) = crate::unified_c_api::get_parameter_value(id) {
+                if size >= std::mem::size_of::<vx_reference>() {
+                    let ref_ptr = ref_value as vx_reference;
+                    let ptr_u8 = ptr as *mut u8;
+                    std::ptr::copy_nonoverlapping(
+                        &ref_ptr as *const _ as *const u8,
+                        ptr_u8,
+                        std::mem::size_of::<vx_reference>(),
+                    );
+                    return VX_SUCCESS;
+                }
+            }
+            // If we reach here, check if parameter exists in unified registry
+            if crate::unified_c_api::parameter_exists(id) {
+                // Parameter exists but has no value, return NULL reference
+                let ref_ptr: vx_reference = std::ptr::null_mut();
+                let ptr_u8 = ptr as *mut u8;
+                std::ptr::copy_nonoverlapping(
+                    &ref_ptr as *const _ as *const u8,
+                    ptr_u8,
+                    std::mem::size_of::<vx_reference>(),
+                );
+                return VX_SUCCESS;
+            }
+        }
     }
     VX_ERROR_NOT_IMPLEMENTED
 }
@@ -1227,23 +1359,61 @@ pub extern "C" fn vxSetParameterByIndex(
     if node.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    if value.is_null() {
-        return VX_ERROR_INVALID_PARAMETERS;
-    }
+    // Check if trying to set NULL for required parameters
+    // For now, hardcode based on kernel enum - param 0 is typically required input
     let id = node as u64;
-    if let Ok(nodes) = NODES.lock() {
+    
+    // Store node data before dropping the lock
+    let (context_id, kernel_id) = if let Ok(nodes) = NODES.lock() {
         if let Some(node_data) = nodes.get(&id) {
+            let cid = node_data.context_id;
+            let kid = node_data.kernel_id;
+            if let Ok(kernels) = KERNELS.lock() {
+                if let Some(kernel_data) = kernels.get(&kid) {
+                    // Check if trying to set NULL to a required parameter
+                    // For standard kernels, param 0 is typically required input
+                    let is_required = if index == 0 {
+                        // Parameter 0 is typically required input
+                        true
+                    } else {
+                        false
+                    };
+                    
+                    if is_required && value.is_null() {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                }
+            }
+            
             if let Ok(mut params) = node_data.parameters.lock() {
                 if (index as usize) < params.len() {
                     params[index as usize] = Some(value as u64);
-                    return VX_SUCCESS;
+                    drop(params);
+                    (cid, kid)
                 } else {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
             }
+        } else {
+            return VX_ERROR_INVALID_REFERENCE;
         }
-    }
-    VX_ERROR_INVALID_REFERENCE
+    } else {
+        return VX_ERROR_INVALID_REFERENCE;
+    };
+    
+    // Also create/update parameter entry in unified_c_api for vxQueryParameter
+    let param_id = (id << 32) | (index as u64);
+    crate::unified_c_api::create_or_update_parameter(
+        param_id,
+        index,
+        value as u64,
+        context_id,
+        kernel_id,
+    );
+    
+    VX_SUCCESS
 }
 
 #[no_mangle]
@@ -1258,7 +1428,17 @@ pub extern "C" fn vxSetParameterByReference(
         return VX_ERROR_INVALID_PARAMETERS;
     }
     let id = param as u64;
+    // First check c_api.rs's PARAMETERS
     if let Ok(params) = PARAMETERS.lock() {
+        if let Some(param_data) = params.get(&id) {
+            if let Ok(mut val) = param_data.value.lock() {
+                *val = Some(value as u64);
+                return VX_SUCCESS;
+            }
+        }
+    }
+    // Also check unified_c_api's PARAMETERS
+    if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
             if let Ok(mut val) = param_data.value.lock() {
                 *val = Some(value as u64);
@@ -1280,19 +1460,68 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = p as u64;
+        let mut count = 0;
         if let Ok(params) = PARAMETERS.lock() {
             if let Some(param_data) = params.get(&id) {
-                let count = param_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if count <= 1 {
-                    drop(params);
-                    if let Ok(mut params_mut) = PARAMETERS.lock() {
-                        params_mut.remove(&id);
-                    }
+                count = param_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        if count <= 1 {
+            // Last reference - remove from PARAMETERS and unified registries
+            if let Ok(mut params_mut) = PARAMETERS.lock() {
+                params_mut.remove(&id);
+            }
+            // Also remove from unified_c_api PARAMETERS
+            crate::unified_c_api::remove_parameter(id);
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&(id as usize));
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&(id as usize));
+            }
+        } else {
+            // Decrement unified reference count
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get_mut(&(id as usize)) {
+                    cnt.store(count - 1, std::sync::atomic::Ordering::SeqCst);
                 }
             }
         }
         *param = std::ptr::null_mut();
     }
+    VX_SUCCESS
+}
+
+// ============================================================================
+// Hint and Reference Management
+// ============================================================================
+
+/// Set a hint on a reference
+///
+/// This function allows the application to provide performance hints to the implementation.
+/// The hint is a general instruction to the OpenVX implementation for optimization.
+#[no_mangle]
+pub extern "C" fn vxHint(
+    reference: vx_reference,
+    hint: vx_enum,
+    _data: *const c_void,
+    _data_size: vx_size
+) -> vx_status {
+    if reference.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    
+    // Validate hint value
+    match hint {
+        VX_HINT_PERFORMANCE_DEFAULT |
+        VX_HINT_PERFORMANCE_LOW_POWER |
+        VX_HINT_PERFORMANCE_HIGH_SPEED => {
+            // These hints are valid; for now we accept them but don't use them
+            // Implementation-specific optimization would go here
+        }
+        _ => return VX_ERROR_NOT_SUPPORTED,
+    }
+    
     VX_SUCCESS
 }
 
@@ -1379,14 +1608,16 @@ pub const VX_NODE_PARAMETERS: vx_enum = 0x80305;       // VX_ATTRIBUTE_BASE + 0x
 pub const VX_NODE_IS_REPLICATED: vx_enum = 0x80306;    // VX_ATTRIBUTE_BASE + 0x06
 pub const VX_NODE_REPLICATE_FLAGS: vx_enum = 0x80307;  // VX_ATTRIBUTE_BASE + 0x07
 
-pub const VX_KERNEL_PARAMETERS: vx_enum = 0x00;
-pub const VX_KERNEL_NAME: vx_enum = 0x01;
-pub const VX_KERNEL_ENUM: vx_enum = 0x02;
+// Kernel attributes using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_KERNEL(0x807))
+pub const VX_KERNEL_PARAMETERS: vx_enum = 0x80400;  // VX_ATTRIBUTE_BASE + 0x00
+pub const VX_KERNEL_NAME: vx_enum = 0x80401;      // VX_ATTRIBUTE_BASE + 0x01
+pub const VX_KERNEL_ENUM: vx_enum = 0x80402;      // VX_ATTRIBUTE_BASE + 0x02
 
-pub const VX_PARAMETER_INDEX: vx_enum = 0x00;
-pub const VX_PARAMETER_DIRECTION: vx_enum = 0x01;
-pub const VX_PARAMETER_TYPE: vx_enum = 0x02;
-pub const VX_PARAMETER_REF: vx_enum = 0x03;
+// Parameter attributes using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_PARAMETER(0x805))
+pub const VX_PARAMETER_INDEX: vx_enum = 0x80500;   // VX_ATTRIBUTE_BASE + 0x00
+pub const VX_PARAMETER_DIRECTION: vx_enum = 0x80501; // VX_ATTRIBUTE_BASE + 0x01
+pub const VX_PARAMETER_TYPE: vx_enum = 0x80502;     // VX_ATTRIBUTE_BASE + 0x02
+pub const VX_PARAMETER_REF: vx_enum = 0x80504;      // VX_ATTRIBUTE_BASE + 0x04
 
 // Scalar attributes
 pub const VX_SCALAR_TYPE: vx_enum = 0x00;
@@ -1404,6 +1635,14 @@ pub const VX_THRESHOLD_FALSE_VALUE: vx_enum = 0x04;
 
 pub const VX_INPUT: vx_enum = 0;
 pub const VX_OUTPUT: vx_enum = 1;
+
+// ============================================================================
+// Hint Constants
+// ============================================================================
+// VX_ENUM_BASE(VX_ID_KHRONOS(0), VX_ENUM_HINT(0x02)) = ((0 << 20) | (0x02 << 12)) = 0x2000
+pub const VX_HINT_PERFORMANCE_DEFAULT: vx_enum = 0x2001;
+pub const VX_HINT_PERFORMANCE_LOW_POWER: vx_enum = 0x2002;
+pub const VX_HINT_PERFORMANCE_HIGH_SPEED: vx_enum = 0x2003;
 
 // ============================================================================
 // Memory and Copy Constants
@@ -1479,9 +1718,9 @@ pub const VX_IMAGE_UNIFORM_VALUE: vx_enum = 0x80F09;
 // ============================================================================
 
 // Array attributes - VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_ARRAY) = (0<<20)|(0x80E<<8) = 0x80E00
-pub const VX_ARRAY_CAPACITY: vx_enum = 0x80E00;     // VX_ATTRIBUTE_BASE + 0x0
 pub const VX_ARRAY_ITEMTYPE: vx_enum = 0x80E00;     // VX_ATTRIBUTE_BASE + 0x0
-pub const VX_ARRAY_NUMITEMS: vx_enum = 0x80E02;     // VX_ATTRIBUTE_BASE + 0x2
+pub const VX_ARRAY_NUMITEMS: vx_enum = 0x80E01;     // VX_ATTRIBUTE_BASE + 0x1
+pub const VX_ARRAY_CAPACITY: vx_enum = 0x80E02;     // VX_ATTRIBUTE_BASE + 0x2
 pub const VX_ARRAY_ITEMSIZE: vx_enum = 0x80E03;     // VX_ATTRIBUTE_BASE + 0x3
 
 // ============================================================================
