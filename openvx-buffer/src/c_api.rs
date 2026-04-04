@@ -200,7 +200,7 @@ pub extern "C" fn vxQueryArray(
                 *(ptr as *mut vx_size) = array.capacity;
             }
             VX_ARRAY_ITEMTYPE => {
-                if size != std::mem::size_of::<vx_enum>() {
+                if size < std::mem::size_of::<vx_enum>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 *(ptr as *mut vx_enum) = array.item_type;

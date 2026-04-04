@@ -2096,7 +2096,7 @@ static USER_STRUCTS: Lazy<Mutex<HashMap<vx_enum, (String, vx_size)>>> = Lazy::ne
 });
 
 static NEXT_USER_STRUCT_ENUM: Lazy<AtomicUsize> = Lazy::new(|| {
-    AtomicUsize::new(0x1000) // Start at 4096 for user structs
+    AtomicUsize::new(0x100) // Start at VX_TYPE_USER_STRUCT_START (0x100) per OpenVX spec
 });
 
 /// Register custom struct type with name
@@ -5344,16 +5344,18 @@ pub extern "C" fn vxCopyArrayRange(
     VX_SUCCESS
 }
 
-/// Register user struct (already in unified_c_api as vxRegisterUserStructWithName)
-/// This is just an alias/stub for compatibility
+/// Register user struct with auto-generated name
 #[no_mangle]
 pub extern "C" fn vxRegisterUserStruct(
     context: vx_context,
     size: vx_size,
-    _name: *const vx_char,
 ) -> vx_enum {
-    // Simply delegate to existing function
-    vxRegisterUserStructWithName(context, size, _name)
+    // Generate a unique name based on the next enum value
+    let next_val = NEXT_USER_STRUCT_ENUM.load(Ordering::SeqCst);
+    let name = format!("user_struct_{}", next_val);
+    let name_cstring = std::ffi::CString::new(name).unwrap();
+    
+    vxRegisterUserStructWithName(context, size, name_cstring.as_ptr())
 }
 
 /// Laplacian pyramid node
@@ -5573,22 +5575,35 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
         return std::ptr::null_mut();
     }
     
+    // Create a unique ID for this parameter based on node and index
     let node_id = node as u64;
+    let param_id = (node_id << 32) | (index as u64);
     
-    // Check c_api NODES registry - it has parameters field
-    if let Ok(c_api_nodes) = crate::c_api::NODES.lock() {
-        if let Some(node_data) = c_api_nodes.get(&node_id) {
-            if let Ok(params) = node_data.parameters.lock() {
-                if (index as usize) < params.len() {
-                    if let Some(param_id) = params[index as usize] {
-                        return param_id as vx_parameter;
-                    }
-                }
-            }
+    // Check if parameter already exists
+    if let Ok(params) = PARAMETERS.lock() {
+        if params.contains_key(&param_id) {
+            return param_id as vx_parameter;
         }
     }
     
-    std::ptr::null_mut()
+    // Create new parameter
+    let param = Arc::new(VxCParameter {
+        index,
+        direction: VX_INPUT,
+        data_type: 0,
+        ref_count: AtomicUsize::new(1),
+    });
+    
+    if let Ok(mut params) = PARAMETERS.lock() {
+        params.insert(param_id, param);
+    }
+    
+    // Also store in REFERENCE_TYPES for type detection
+    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+        types.insert(param_id as usize, VX_TYPE_PARAMETER);
+    }
+    
+    param_id as vx_parameter
 }
 
 /// Set immediate mode target

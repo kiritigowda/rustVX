@@ -634,12 +634,24 @@ pub extern "C" fn vxQueryNode(
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
                 match attribute {
-                    VX_NODE_STATUS => { // VX_NODE_STATUS
+                    0x00 | VX_NODE_STATUS => { // VX_NODE_STATUS (also handle 0x00 for backward compatibility)
                         if size >= 4 {
                             let status = node_data.status.load(std::sync::atomic::Ordering::SeqCst);
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
                                 &status as *const i32 as *const u8,
+                                ptr_u8,
+                                4,
+                            );
+                            return VX_SUCCESS;
+                        }
+                    }
+                    VX_NODE_PARAMETERS => {
+                        if size >= 4 {
+                            let param_count = node_data.parameters.lock().unwrap().len() as i32;
+                            let ptr_u8 = ptr as *mut u8;
+                            std::ptr::copy_nonoverlapping(
+                                &param_count as *const i32 as *const u8,
                                 ptr_u8,
                                 4,
                             );
@@ -653,8 +665,6 @@ pub extern "C" fn vxQueryNode(
     }
     VX_ERROR_NOT_IMPLEMENTED
 }
-
-pub const VX_NODE_BORDER: vx_enum = 0x00220006; // VX_NODE_BORDER attribute
 
 #[no_mangle]
 pub extern "C" fn vxSetNodeAttribute(
@@ -1185,6 +1195,21 @@ pub extern "C" fn vxQueryParameter(
                             return VX_SUCCESS;
                         }
                     }
+                    VX_PARAMETER_REF => {
+                        if size >= std::mem::size_of::<vx_reference>() {
+                            // Get the reference value from the parameter
+                            if let Ok(value) = param_data.value.lock() {
+                                let ref_ptr = value.unwrap_or(0) as vx_reference;
+                                let ptr_u8 = ptr as *mut u8;
+                                std::ptr::copy_nonoverlapping(
+                                    &ref_ptr as *const _ as *const u8,
+                                    ptr_u8,
+                                    std::mem::size_of::<vx_reference>(),
+                                );
+                                return VX_SUCCESS;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1343,8 +1368,16 @@ pub const VX_TYPE_SIZE: vx_enum = 0x012;
 // Attribute Constants
 // ============================================================================
 
-pub const VX_NODE_STATUS: vx_enum = 0x00;
-pub const VX_NODE_PARAMETERS: vx_enum = 0x05;
+// Node attributes - calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_NODE) + offset
+// VX_ATTRIBUTE_BASE = ((0 << 20) | (0x803 << 8)) = 0x80300
+pub const VX_NODE_STATUS: vx_enum = 0x80300;           // VX_ATTRIBUTE_BASE + 0x00
+pub const VX_NODE_PERFORMANCE: vx_enum = 0x80302;      // VX_ATTRIBUTE_BASE + 0x02
+pub const VX_NODE_BORDER: vx_enum = 0x80303;           // VX_ATTRIBUTE_BASE + 0x03
+pub const VX_NODE_LOCAL_DATA_SIZE: vx_enum = 0x80304;  // VX_ATTRIBUTE_BASE + 0x04
+pub const VX_NODE_LOCAL_DATA_PTR: vx_enum = 0x80305;   // VX_ATTRIBUTE_BASE + 0x05
+pub const VX_NODE_PARAMETERS: vx_enum = 0x80305;       // VX_ATTRIBUTE_BASE + 0x05
+pub const VX_NODE_IS_REPLICATED: vx_enum = 0x80306;    // VX_ATTRIBUTE_BASE + 0x06
+pub const VX_NODE_REPLICATE_FLAGS: vx_enum = 0x80307;  // VX_ATTRIBUTE_BASE + 0x07
 
 pub const VX_KERNEL_PARAMETERS: vx_enum = 0x00;
 pub const VX_KERNEL_NAME: vx_enum = 0x01;
@@ -1353,6 +1386,7 @@ pub const VX_KERNEL_ENUM: vx_enum = 0x02;
 pub const VX_PARAMETER_INDEX: vx_enum = 0x00;
 pub const VX_PARAMETER_DIRECTION: vx_enum = 0x01;
 pub const VX_PARAMETER_TYPE: vx_enum = 0x02;
+pub const VX_PARAMETER_REF: vx_enum = 0x03;
 
 // Scalar attributes
 pub const VX_SCALAR_TYPE: vx_enum = 0x00;
@@ -1444,10 +1478,11 @@ pub const VX_IMAGE_UNIFORM_VALUE: vx_enum = 0x80F09;
 // Array Attributes
 // ============================================================================
 
-pub const VX_ARRAY_CAPACITY: vx_enum = 0x00;
-pub const VX_ARRAY_ITEMTYPE: vx_enum = 0x01;
-pub const VX_ARRAY_NUMITEMS: vx_enum = 0x02;
-pub const VX_ARRAY_ITEMSIZE: vx_enum = 0x03;
+// Array attributes - VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_ARRAY) = (0<<20)|(0x80E<<8) = 0x80E00
+pub const VX_ARRAY_CAPACITY: vx_enum = 0x80E00;     // VX_ATTRIBUTE_BASE + 0x0
+pub const VX_ARRAY_ITEMTYPE: vx_enum = 0x80E00;     // VX_ATTRIBUTE_BASE + 0x0
+pub const VX_ARRAY_NUMITEMS: vx_enum = 0x80E02;     // VX_ATTRIBUTE_BASE + 0x2
+pub const VX_ARRAY_ITEMSIZE: vx_enum = 0x80E03;     // VX_ATTRIBUTE_BASE + 0x3
 
 // ============================================================================
 // Opaque Types for Arrays and Structures
