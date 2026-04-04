@@ -733,13 +733,40 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         }
         let id = n as u64;
         let mut count = 0;
+        let num_params: usize;
+        
+        // Get node data and parameters
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
                 count = node_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(params) = node_data.parameters.lock() {
+                    num_params = params.len();
+                } else {
+                    num_params = 0;
+                }
+            } else {
+                num_params = 0;
             }
+        } else {
+            num_params = 0;
         }
+        
         if count <= 1 {
-            // Last reference - remove from NODES and unified registries
+            // Last reference - clean up parameters first
+            for index in 0..num_params {
+                let param_id = (id << 32) | (index as u64);
+                // Remove parameter from unified registry
+                crate::unified_c_api::remove_parameter(param_id);
+                // Remove from reference tracking
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&(param_id as usize));
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&(param_id as usize));
+                }
+            }
+            
+            // Remove from NODES and unified registries
             if let Ok(mut nodes_mut) = NODES.lock() {
                 nodes_mut.remove(&id);
             }
@@ -1282,8 +1309,8 @@ pub extern "C" fn vxQueryParameter(
     unsafe {
         let id = param as u64;
         
-        // First check c_api.rs's PARAMETERS
-        if let Ok(params) = PARAMETERS.lock() {
+        // Use unified_c_api's PARAMETERS only
+        if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
             if let Some(param_data) = params.get(&id) {
                 match attribute {
                     VX_PARAMETER_INDEX => { // VX_PARAMETER_INDEX
@@ -1448,16 +1475,7 @@ pub extern "C" fn vxSetParameterByReference(
         return VX_ERROR_INVALID_PARAMETERS;
     }
     let id = param as u64;
-    // First check c_api.rs's PARAMETERS
-    if let Ok(params) = PARAMETERS.lock() {
-        if let Some(param_data) = params.get(&id) {
-            if let Ok(mut val) = param_data.value.lock() {
-                *val = Some(value as u64);
-                return VX_SUCCESS;
-            }
-        }
-    }
-    // Also check unified_c_api's PARAMETERS
+    // Use unified_c_api's PARAMETERS only
     if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
             if let Ok(mut val) = param_data.value.lock() {
@@ -1496,18 +1514,8 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         }
         
         if should_remove {
-            // Remove from registries
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
-            }
-            // Also remove from unified PARAMETERS if it exists there
+            // Remove from unified PARAMETERS only (remove_parameter handles types/counts)
             crate::unified_c_api::remove_parameter(id);
-            if let Ok(mut params) = PARAMETERS.lock() {
-                params.remove(&id);
-            }
         }
         
         *param = std::ptr::null_mut();
