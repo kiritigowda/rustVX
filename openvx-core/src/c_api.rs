@@ -1460,33 +1460,36 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = p as u64;
-        let mut count = 0;
-        if let Ok(params) = PARAMETERS.lock() {
-            if let Some(param_data) = params.get(&id) {
-                count = param_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        if count <= 1 {
-            // Last reference - remove from PARAMETERS and unified registries
-            if let Ok(mut params_mut) = PARAMETERS.lock() {
-                params_mut.remove(&id);
-            }
-            // Also remove from unified_c_api PARAMETERS
-            crate::unified_c_api::remove_parameter(id);
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&(id as usize));
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&(id as usize));
-            }
-        } else {
-            // Decrement unified reference count
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                if let Some(cnt) = counts.get_mut(&(id as usize)) {
-                    cnt.store(count - 1, std::sync::atomic::Ordering::SeqCst);
+        let addr = id as usize;
+        
+        // Simple reference counting - decrement and remove if 0
+        let mut should_remove = false;
+        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+            if let Some(count) = counts.get(&addr) {
+                let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                if current > 1 {
+                    count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    should_remove = true;
                 }
             }
         }
+        
+        if should_remove {
+            // Remove from registries
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            // Also remove from unified PARAMETERS if it exists there
+            crate::unified_c_api::remove_parameter(id);
+            if let Ok(mut params) = PARAMETERS.lock() {
+                params.remove(&id);
+            }
+        }
+        
         *param = std::ptr::null_mut();
     }
     VX_SUCCESS

@@ -5781,6 +5781,8 @@ pub extern "C" fn vxuThreshold(
 
 /// Get parameter by index from a node
 #[no_mangle]
+/// Get parameter by index from a node
+#[no_mangle]
 pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_parameter {
     if node.is_null() {
         return std::ptr::null_mut();
@@ -5790,29 +5792,17 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
     let node_id = node as u64;
     let param_id = (node_id << 32) | (index as u64);
     
-    // Check if parameter already exists
-    if let Ok(params) = PARAMETERS.lock() {
-        if params.contains_key(&param_id) {
-            return param_id as vx_parameter;
-        }
-    }
+    // Just return the param_id as a handle - no Arc storage needed
+    // The actual parameter data is stored in the node's parameters vector
     
-    // Create new parameter with empty value
-    let param = Arc::new(VxCParameter {
-        index,
-        direction: VX_INPUT,
-        data_type: 0,
-        ref_count: AtomicUsize::new(1),
-        value: Mutex::new(None),
-    });
-    
-    if let Ok(mut params) = PARAMETERS.lock() {
-        params.insert(param_id, param);
-    }
-    
-    // Also store in REFERENCE_TYPES for type detection
+    // Register in REFERENCE_TYPES for type detection
     if let Ok(mut types) = REFERENCE_TYPES.lock() {
-        types.insert(param_id as usize, VX_TYPE_PARAMETER);
+        types.entry(param_id as usize).or_insert(VX_TYPE_PARAMETER);
+    }
+    
+    // Register in REFERENCE_COUNTS
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.entry(param_id as usize).or_insert(AtomicUsize::new(1));
     }
     
     param_id as vx_parameter
