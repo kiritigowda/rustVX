@@ -390,9 +390,19 @@ pub struct VxCImport {
 
 /// Kernel data
 pub struct VxCKernel {
-    enumeration: vx_enum,
-    name: String,
-    ref_count: AtomicUsize,
+    pub enumeration: vx_enum,
+    pub name: String,
+    pub ref_count: AtomicUsize,
+}
+
+impl VxCKernel {
+    pub fn new(enumeration: vx_enum, name: String) -> Self {
+        VxCKernel {
+            enumeration,
+            name,
+            ref_count: AtomicUsize::new(1),
+        }
+    }
 }
 
 /// Target data
