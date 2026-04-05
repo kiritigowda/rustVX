@@ -262,68 +262,64 @@ fn register_standard_kernels(context_id: u32) {
     // Format: (name, enum, num_params)
     // Kernel enums aligned with OpenVX 1.3.1 spec (VX_KERNEL_BASE values)
     // VX_KERNEL_BASE(vendor, lib) = ((vendor) << 20) | ((lib) << 12)
-    // For VX_ID_KHRONOS=0 and VX_LIBRARY_KHR_BASE=0: VX_KERNEL_BASE = 0
-    // Kernel enums are then VX_KERNEL_BASE + offset
+    // Per OpenVX spec: VX_KERNEL_<name> = VX_KERNEL_BASE(VX_ID_KHRONOS, VX_LIBRARY_KHR_BASE) + offset
+    // Since VX_ID_KHRONOS=0x000 and VX_LIBRARY_KHR_BASE=0x0, the base is 0x00000000
+    // Kernel enums start at 0x1 (not 0x0).
     let standard_kernels: Vec<(&str, i32, u32)> = vec![
         // Color conversions
-        ("org.khronos.openvx.color_convert", 0x00i32, 2),
-        ("org.khronos.openvx.channel_extract", 0x01, 3),
-        ("org.khronos.openvx.channel_combine", 0x02, 4),
+        ("org.khronos.openvx.color_convert", 0x01, 2),
+        ("org.khronos.openvx.channel_extract", 0x02, 3),
+        ("org.khronos.openvx.channel_combine", 0x03, 4),
         // Gradient operations
-        ("org.khronos.openvx.sobel_3x3", 0x03, 3),
-        ("org.khronos.openvx.magnitude", 0x04, 3),
-        ("org.khronos.openvx.phase", 0x05, 3),
+        ("org.khronos.openvx.sobel_3x3", 0x04, 3),
+        ("org.khronos.openvx.magnitude", 0x05, 3),
+        ("org.khronos.openvx.phase", 0x06, 3),
         // Geometric
-        ("org.khronos.openvx.scale_image", 0x06, 3),
-        ("org.khronos.openvx.warp_affine", 0x07, 4),
-        ("org.khronos.openvx.warp_perspective", 0x08, 4),
-        // Arithmetic
-        ("org.khronos.openvx.add", 0x09, 4),
-        ("org.khronos.openvx.subtract", 0x0A, 4),
-        ("org.khronos.openvx.multiply", 0x0B, 4),
-        ("org.khronos.openvx.weighted_average", 0x0C, 4),
+        ("org.khronos.openvx.scale_image", 0x07, 3),
+        ("org.khronos.openvx.warp_affine", 0x23, 4),
+        ("org.khronos.openvx.warp_perspective", 0x24, 4),
+        ("org.khronos.openvx.remap", 0x28, 4),
+        ("org.khronos.openvx.halfscale_gaussian", 0x29, 3),
         // Filters
-        ("org.khronos.openvx.convolve", 0x0D, 3),
-        ("org.khronos.openvx.gaussian_3x3", 0x0E, 2),
-        ("org.khronos.openvx.median_3x3", 0x0F, 2),
+        ("org.khronos.openvx.gaussian_3x3", 0x13, 2),
+        ("org.khronos.openvx.box_3x3", 0x12, 2),
+        ("org.khronos.openvx.median_3x3", 0x11, 2),
+        ("org.khronos.openvx.custom_convolution", 0x14, 3),
+        ("org.khronos.openvx.gaussian_pyramid", 0x15, 2),
         // Morphology
-        ("org.khronos.openvx.sobel_5x5", 0x10, 3),
-        ("org.khronos.openvx.box_3x3", 0x12, 2),  // Correct per OpenVX spec: 0x12
-        ("org.khronos.openvx.gaussian_5x5", 0x13, 2),  // 0x13
-        ("org.khronos.openvx.harris_corners", 0x14, 4),  // 0x14
-        // Feature detection
-        ("org.khronos.openvx.fast_corners", 0x15, 3),  // 0x15
-        ("org.khronos.openvx.optical_flow_pyr_lk", 0x16, 7),  // 0x16
-        ("org.khronos.openvx.laplacian", 0x17, 3),  // 0x17
-        ("org.khronos.openvx.non_linear_filter", 0x18, 4),  // 0x18
-        ("org.khronos.openvx.dilate_3x3", 0x19, 2),  // 0x19
-        ("org.khronos.openvx.erode_3x3", 0x1A, 2),  // 0x1A
-        ("org.khronos.openvx.median_3x3", 0x1B, 2),  // 0x1B
+        ("org.khronos.openvx.dilate_3x3", 0x0F, 2),
+        ("org.khronos.openvx.erode_3x3", 0x10, 2),
+        // Arithmetic
+        ("org.khronos.openvx.add", 0x21, 4),
+        ("org.khronos.openvx.subtract", 0x22, 4),
+        ("org.khronos.openvx.multiply", 0x20, 7),
+        // Bitwise
+        ("org.khronos.openvx.and", 0x1C, 3),
+        ("org.khronos.openvx.or", 0x1D, 3),
+        ("org.khronos.openvx.xor", 0x1E, 3),
+        ("org.khronos.openvx.not", 0x1F, 2),
         // Statistics
-        ("org.khronos.openvx.histogram", 0x1C, 2),  // 0x1C
-        ("org.khronos.openvx.equalize_histogram", 0x1D, 2),  // 0x1D
-        ("org.khronos.openvx.integral_image", 0x1E, 2),  // 0x1E
-        ("org.khronos.openvx.mean_stddev", 0x1F, 4),  // 0x1F
-        ("org.khronos.openvx.minmaxloc", 0x20, 6),  // 0x20
-        // Additional features
-        ("org.khronos.openvx.absdiff", 0x21, 3),  // 0x21
-        ("org.khronos.openvx.mean_shift", 0x22, 5),  // 0x22
-        ("org.khronos.openvx.threshold", 0x23, 3),  // 0x23
-        ("org.khronos.openvx.integral_image_sq", 0x24, 2),  // 0x24
-        ("org.khronos.openvx.dilate_5x5", 0x25, 2),  // 0x25
-        ("org.khronos.openvx.erode_5x5", 0x26, 2),  // 0x26
-        // Pyramids
-        ("org.khronos.openvx.gaussian_pyramid", 0x27, 2),  // 0x27
-        ("org.khronos.openvx.laplacian_pyramid", 0x28, 2),  // 0x28
-        // Reconstruction
-        ("org.khronos.openvx.laplacian_reconstruct", 0x29, 3),  // 0x29
-        // Geometric
-        ("org.khronos.openvx.remap", 0x2A, 4),  // 0x2A
-        // Extended feature detection
-        ("org.khronos.openvx.corner_min_eigen_val", 0x2B, 3),  // 0x2B
-        ("org.khronos.openvx.hough_lines_p", 0x2C, 6),  // 0x2C
-        // Object detection
-        ("org.khronos.openvx.canny_edge_detector", 0x2D, 4),  // 0x2D
+        ("org.khronos.openvx.histogram", 0x09, 2),
+        ("org.khronos.openvx.equalize_histogram", 0x0A, 2),
+        ("org.khronos.openvx.integral_image", 0x0E, 2),
+        ("org.khronos.openvx.mean_stddev", 0x0C, 4),
+        ("org.khronos.openvx.minmaxloc", 0x19, 6),
+        // Additional operations
+        ("org.khronos.openvx.absdiff", 0x0B, 3),
+        ("org.khronos.openvx.threshold", 0x0D, 3),
+        ("org.khronos.openvx.table_lookup", 0x08, 3),
+        ("org.khronos.openvx.convertdepth", 0x1A, 4),
+        // Feature detection
+        ("org.khronos.openvx.harris_corners", 0x25, 7),
+        ("org.khronos.openvx.fast_corners", 0x26, 5),
+        ("org.khronos.openvx.optical_flow_pyr_lk", 0x27, 7),
+        ("org.khronos.openvx.canny_edge_detector", 0x1B, 5),
+        // OpenVX 1.1
+        ("org.khronos.openvx.laplacian_pyramid", 0x2A, 2),
+        ("org.khronos.openvx.laplacian_reconstruct", 0x2B, 3),
+        ("org.khronos.openvx.non_linear_filter", 0x2C, 4),
+        // OpenVX 1.0.2 addition
+        ("org.khronos.openvx.weighted_average", 0x40, 4),
     ];
     
     if let Ok(mut kernels) = KERNELS.lock() {
