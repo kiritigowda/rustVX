@@ -194,34 +194,33 @@ pub fn convolve_generic(src: &Image, dst: &Image, kernel: &[[i32; 3]; 3], border
 }
 
 /// Gaussian 3x3: [1,2,1; 2,4,2; 1,2,1] / 16
-/// For VX_BORDER_UNDEFINED, only processes inner region (1..width-1, 1..height-1)
+/// Uses REPLICATE border mode for edge pixels
 pub fn gaussian3x3(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
     
     let mut dst_data = dst.data_mut();
+    let border = BorderMode::Replicate;
     
-    // For VX_BORDER_UNDEFINED, only process pixels where full 3x3 neighborhood exists
-    // This matches the OpenVX conformance test expectations
-    for y in 1..height.saturating_sub(1) {
-        for x in 1..width.saturating_sub(1) {
+    for y in 0..height {
+        for x in 0..width {
             // Full 3x3 Gaussian kernel: [1,2,1; 2,4,2; 1,2,1] / 16
             let mut sum: i32 = 0;
             
             // Row y-1
-            sum += src.get_pixel(x - 1, y - 1) as i32 * 1;
-            sum += src.get_pixel(x,     y - 1) as i32 * 2;
-            sum += src.get_pixel(x + 1, y - 1) as i32 * 1;
+            sum += get_pixel_bordered(src, x as isize - 1, y as isize - 1, border) as i32 * 1;
+            sum += get_pixel_bordered(src, x as isize,     y as isize - 1, border) as i32 * 2;
+            sum += get_pixel_bordered(src, x as isize + 1, y as isize - 1, border) as i32 * 1;
             
             // Row y
-            sum += src.get_pixel(x - 1, y) as i32 * 2;
-            sum += src.get_pixel(x,     y) as i32 * 4;
-            sum += src.get_pixel(x + 1, y) as i32 * 2;
+            sum += get_pixel_bordered(src, x as isize - 1, y as isize, border) as i32 * 2;
+            sum += get_pixel_bordered(src, x as isize,     y as isize, border) as i32 * 4;
+            sum += get_pixel_bordered(src, x as isize + 1, y as isize, border) as i32 * 2;
             
             // Row y+1
-            sum += src.get_pixel(x - 1, y + 1) as i32 * 1;
-            sum += src.get_pixel(x,     y + 1) as i32 * 2;
-            sum += src.get_pixel(x + 1, y + 1) as i32 * 1;
+            sum += get_pixel_bordered(src, x as isize - 1, y as isize + 1, border) as i32 * 1;
+            sum += get_pixel_bordered(src, x as isize,     y as isize + 1, border) as i32 * 2;
+            sum += get_pixel_bordered(src, x as isize + 1, y as isize + 1, border) as i32 * 1;
             
             dst_data[y * width + x] = (sum >> 4) as u8; // Divide by 16
         }

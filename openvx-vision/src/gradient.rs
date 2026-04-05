@@ -1,7 +1,7 @@
 //! Gradient operations
 
 use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
-use openvx_image::Image;
+use openvx_image::{Image, ImageFormat};
 use crate::utils::{get_pixel_bordered, BorderMode};
 use std::f32;
 
@@ -121,32 +121,60 @@ const SOBEL_Y: [[i32; 3]; 3] = [
     [ 1,  2,  1],
 ];
 
-/// Compute Sobel gradients
+/// Compute Sobel gradients (outputs to S16 format)
 pub fn sobel3x3(src: &Image, grad_x: &Image, grad_y: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
     
-    let mut gx_data = grad_x.data_mut();
-    let mut gy_data = grad_y.data_mut();
+    // Check if output is S16 format
+    let is_s16 = grad_x.format() == ImageFormat::S16;
     
-    for y in 0..height {
-        for x in 0..width {
-            let mut sum_x: i32 = 0;
-            let mut sum_y: i32 = 0;
-            
-            for ky in 0..3 {
-                for kx in 0..3 {
-                    let px = x as isize + kx as isize - 1;
-                    let py = y as isize + ky as isize - 1;
-                    let pixel = get_pixel_bordered(src, px, py, BorderMode::Replicate) as i32;
-                    sum_x += pixel * SOBEL_X[ky][kx];
-                    sum_y += pixel * SOBEL_Y[ky][kx];
+    if is_s16 {
+        // Output raw i16 values for S16 format
+        for y in 1..height - 1 {
+            for x in 1..width - 1 {
+                let mut sum_x: i32 = 0;
+                let mut sum_y: i32 = 0;
+                
+                for ky in 0..3 {
+                    for kx in 0..3 {
+                        let px = x + kx - 1;
+                        let py = y + ky - 1;
+                        let pixel = src.get_pixel(px, py) as i32;
+                        sum_x += pixel * SOBEL_X[ky][kx];
+                        sum_y += pixel * SOBEL_Y[ky][kx];
+                    }
                 }
+                
+                // Output raw i16 values (no scaling/offset)
+                grad_x.set_pixel_i16(x, y, sum_x as i16);
+                grad_y.set_pixel_i16(x, y, sum_y as i16);
             }
-            
-            // Scale to fit in u8 (divide by 4)
-            gx_data[y * width + x] = ((sum_x / 4).max(-128).min(127) + 128) as u8;
-            gy_data[y * width + x] = ((sum_y / 4).max(-128).min(127) + 128) as u8;
+        }
+    } else {
+        // Original U8 output with scaling
+        let mut gx_data = grad_x.data_mut();
+        let mut gy_data = grad_y.data_mut();
+        
+        for y in 1..height - 1 {
+            for x in 1..width - 1 {
+                let mut sum_x: i32 = 0;
+                let mut sum_y: i32 = 0;
+                
+                for ky in 0..3 {
+                    for kx in 0..3 {
+                        let px = x + kx - 1;
+                        let py = y + ky - 1;
+                        let pixel = src.get_pixel(px, py) as i32;
+                        sum_x += pixel * SOBEL_X[ky][kx];
+                        sum_y += pixel * SOBEL_Y[ky][kx];
+                    }
+                }
+                
+                // Scale to fit in u8 (divide by 4)
+                gx_data[y * width + x] = ((sum_x / 4).max(-128).min(127) + 128) as u8;
+                gy_data[y * width + x] = ((sum_y / 4).max(-128).min(127) + 128) as u8;
+            }
         }
     }
     

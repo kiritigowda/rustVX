@@ -12,7 +12,8 @@ use openvx_core::c_api::{
     VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
-use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution};
+use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS};
+use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
 
 /// Array struct for C API
 pub struct VxCArray {
@@ -27,6 +28,18 @@ pub struct VxCArray {
 
 impl VxCArray {
     fn type_to_size(item_type: vx_enum) -> vx_size {
+        // Check if it's a user-defined struct type
+        if item_type >= 0x100 {
+            // Look up in USER_STRUCTS registry
+            if let Ok(structs) = USER_STRUCTS.lock() {
+                if let Some((_, size)) = structs.get(&item_type) {
+                    return *size;
+                }
+            }
+            // Default to 16 bytes for unknown user structs
+            return 16;
+        }
+        
         match item_type {
             VX_TYPE_UINT8 | VX_TYPE_INT8 => 1,
             VX_TYPE_UINT16 | VX_TYPE_INT16 => 2,
@@ -39,6 +52,7 @@ impl VxCArray {
 
 // Internal storage for arrays
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 static ARRAY_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Create an array
@@ -74,7 +88,23 @@ pub extern "C" fn vxCreateArray(
         mapped_ranges: RwLock::new(HashMap::new()),
     });
 
-    Box::into_raw(array) as vx_array
+    let array_ptr = Box::into_raw(array) as vx_array;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(array_ptr as usize, AtomicUsize::new(1));
+        }
+    }
+    
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(array_ptr as usize, VX_TYPE_ARRAY);
+        }
+    }
+    
+    array_ptr
 }
 
 /// Add items to array
@@ -182,7 +212,7 @@ pub extern "C" fn vxQueryArray(
                 *(ptr as *mut vx_size) = array.capacity;
             }
             VX_ARRAY_ITEMTYPE => {
-                if size != std::mem::size_of::<vx_enum>() {
+                if size < std::mem::size_of::<vx_enum>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 *(ptr as *mut vx_enum) = array.item_type;
@@ -246,6 +276,16 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
 
     unsafe {
         if !(*arr).is_null() {
+            let addr = *arr as usize;
+            
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            
             let _ = Box::from_raw(*arr as *mut VxCArray);
             *arr = std::ptr::null_mut();
         }

@@ -90,12 +90,25 @@ impl KernelTrait for WarpPerspectiveKernel {
         let src = params.get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let matrix_ref = params.get(1)
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
         let dst = params.get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
         
-        // Default identity perspective transform
-        let matrix = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        // Extract matrix data from the matrix reference
+        let matrix: [f32; 9] = if let Some(matrix_data) = matrix_ref.as_any().downcast_ref::<openvx_core::c_api_data::VxCMatrixData>() {
+            if matrix_data.data_type != 0x00A || matrix_data.rows != 3 || matrix_data.columns != 3 {
+                return Err(openvx_core::VxStatus::ErrorInvalidParameters);
+            }
+            matrix_data.as_f32_slice()
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+        } else {
+            // Default identity perspective transform if matrix not provided
+            [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        };
+        
         warp_perspective(src, &matrix, dst)?;
         Ok(())
     }
@@ -171,7 +184,10 @@ pub fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &Image) -> VxResult<()> 
 }
 
 /// Warp perspective: dst(x,y) = src(H*[x,y,1] / w)
-/// matrix is 3x3 in row-major order [h11, h12, h13, h21, h22, h23, h31, h32, h33]
+/// matrix is 3x3 in COLUMN-MAJOR order (OpenVX standard):
+///   m[0]=h00, m[1]=h10, m[2]=h20 (first column)
+///   m[3]=h01, m[4]=h11, m[5]=h21 (second column)
+///   m[6]=h02, m[7]=h12, m[8]=h22 (third column)
 pub fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &Image) -> VxResult<()> {
     let dst_width = dst.width();
     let dst_height = dst.height();
@@ -180,30 +196,37 @@ pub fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &Image) -> VxResult
     
     let mut dst_data = dst.data_mut();
     
-    let h11 = matrix[0];
-    let h12 = matrix[1];
-    let h13 = matrix[2];
-    let h21 = matrix[3];
-    let h22 = matrix[4];
-    let h23 = matrix[5];
-    let h31 = matrix[6];
-    let h32 = matrix[7];
-    let h33 = matrix[8];
+    // Column-major access pattern as used by OpenVX test:
+    // x_h = m[0]*x + m[3]*y + m[6]
+    // y_h = m[1]*x + m[4]*y + m[7]
+    // w_h = m[2]*x + m[5]*y + m[8]
+    let h00 = matrix[0];  // m[0,0] in row 0, col 0
+    let h10 = matrix[1];  // m[1,0] in row 1, col 0
+    let h20 = matrix[2];  // m[2,0] in row 2, col 0
+    let h01 = matrix[3];  // m[0,1] in row 0, col 1
+    let h11 = matrix[4];  // m[1,1] in row 1, col 1
+    let h21 = matrix[5];  // m[2,1] in row 2, col 1
+    let h02 = matrix[6];  // m[0,2] in row 0, col 2
+    let h12 = matrix[7];  // m[1,2] in row 1, col 2
+    let h22 = matrix[8];  // m[2,2] in row 2, col 2
     
     for y in 0..dst_height {
         for x in 0..dst_width {
             let xf = x as f32;
             let yf = y as f32;
             
-            // Homogeneous coordinates
-            let w = h31 * xf + h32 * yf + h33;
-            if w.abs() < 1e-6 {
+            // Homogeneous coordinates using column-major access
+            let x_h = h00 * xf + h01 * yf + h02;
+            let y_h = h10 * xf + h11 * yf + h12;
+            let w_h = h20 * xf + h21 * yf + h22;
+            
+            if w_h.abs() < 1e-6 {
                 dst_data[y * dst_width + x] = 0;
                 continue;
             }
             
-            let src_x = (h11 * xf + h12 * yf + h13) / w;
-            let src_y = (h21 * xf + h22 * yf + h23) / w;
+            let src_x = x_h / w_h;
+            let src_y = y_h / w_h;
             
             // Check bounds
             if src_x < 0.0 || src_x >= src_width || src_y < 0.0 || src_y >= src_height {

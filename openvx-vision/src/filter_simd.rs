@@ -237,9 +237,9 @@ pub fn sobel3x3_simd(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxR
                     let py = y + ky - 1;
                     let pixel = src_data[py * width + px] as i32;
                     let k = match (ky, kx) {
-                        (0, 0) | (0, 1) | (0, 2) => -1,
+                        (0, 0) | (0, 2) => -1,
                         (0, 1) => -2,
-                        (2, 0) | (2, 1) | (2, 2) => 1,
+                        (2, 0) | (2, 2) => 1,
                         (2, 1) => 2,
                         _ => 0,
                     };
