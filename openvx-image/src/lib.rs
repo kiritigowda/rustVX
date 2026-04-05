@@ -245,3 +245,30 @@ pub fn clone_image(source: &Image) -> Image {
         data: RwLock::new(cloned_data),
     }
 }
+
+/// Pyramid structure
+/// A pyramid is a multi-level image representation where each level
+/// is a scaled-down version of the previous level.
+pub struct Pyramid {
+    num_levels: usize,
+    scale: f32,
+    levels: Vec<std::sync::Arc<Image>>,
+}
+
+impl Pyramid {
+    pub fn new(num_levels: usize, scale: f32, levels: Vec<std::sync::Arc<Image>>) -> Self {
+        Pyramid {
+            num_levels,
+            scale,
+            levels,
+        }
+    }
+    
+    pub fn num_levels(&self) -> usize { self.num_levels }
+    pub fn scale(&self) -> f32 { self.scale }
+    pub fn levels(&self) -> &Vec<std::sync::Arc<Image>> { &self.levels }
+    
+    pub fn get_level(&self, index: usize) -> Option<&std::sync::Arc<Image>> {
+        self.levels.get(index)
+    }
+}

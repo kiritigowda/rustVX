@@ -1235,29 +1235,4 @@ pub extern "C" fn vxCreateVirtualPyramid(
     vxCreatePyramid(graph as vx_context, levels, scale, width, height, format)
 }
 
-/// Release pyramid
-#[no_mangle]
-pub extern "C" fn vxReleasePyramid(pyr: *mut vx_pyramid) -> vx_status {
-    if pyr.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-
-    unsafe {
-        if !(*pyr).is_null() {
-            let addr = *pyr as usize;
-
-            // Remove from reference counts and types
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
-            }
-
-            let _ = Box::from_raw(*pyr as *mut VxCPyramidData);
-            *pyr = std::ptr::null_mut();
-        }
-    }
-
-    VX_SUCCESS
-}
+// vxReleasePyramid is implemented in openvx-image crate

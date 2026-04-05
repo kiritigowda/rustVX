@@ -13,7 +13,7 @@ use openvx_core::unified_c_api::VxCImage;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_image, vx_status, vx_enum, vx_size, vx_uint32,
     vx_rectangle_t, vx_imagepatch_addressing_t, vx_map_id, vx_df_image, vx_int32,
-    vx_reference,
+    vx_float32, vx_reference, VxImage,
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_DF_IMAGE_RGB, VX_DF_IMAGE_RGBA, VX_DF_IMAGE_RGBX, VX_DF_IMAGE_NV12,
@@ -99,45 +99,12 @@ pub extern "C" fn vxCreateImage(
     image_ptr
 }
 
-/// Virtual Image Registry
-/// Maps image address to virtual image info
-use std::collections::HashMap;
-use std::sync::Mutex;
+/// Use unified VIRTUAL_IMAGES registry from openvx_core
+use openvx_core::unified_c_api::{VIRTUAL_IMAGES, VirtualImageInfo as VxCVirtualImageInfo};
+use openvx_core::unified_c_api as core_unified;
 
-/// Virtual image info - tracks virtual image state
-#[derive(Debug, Clone)]
-pub struct VirtualImageInfo {
-    pub width: vx_uint32,
-    pub height: vx_uint32,
-    pub format: vx_df_image,
-    pub is_virtual: bool,
-    pub backing_image: Option<usize>, // Address of backing image if allocated
-}
-
-/// Global registry of virtual images
-static VIRTUAL_IMAGES: std::sync::LazyLock<Mutex<HashMap<usize, VirtualImageInfo>>> = 
-    std::sync::LazyLock::new(|| {
-        Mutex::new(HashMap::new())
-    });
-
-/// Register a virtual image in the registry
-fn register_virtual_image(addr: usize, info: VirtualImageInfo) {
-    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
-        registry.insert(addr, info);
-    }
-}
-
-/// Unregister a virtual image from the registry
-fn unregister_virtual_image(addr: usize) -> Option<VirtualImageInfo> {
-    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
-        registry.remove(&addr)
-    } else {
-        None
-    }
-}
-
-/// Get virtual image info
-pub fn get_virtual_image_info(addr: usize) -> Option<VirtualImageInfo> {
+/// Re-export virtual image functions using unified registry
+pub fn get_virtual_image_info(addr: usize) -> Option<VxCVirtualImageInfo> {
     if let Ok(registry) = VIRTUAL_IMAGES.lock() {
         registry.get(&addr).cloned()
     } else {
@@ -162,6 +129,22 @@ pub fn is_virtual_image(addr: usize) -> bool {
         registry.get(&addr).map(|info| info.is_virtual).unwrap_or(false)
     } else {
         false
+    }
+}
+
+/// Register a virtual image in the unified registry
+fn register_virtual_image(addr: usize, info: VxCVirtualImageInfo) {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        registry.insert(addr, info);
+    }
+}
+
+/// Unregister a virtual image from the unified registry
+fn unregister_virtual_image(addr: usize) -> Option<VxCVirtualImageInfo> {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        registry.remove(&addr)
+    } else {
+        None
     }
 }
 
@@ -211,12 +194,13 @@ pub extern "C" fn vxCreateVirtualImage(
     let image_ptr = Box::into_raw(image) as vx_image;
 
     // Register virtual image info
+    use openvx_core::unified_c_api::VirtualImageInfo;
     register_virtual_image(
         image_ptr as usize,
         VirtualImageInfo {
             width: store_width,
             height: store_height,
-            format: store_format,
+            format: store_format as u32,
             is_virtual: true,
             backing_image: None,
         }
@@ -1560,6 +1544,257 @@ pub extern "C" fn vxCloneImageWithGraph(
         } else {
             // Create a regular image with data copy (clone entire image)
             vxCloneImage(source, std::ptr::null())
+        }
+    }
+}
+
+// ============================================================================
+// Pyramid Operations
+// ============================================================================
+
+use openvx_core::unified_c_api::{VxCPyramid, VX_TYPE_PYRAMID, vx_pyramid};
+
+/// Create a pyramid object
+/// 
+/// Creates a pyramid with the specified number of levels, scale factor,
+/// and base image dimensions.
+/// 
+/// # Arguments
+/// * `context` - The OpenVX context
+/// * `num_levels` - The number of levels in the pyramid
+/// * `scale` - The scale factor between levels (typically VX_SCALE_PYRAMID_HALF = 0.5)
+/// * `width` - The width of the base level (level 0)
+/// * `height` - The height of the base level (level 0)
+/// * `format` - The image format for all levels
+/// 
+/// # Returns
+/// A pyramid handle on success, or NULL on failure
+#[no_mangle]
+pub extern "C" fn vxCreatePyramid(
+    context: vx_context,
+    num_levels: vx_size,
+    scale: vx_float32,
+    width: vx_uint32,
+    height: vx_uint32,
+    format: vx_df_image,
+) -> vx_pyramid {
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    if num_levels == 0 || width == 0 || height == 0 {
+        return std::ptr::null_mut();
+    }
+    
+    // Validate scale factor (must be positive and less than 1.0)
+    if scale <= 0.0 || scale >= 1.0 {
+        return std::ptr::null_mut();
+    }
+
+    let levels_usize = num_levels as usize;
+    let mut level_images: Vec<usize> = Vec::with_capacity(levels_usize);
+
+    // Create images for each level
+    for level in 0..levels_usize {
+        // Calculate dimensions for this level using scale^level
+        let level_scale = scale.powi(level as i32);
+        let level_width = (width as f32 * level_scale) as vx_uint32;
+        let level_height = (height as f32 * level_scale) as vx_uint32;
+        
+        // Ensure minimum dimensions of 1x1
+        let level_width = level_width.max(1);
+        let level_height = level_height.max(1);
+        
+        let img = vxCreateImage(context, level_width, level_height, format);
+        if img.is_null() {
+            // Failed to create image - clean up already created images
+            for existing_img in level_images.iter_mut() {
+                let mut img_ptr = *existing_img as *mut VxImage;
+                vxReleaseImage(&mut img_ptr);
+            }
+            return std::ptr::null_mut();
+        }
+        
+        level_images.push(img as usize);
+    }
+
+    // Create the pyramid structure
+    let pyramid = Box::new(VxCPyramid {
+        context: context as usize,
+        num_levels: levels_usize,
+        scale,
+        width,
+        height,
+        format,
+        levels: level_images,
+    });
+
+    let pyramid_ptr = Box::into_raw(pyramid) as vx_pyramid;
+
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(pyramid_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+    }
+
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(pyramid_ptr as usize, VX_TYPE_PYRAMID);
+        }
+    }
+
+    pyramid_ptr
+}
+
+/// Release a pyramid object
+/// 
+/// Releases the pyramid and all its level images.
+/// 
+/// # Arguments
+/// * `pyramid` - Pointer to the pyramid handle
+/// 
+/// # Returns
+/// VX_SUCCESS on success, error code on failure
+#[no_mangle]
+pub extern "C" fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status {
+    if pyramid.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let pyr = *pyramid;
+        if !pyr.is_null() {
+            let addr = pyr as usize;
+            
+            // Get the pyramid struct
+            let pyramid_data = &mut *(pyr as *mut VxCPyramid);
+            
+            // Release all level images
+            for level_img in pyramid_data.levels.iter_mut() {
+                let mut img = *level_img as vx_image;
+                vxReleaseImage(&mut img);
+            }
+
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+
+            // Free the pyramid
+            let _ = Box::from_raw(pyr as *mut VxCPyramid);
+            *pyramid = std::ptr::null_mut();
+        }
+    }
+
+    VX_SUCCESS
+}
+
+/// Get a level image from a pyramid
+/// 
+/// Returns a reference to the image at the specified level.
+/// The returned image reference must not be released - it is owned by the pyramid.
+/// 
+/// # Arguments
+/// * `pyramid` - The pyramid handle
+/// * `index` - The level index (0 to num_levels-1)
+/// 
+/// # Returns
+/// An image handle on success, or NULL on failure
+#[no_mangle]
+pub extern "C" fn vxGetPyramidLevel(pyramid: vx_pyramid, index: vx_uint32) -> vx_image {
+    if pyramid.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let pyramid_data = &*(pyramid as *const VxCPyramid);
+        
+        // Validate index
+        let idx = index as usize;
+        if idx >= pyramid_data.num_levels {
+            return std::ptr::null_mut();
+        }
+        
+        // Return the level image (not a copy, just the reference)
+        pyramid_data.levels.get(idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut())
+    }
+}
+
+/// Query pyramid attributes
+/// 
+/// Queries various attributes of a pyramid object.
+/// 
+/// # Arguments
+/// * `pyramid` - The pyramid handle
+/// * `attribute` - The attribute to query
+/// * `ptr` - Pointer to the memory to store the result
+/// * `size` - Size of the memory pointed to by ptr
+/// 
+/// # Returns
+/// VX_SUCCESS on success, error code on failure
+#[no_mangle]
+pub extern "C" fn vxQueryPyramid(
+    pyramid: vx_pyramid,
+    attribute: vx_enum,
+    ptr: *mut c_void,
+    size: vx_size,
+) -> vx_status {
+    if pyramid.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let pyr = unsafe { &*(pyramid as *const VxCPyramid) };
+
+    unsafe {
+        match attribute {
+            // VX_PYRAMID_LEVELS = 0x00
+            0x00 => {
+                if size != std::mem::size_of::<vx_size>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_size) = pyr.num_levels as vx_size;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_SCALE = 0x01
+            0x01 => {
+                if size != std::mem::size_of::<vx_float32>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_float32) = pyr.scale;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_FORMAT = 0x02
+            0x02 => {
+                if size != std::mem::size_of::<vx_df_image>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_df_image) = pyr.format;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_WIDTH = 0x03
+            0x03 => {
+                if size != std::mem::size_of::<vx_uint32>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_uint32) = pyr.width;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_HEIGHT = 0x04
+            0x04 => {
+                if size != std::mem::size_of::<vx_uint32>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_uint32) = pyr.height;
+                VX_SUCCESS
+            }
+            _ => VX_ERROR_NOT_IMPLEMENTED,
         }
     }
 }

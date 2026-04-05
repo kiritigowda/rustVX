@@ -325,10 +325,15 @@ pub struct VxCThreshold {
 }
 
 /// Pyramid data
+/// A pyramid contains multiple levels of scaled images
 pub struct VxCPyramid {
-    levels: usize,
-    scale: f32,
-    ref_count: AtomicUsize,
+    pub context: usize,  // Store as usize for thread safety (Send + Sync)
+    pub num_levels: usize,
+    pub scale: f32,
+    pub width: vx_uint32,
+    pub height: vx_uint32,
+    pub format: vx_df_image,
+    pub levels: Vec<usize>, // Store as usize for thread safety (Send + Sync)
 }
 
 /// Remap data
@@ -496,6 +501,135 @@ fn convert_graph_state_to_vx(state: VxGraphState) -> vx_enum {
     }
 }
 
+/// Check if a reference is an image
+fn is_image_reference(ref_id: u64) -> bool {
+    if let Ok(types) = REFERENCE_TYPES.lock() {
+        if let Some(ref_type) = types.get(&(ref_id as usize)) {
+            return *ref_type == VX_TYPE_IMAGE;
+        }
+    }
+    // Also check if it looks like an image pointer
+    if let Ok(images) = IMAGES.lock() {
+        if images.contains(&(ref_id as usize)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Virtual image info - tracks virtual image state
+#[derive(Debug, Clone)]
+pub struct VirtualImageInfo {
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,  // vx_df_image
+    pub is_virtual: bool,
+    pub backing_image: Option<usize>, // Address of backing image if allocated
+}
+
+/// Global registry of virtual images
+pub static VIRTUAL_IMAGES: Lazy<Mutex<HashMap<usize, VirtualImageInfo>>> = 
+    Lazy::new(|| {
+        Mutex::new(HashMap::new())
+    });
+
+/// Check if an image is virtual
+fn is_virtual_image(image_id: u64) -> bool {
+    if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+        registry.get(&(image_id as usize))
+            .map(|info| info.is_virtual)
+            .unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Infer dimensions for a virtual image based on connected nodes
+fn infer_virtual_image_dimensions(
+    image_id: u64,
+    current_node_id: u64,
+    node_params: &[(u64, Vec<Option<u64>>)],
+    param_to_producer: &std::collections::HashMap<u64, u64>,
+) -> Option<(u32, u32, vx_df_image)> {
+    // First, check if the virtual image already has explicit dimensions
+    if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+        if let Some(info) = registry.get(&(image_id as usize)) {
+            if info.width > 0 && info.height > 0 && info.format != 0 {
+                return Some((info.width, info.height, info.format as vx_df_image));
+            }
+        }
+    }
+    
+    // Find which node produces this image
+    let producer_node = if let Some(producer) = param_to_producer.get(&image_id) {
+        *producer
+    } else {
+        current_node_id
+    };
+    
+    // Find the producer node's parameters
+    if let Some((_, producer_params)) = node_params.iter().find(|(id, _)| *id == producer_node) {
+        // The input to the producer node should determine the dimensions
+        if !producer_params.is_empty() {
+            if let Some(Some(input_ref)) = producer_params.get(0) {
+                // Get dimensions from the input image
+                unsafe {
+                    let img = &*(*input_ref as *const VxCImage);
+                    // Try to get format from virtual image info first, otherwise from input
+                    let format = if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+                        if let Some(info) = registry.get(&(image_id as usize)) {
+                            if info.format != 0 {
+                                info.format
+                            } else {
+                                img.format
+                            }
+                        } else {
+                            img.format
+                        }
+                    } else {
+                        img.format
+                    };
+                    return Some((img.width, img.height, format as vx_df_image));
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Allocate backing storage for a virtual image
+fn allocate_virtual_image_storage(
+    image_id: u64,
+    width: u32,
+    height: u32,
+    format: vx_df_image,
+) -> Result<(), ()> {
+    unsafe {
+        let img = &mut *(image_id as *mut VxCImage);
+        
+        // Update dimensions
+        img.width = width;
+        img.height = height;
+        img.format = format;
+        
+        // Calculate size and allocate data
+        let size = VxCImage::calculate_size(width, height, format);
+        if size == 0 {
+            return Err(());
+        }
+        
+        // Allocate backing storage
+        let new_data = vec![0u8; size];
+        if let Ok(mut data) = img.data.write() {
+            *data = new_data;
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
 /// Verify graph - validates graph structure
 #[no_mangle]
 pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
@@ -509,17 +643,125 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
         if let Some(g) = graphs.get(&graph_id) {
             let nodes = g.nodes.read().unwrap();
             
-            // Check all nodes have required parameters
+            // Collect all parameter references to analyze connections
+            let mut node_params: Vec<(u64, Vec<Option<u64>>)> = Vec::new();
             for node_id in nodes.iter() {
-                // Check parameter 0 (required) is set
                 if let Ok(nodes_data) = crate::c_api::NODES.lock() {
                     if let Some(node_data) = nodes_data.get(node_id) {
                         if let Ok(params) = node_data.parameters.lock() {
-                            // Check if parameter 0 is set (required input)
-                            if params.len() > 0 {
-                                if params[0].is_none() {
-                                    return VX_ERROR_INVALID_PARAMETERS;
+                            let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
+                            node_params.push((*node_id, param_refs));
+                        }
+                    }
+                }
+            }
+            
+            // Check all nodes have required parameters and validate connections
+            for (node_id, params) in &node_params {
+                // Check if parameter 0 (required) is set
+                if params.len() > 0 {
+                    if params[0].is_none() {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                }
+            }
+            
+            // Build connection graph to detect cycles and validate structure
+            let mut param_to_producer: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+            let mut param_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+            
+            for (node_id, params) in &node_params {
+                for (idx, param_opt) in params.iter().enumerate() {
+                    if let Some(param_ref) = param_opt {
+                        // Check if this is an image parameter
+                        if is_image_reference(*param_ref) {
+                            // First param is typically input, others are outputs
+                            // For most kernels: param 0 = input(s), last params = output(s)
+                            if idx == 0 {
+                                // This is an input - record that this node consumes this image
+                                param_to_consumers.entry(*param_ref)
+                                    .or_insert_with(Vec::new)
+                                    .push(*node_id);
+                            } else {
+                                // This is an output - record that this node produces this image
+                                // Check if another node already produces this image (conflict)
+                                if let Some(existing) = param_to_producer.get(param_ref) {
+                                    if *existing != *node_id {
+                                        // Two nodes produce the same output - error!
+                                        return VX_ERROR_INVALID_GRAPH;
+                                    }
                                 }
+                                param_to_producer.insert(*param_ref, *node_id);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Detect cycles using DFS
+            fn has_cycle(
+                node_id: u64,
+                node_params: &[(u64, Vec<Option<u64>>)],
+                param_to_producer: &std::collections::HashMap<u64, u64>,
+                visited: &mut std::collections::HashSet<u64>,
+                rec_stack: &mut std::collections::HashSet<u64>,
+            ) -> bool {
+                if rec_stack.contains(&node_id) {
+                    return true; // Cycle detected
+                }
+                if visited.contains(&node_id) {
+                    return false;
+                }
+                
+                visited.insert(node_id);
+                rec_stack.insert(node_id);
+                
+                // Find this node's params
+                if let Some((_, params)) = node_params.iter().find(|(id, _)| *id == node_id) {
+                    for param_opt in params.iter() {
+                        if let Some(param_ref) = param_opt {
+                            // If this param is produced by another node, follow that edge
+                            if let Some(producer) = param_to_producer.get(param_ref) {
+                                if has_cycle(*producer, node_params, param_to_producer, visited, rec_stack) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                rec_stack.remove(&node_id);
+                false
+            }
+            
+            let mut visited = std::collections::HashSet::new();
+            let mut rec_stack = std::collections::HashSet::new();
+            
+            for (node_id, _) in &node_params {
+                if !visited.contains(node_id) {
+                    if has_cycle(*node_id, &node_params, &param_to_producer, &mut visited, &mut rec_stack) {
+                        return VX_ERROR_INVALID_GRAPH;
+                    }
+                }
+            }
+            
+            // Allocate backing storage for virtual images
+            for (node_id, params) in &node_params {
+                for param_opt in params.iter() {
+                    if let Some(param_ref) = param_opt {
+                        if is_image_reference(*param_ref) && is_virtual_image(*param_ref) {
+                            // Virtual image - determine dimensions from connected nodes
+                            let (width, height, format) = if let Some(dim) = 
+                                infer_virtual_image_dimensions(*param_ref, *node_id, &node_params, &param_to_producer) {
+                                dim
+                            } else {
+                                // Cannot determine dimensions
+                                return VX_ERROR_INVALID_GRAPH;
+                            };
+                            
+                            // Allocate backing storage
+                            if let Err(_) = allocate_virtual_image_storage(*param_ref, width, height, format) {
+                                return VX_ERROR_NO_MEMORY;
                             }
                         }
                     }
@@ -3429,18 +3671,8 @@ pub const VX_DF_IMAGE_YUYV: vx_enum = 0x56595559i32;  // 'YUYV'
 // Per OpenVX spec, it takes (image, channel) - context is extracted from image
 // It is re-exported from openvx-image crate and should not be declared here
 
-#[no_mangle]
-pub extern "C" fn vxQueryPyramid(
-    pyr: vx_pyramid,
-    attribute: i32,
-    ptr: *mut c_void,
-    size: usize,
-) -> i32 {
-    if pyr.is_null() || ptr.is_null() {
-        return -2;
-    }
-    -30
-}
+// Note: vxCreatePyramid, vxReleasePyramid, vxGetPyramidLevel, and vxQueryPyramid
+// are implemented in the openvx-image crate and should not be redeclared here
 
 #[no_mangle]
 pub extern "C" fn vxCopyPyramid(

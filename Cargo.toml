@@ -1,11 +1,17 @@
 [workspace]
-members = ["openvx-core", "openvx-image", "openvx-buffer", "openvx-vision", "openvx-ffi"]
+members = [
+    "openvx-core",
+    "openvx-image",
+    "openvx-buffer",
+    "openvx-vision",
+    "openvx-ffi",
+]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["OpenVX Rust Implementation"]
+authors = ["Your Name <you@example.com>"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
@@ -14,3 +20,4 @@ parking_lot = "0.12"
 thiserror = "1.0"
 log = "0.4"
 once_cell = "1.19"
+libc = "0.2"
