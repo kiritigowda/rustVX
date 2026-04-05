@@ -644,15 +644,12 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
             // Unregister from unified registry
             unregister_image(addr);
 
-            // Decrement reference count instead of removing
-            if let Ok(counts) = REFERENCE_COUNTS.lock() {
-                if let Some(count) = counts.get(&addr) {
-                    let current = count.load(std::sync::atomic::Ordering::SeqCst);
-                    if current > 1 {
-                        count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                }
+            // For now, remove from counts - the decrement approach needs more work
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
             }
+            
+            // Don't remove from types - keep for reference queries
 
             // Clean up virtual image info if this was a virtual image
             unregister_virtual_image(addr);
