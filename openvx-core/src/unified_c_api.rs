@@ -267,10 +267,10 @@ impl VxCImage {
 
 /// Array data
 pub struct VxCArray {
-    item_type: vx_enum,
-    capacity: usize,
-    items: RwLock<Vec<u8>>,
-    ref_count: AtomicUsize,
+    pub item_type: vx_enum,
+    pub capacity: usize,
+    pub items: RwLock<Vec<u8>>,
+    pub ref_count: AtomicUsize,
 }
 
 /// Matrix data
@@ -6096,10 +6096,20 @@ pub extern "C" fn vxuOpticalFlowPyrLK(
     use_initial_estimate: vx_bool,
     window_dimension: vx_size,
 ) -> vx_status {
-    if context.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    VX_SUCCESS
+    use crate::vxu_impl::vxu_optical_flow_pyr_lk_impl;
+    vxu_optical_flow_pyr_lk_impl(
+        context,
+        old_images,
+        new_images,
+        old_points,
+        new_points_estimates,
+        new_points,
+        termination,
+        epsilon,
+        num_iterations,
+        use_initial_estimate,
+        window_dimension,
+    )
 }
 
 // ============================================================================
