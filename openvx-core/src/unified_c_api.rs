@@ -1746,8 +1746,19 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         // Harris Corners
         "org.khronos.openvx.harris_corners" => {
             if params.len() >= 7 {
+                // Check if params 0 and 6 exist and are not null
+                if params[0].is_null() {
+                    eprintln!("DEBUG: harris_corners - input (param 0) is null");
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                if params[6].is_null() {
+                    eprintln!("DEBUG: harris_corners - corners (param 6) is null");
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                
                 let input = params[0] as vx_image;
                 let corners = params[6] as vx_array;
+                
                 // Validate required parameters
                 if input.is_null() {
                     eprintln!("DEBUG: harris_corners - input is null");
