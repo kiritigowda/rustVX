@@ -49,6 +49,14 @@ pub struct VxCContext {
     pub ref_count: AtomicUsize,
     /// Immediate border mode for VXU operations (vx_border_t)
     pub border_mode: RwLock<vx_border_t>,
+    /// Log callback function
+    pub log_callback: Mutex<Option<vx_log_callback_t>>,
+    /// Flag indicating if callback is reentrant
+    pub log_reentrant: AtomicBool,
+    /// Flag indicating if logging is enabled
+    pub logging_enabled: AtomicBool,
+    /// Flag indicating if performance measurement is enabled
+    pub performance_enabled: AtomicBool,
 }
 
 /// Border mode structure (vx_border_t from OpenVX spec)
