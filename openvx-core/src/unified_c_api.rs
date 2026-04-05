@@ -432,6 +432,8 @@ pub struct VxCNode {
 
 /// Parameter data
 pub struct VxCParameter {
+    pub id: u64,
+    pub node_id: u64, // 0 for graph parameters
     pub index: u32,
     pub direction: vx_enum,
     pub data_type: vx_enum,
@@ -448,6 +450,21 @@ static NODES: Lazy<Mutex<HashMap<u64, Arc<VxCNode>>>> = Lazy::new(|| {
 pub static PARAMETERS: Lazy<Mutex<HashMap<u64, Arc<VxCParameter>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
+
+// Node parameter bindings: (node_id, param_index) -> (graph_param_index or direct_value)
+// This maps node parameters to either graph parameters or direct references
+pub static NODE_PARAMETER_BINDINGS: Lazy<Mutex<HashMap<(u64, usize), NodeParamBinding>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+/// Node parameter binding - either bound to a graph parameter or a direct value
+#[derive(Clone, Copy, Debug)]
+pub enum NodeParamBinding {
+    /// Bound to a graph parameter by index
+    GraphParam(usize),
+    /// Direct value reference
+    DirectValue(u64),
+}
 
 // Global graph storage
 use once_cell::sync::Lazy;
@@ -2597,6 +2614,8 @@ pub fn create_or_update_parameter(
             drop(params);
             if let Ok(mut params_mut) = PARAMETERS.lock() {
                 let param = Arc::new(VxCParameter {
+                    id: param_id,
+                    node_id: 0, // Created via vxSetParameterByIndex, no associated node
                     index,
                     direction: VX_INPUT,
                     data_type: 0,
@@ -7289,6 +7308,8 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
         // Create a new parameter entry
         if let Ok(mut params) = PARAMETERS.lock() {
             let param = Arc::new(VxCParameter {
+                id: param_id,
+                node_id: 0, // Graph parameters have no associated node
                 index,
                 direction: VX_INPUT,
                 data_type: 0,
@@ -7596,8 +7617,9 @@ pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) 
     let param_data = Arc::new(VxCParameter {
         id: param_id,
         node_id: 0, // Graph parameters have no associated node
-        index: index as i32,
+        index: index as u32,
         direction: 1, // Output
+        data_type: 0,
         value: Mutex::new(None),
         ref_count: AtomicUsize::new(1),
     });

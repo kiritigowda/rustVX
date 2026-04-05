@@ -1363,6 +1363,8 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
     // Also register in unified_c_api PARAMETERS for vxQueryParameter to find
     if let Ok(mut unified_params) = crate::unified_c_api::PARAMETERS.lock() {
         let unified_param = Arc::new(crate::unified_c_api::VxCParameter {
+            id: id,
+            node_id: 0, // Parameter created at node level
             index,
             direction: 0, // VX_INPUT
             data_type: 0,
