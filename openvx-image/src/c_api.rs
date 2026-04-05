@@ -20,6 +20,7 @@ use openvx_core::c_api::{
     VX_DF_IMAGE_U32, VX_DF_IMAGE_S32, VX_DF_IMAGE_VIRT,
     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
     VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE, VX_IMAGE_SPACE, VX_IMAGE_RANGE,
+    VX_IMAGE_IS_VIRTUAL,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST,
 };
 use openvx_core::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES, VX_TYPE_IMAGE};
@@ -65,6 +66,8 @@ pub extern "C" fn vxCreateImage(
         data: Arc::new(RwLock::new(data)),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
         parent: None,
+        is_external_memory: false,
+        external_ptrs: Vec::new(),
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -94,6 +97,72 @@ pub extern "C" fn vxCreateImage(
     image_ptr
 }
 
+/// Virtual Image Registry
+/// Maps image address to virtual image info
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// Virtual image info - tracks virtual image state
+#[derive(Debug, Clone)]
+pub struct VirtualImageInfo {
+    pub width: vx_uint32,
+    pub height: vx_uint32,
+    pub format: vx_df_image,
+    pub is_virtual: bool,
+    pub backing_image: Option<usize>, // Address of backing image if allocated
+}
+
+/// Global registry of virtual images
+static VIRTUAL_IMAGES: std::sync::LazyLock<Mutex<HashMap<usize, VirtualImageInfo>>> = 
+    std::sync::LazyLock::new(|| {
+        Mutex::new(HashMap::new())
+    });
+
+/// Register a virtual image in the registry
+fn register_virtual_image(addr: usize, info: VirtualImageInfo) {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        registry.insert(addr, info);
+    }
+}
+
+/// Unregister a virtual image from the registry
+fn unregister_virtual_image(addr: usize) -> Option<VirtualImageInfo> {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        registry.remove(&addr)
+    } else {
+        None
+    }
+}
+
+/// Get virtual image info
+pub fn get_virtual_image_info(addr: usize) -> Option<VirtualImageInfo> {
+    if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+        registry.get(&addr).cloned()
+    } else {
+        None
+    }
+}
+
+/// Update virtual image with backing image
+pub fn allocate_virtual_image_backing(addr: usize, backing_image: vx_image) -> bool {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        if let Some(info) = registry.get_mut(&addr) {
+            info.backing_image = Some(backing_image as usize);
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if an image is virtual
+pub fn is_virtual_image(addr: usize) -> bool {
+    if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+        registry.get(&addr).map(|info| info.is_virtual).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
 /// Create a virtual image (for graph intermediate results)
 #[no_mangle]
 pub extern "C" fn vxCreateVirtualImage(
@@ -107,20 +176,42 @@ pub extern "C" fn vxCreateVirtualImage(
     }
     // Note: Virtual images CAN have width/height of 0 - they get dimensions
     // from connected nodes during graph verification
+    // VX_DF_IMAGE_VIRT is valid for virtual images
 
     // Virtual images don't allocate memory immediately
+    // For VX_DF_IMAGE_VIRT format, we store 0 dimensions initially
+    let (store_width, store_height, store_format) = if color == VX_DF_IMAGE_VIRT {
+        (0, 0, VX_DF_IMAGE_VIRT)
+    } else {
+        (width, height, color)
+    };
+
     let image = Box::new(VxCImage {
-        width,
-        height,
-        format: color,
+        width: store_width,
+        height: store_height,
+        format: store_format,
         is_virtual: true,
         context: std::ptr::null_mut(), // Virtual images use graph context
         data: Arc::new(RwLock::new(Vec::new())),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
         parent: None,
+        is_external_memory: false,
+        external_ptrs: Vec::new(),
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
+
+    // Register virtual image info
+    register_virtual_image(
+        image_ptr as usize,
+        VirtualImageInfo {
+            width: store_width,
+            height: store_height,
+            format: store_format,
+            is_virtual: true,
+            backing_image: None,
+        }
+    );
 
     // Register image address in unified registry for type queries (vxQueryReference)
     unsafe {
@@ -129,6 +220,20 @@ pub extern "C" fn vxCreateVirtualImage(
     
     // Register as valid image for double-free protection
     register_valid_image(image_ptr as usize);
+
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(image_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+    }
+
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(image_ptr as usize, VX_TYPE_IMAGE);
+        }
+    }
 
     image_ptr
 }
@@ -160,56 +265,83 @@ pub extern "C" fn vxCreateImageFromHandle(
             return std::ptr::null_mut();
         }
 
-        // Calculate size from addressing with overflow protection
-        // and sanity limits to prevent massive allocations
-        const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB limit
-        const MAX_DIMENSION: u32 = 65536; // Max reasonable dimension
-        
         // Validate dimensions are reasonable
+        const MAX_DIMENSION: u32 = 65536; // Max reasonable dimension
         if width > MAX_DIMENSION || height > MAX_DIMENSION {
             return std::ptr::null_mut();
         }
-        
-        // CRITICAL FIX: Check stride_y is positive BEFORE casting to usize
-        // A negative stride_y cast to usize would become a huge number
-        if addr.stride_y <= 0 {
-            return std::ptr::null_mut();
-        }
-        
-        let stride = addr.stride_y as usize;
-        
-        // Validate stride is reasonable
-        let expected_stride = width as usize * VxCImage::bytes_per_pixel(color);
-        if stride > expected_stride * 100 {
-            return std::ptr::null_mut(); // Unreasonable stride
-        }
-        
-        // Also check stride isn't unreasonably large on its own
-        if stride > MAX_ALLOCATION_SIZE / height as usize {
+
+        // For planar formats, validate num_planes matches expected
+        let expected_planes = VxCImage::num_planes(color) as vx_uint32;
+        if VxCImage::is_planar_format(color) && num_planes != expected_planes {
             return std::ptr::null_mut();
         }
 
-        // Calculate total size with checked multiplication
-        let total_size = stride
-            .checked_mul(height as usize)
-            .unwrap_or(0)
-            .min(MAX_ALLOCATION_SIZE);
-
+        // Calculate total size for the image
+        let total_size = VxCImage::calculate_size(width, height, color);
         if total_size == 0 {
             return std::ptr::null_mut();
         }
 
-        // Allocate data buffer and copy from user handles
+        // Allocate data buffer
         let mut data = vec![0u8; total_size];
 
-        // Copy from first plane pointer (user handles)
-        let user_ptr = *ptrs;
-        if !user_ptr.is_null() {
-            std::ptr::copy_nonoverlapping(
-                user_ptr as *const u8,
-                data.as_mut_ptr(),
-                total_size
-            );
+        // Copy data from each plane
+        let is_planar = VxCImage::is_planar_format(color);
+        
+        if is_planar {
+            // For planar formats, copy each plane separately
+            let num_planes_usize = num_planes as usize;
+            for plane_idx in 0..num_planes_usize {
+                let plane_ptr_ptr = ptrs.add(plane_idx);
+                let plane_ptr = *plane_ptr_ptr;
+                
+                if plane_ptr.is_null() {
+                    return std::ptr::null_mut();
+                }
+                
+                let plane_offset = VxCImage::plane_offset(width, height, color, plane_idx);
+                let plane_size = VxCImage::plane_size(width, height, color, plane_idx);
+                
+                if plane_size > 0 && plane_offset + plane_size <= total_size {
+                    std::ptr::copy_nonoverlapping(
+                        plane_ptr as *const u8,
+                        data.as_mut_ptr().add(plane_offset),
+                        plane_size
+                    );
+                }
+            }
+        } else {
+            // For packed/interleaved formats, copy from first plane
+            let user_ptr = *ptrs;
+            if !user_ptr.is_null() {
+                // CRITICAL FIX: Check stride_y is positive BEFORE using
+                if addr.stride_y <= 0 {
+                    return std::ptr::null_mut();
+                }
+                
+                let stride = addr.stride_y as usize;
+                let expected_stride = width as usize * VxCImage::bytes_per_pixel(color);
+                
+                // Validate stride is reasonable
+                if stride > expected_stride * 100 {
+                    return std::ptr::null_mut();
+                }
+                
+                // Copy row by row to handle stride
+                let bpp = VxCImage::bytes_per_pixel(color);
+                let row_size = width as usize * bpp;
+                
+                for y in 0..height as usize {
+                    let src_offset = y * stride;
+                    let dst_offset = y * row_size;
+                    std::ptr::copy_nonoverlapping(
+                        (user_ptr as *const u8).add(src_offset),
+                        data.as_mut_ptr().add(dst_offset),
+                        row_size
+                    );
+                }
+            }
         }
 
         let image = Box::new(VxCImage {
@@ -221,6 +353,8 @@ pub extern "C" fn vxCreateImageFromHandle(
             data: Arc::new(RwLock::new(data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: None,
+            is_external_memory: false,
+            external_ptrs: Vec::new(),
         });
 
         let image_ptr = Box::into_raw(image) as vx_image;
@@ -369,6 +503,8 @@ pub extern "C" fn vxCreateUniformImage(
         data: Arc::new(RwLock::new(data)),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
         parent: None,
+        is_external_memory: false,
+        external_ptrs: Vec::new(),
     });
 
     // Convert to raw pointer
@@ -478,6 +614,8 @@ pub extern "C" fn vxCreateImageFromChannel(
             data: Arc::clone(&source_img.data),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: Some(parent_ptr),
+            is_external_memory: false,
+            external_ptrs: Vec::new(),
         });
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
@@ -494,25 +632,25 @@ pub extern "C" fn vxCreateImageFromChannel(
     }
 }
 
-/// Registry to track valid (non-freed) images
-use std::sync::Mutex;
 use std::collections::HashSet;
 
-static VALID_IMAGES: std::sync::LazyLock<Mutex<HashSet<usize>>> = std::sync::LazyLock::new(|| {
-    Mutex::new(HashSet::new())
+/// Registry to track valid (non-freed) images
+
+static VALID_IMAGES: std::sync::LazyLock<std::sync::Mutex<HashSet<usize>>> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(HashSet::new())
 });
 
 /// Register an image as valid
 fn register_valid_image(addr: usize) {
     if let Ok(mut images) = VALID_IMAGES.lock() {
-        let _: bool = images.insert(addr);
+        images.insert(addr);
     }
 }
 
 /// Unregister an image (mark as freed)
 fn unregister_valid_image(addr: usize) -> bool {
     if let Ok(mut images) = VALID_IMAGES.lock() {
-        let _: bool = images.remove(&addr);
+        images.remove(&addr);
         true
     } else {
         false
@@ -547,6 +685,9 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
+
+            // Clean up virtual image info if this was a virtual image
+            unregister_virtual_image(addr);
 
             // Free the image
             let _ = Box::from_raw(img as *mut VxCImage);
@@ -639,6 +780,15 @@ pub extern "C" fn vxQueryImage(
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
+            }
+            VX_IMAGE_IS_VIRTUAL => {
+                if size != std::mem::size_of::<vx_enum>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                // Return vx_true_e (1) if virtual, vx_false_e (0) if not
+                let is_virt = if img.is_virtual { 1 } else { 0 };
+                *(ptr as *mut vx_enum) = is_virt;
+                VX_SUCCESS
             }
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }
@@ -1194,6 +1344,8 @@ pub extern "C" fn vxCreateImageFromROI(
             data: Arc::new(RwLock::new(roi_data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: Some(img as usize), // Store parent reference
+            is_external_memory: false,
+            external_ptrs: Vec::new(),
         });
 
         let image_ptr = Box::into_raw(roi_image) as vx_image;

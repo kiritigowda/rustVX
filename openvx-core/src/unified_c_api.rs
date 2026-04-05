@@ -83,6 +83,12 @@ pub struct VxCImage {
     /// Optional parent image reference for sub-images (channel, ROI)
     /// Stores the parent image pointer to keep parent alive while sub-image exists
     pub parent: Option<usize>, // Store vx_image pointer as usize for Send + Sync
+    /// Flag indicating if the image memory is externally owned (from handle)
+    /// When true, vxReleaseImage should NOT free the data
+    pub is_external_memory: bool,
+    /// External memory pointers for from-handle images
+    /// Stores the raw pointers passed by the caller for planar formats
+    pub external_ptrs: Vec<*mut u8>,
 }
 
 impl VxCImage {

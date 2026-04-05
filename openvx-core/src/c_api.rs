@@ -1769,6 +1769,7 @@ pub const VX_IMAGE_RANGE: vx_enum = 0x80F05;
 pub const VX_IMAGE_MEMORY_TYPE: vx_enum = 0x80F07;
 pub const VX_IMAGE_IS_UNIFORM: vx_enum = 0x80F08;
 pub const VX_IMAGE_UNIFORM_VALUE: vx_enum = 0x80F09;
+pub const VX_IMAGE_IS_VIRTUAL: vx_enum = 0x80F0A;
 
 // ============================================================================
 // Array Attributes
