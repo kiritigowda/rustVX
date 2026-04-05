@@ -2942,6 +2942,13 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
                 drop(nodes);
             }
         }
+        // Try graph
+        if let Ok(graphs) = crate::c_api::GRAPHS.lock() {
+            if let Some(g) = graphs.get(&addr_u64) {
+                g.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                drop(graphs);
+            }
+        }
         
         // Clean up unified registry if count reached zero
         if ref_count_was == 0 {

@@ -141,6 +141,7 @@ pub struct GraphData {
     pub id: u64,
     pub context_id: u32,
     pub nodes: Mutex<Vec<u64>>, // Store node IDs instead of pointers
+    pub ref_count: std::sync::atomic::AtomicUsize,
 }
 
 /// Internal node data (stored in Arc)
@@ -558,6 +559,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         id,
         context_id,
         nodes: Mutex::new(Vec::new()),
+        ref_count: std::sync::atomic::AtomicUsize::new(1),
     });
 
     if let Ok(mut graphs) = GRAPHS.lock() {
@@ -599,69 +601,12 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = g as u64;
-        let addr = g as usize;
         
-        // Decrement reference count
-        let mut should_remove = false;
-        if let Ok(counts) = REFERENCE_COUNTS.lock() {
-            if let Some(count) = counts.get(&addr) {
-                let current = count.load(std::sync::atomic::Ordering::SeqCst);
-                if current > 1 {
-                    let new_count = current - 1;
-                    count.store(new_count, std::sync::atomic::Ordering::SeqCst);
-                    *graph = std::ptr::null_mut();
-                    return VX_SUCCESS;
-                } else {
-                    should_remove = true;
-                }
-            }
-        }
-        
-        if should_remove {
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
-            }
-            if let Ok(mut names) = REFERENCE_NAMES.lock() {
-                names.remove(&addr);
-            }
-        }
-        
-        // Get the list of nodes to release before removing the graph
-        let mut node_ids_to_release: Vec<u64> = Vec::new();
-        if let Ok(graphs) = GRAPHS.lock() {
-            if let Some(g) = graphs.get(&id) {
-                if let Ok(graph_nodes) = g.nodes.lock() {
-                    node_ids_to_release = graph_nodes.clone();
-                }
-            }
-        }
-        
-        // Release all nodes belonging to this graph
-        for node_id in node_ids_to_release {
-            // Check if node still exists in NODES registry
-            let should_release = if let Ok(nodes) = NODES.lock() {
-                nodes.contains_key(&node_id)
-            } else {
-                false
-            };
-            
-            if should_release {
-                let node_ptr = node_id as *mut VxNode;
-                let mut node_ptr_mut = node_ptr;
-                vxReleaseNode(&mut node_ptr_mut);
-            }
-        }
-        
+        // Just remove from GRAPHS - reference counting is handled by vxReleaseReference
         if let Ok(mut graphs) = GRAPHS.lock() {
             graphs.remove(&id);
         }
-        // Also remove from unified registry
-        if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
-            graphs_data.remove(&id);
-        }
+        
         *graph = std::ptr::null_mut();
     }
     VX_SUCCESS
