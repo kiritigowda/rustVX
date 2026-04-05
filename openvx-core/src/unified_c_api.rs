@@ -1335,6 +1335,12 @@ pub fn remove_parameter(param_id: u64) {
     if let Ok(mut types) = REFERENCE_TYPES.lock() {
         types.remove(&(param_id as usize));
     }
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.remove(&(param_id as usize));
+    }
+    if let Ok(mut names) = REFERENCE_NAMES.lock() {
+        names.remove(&(param_id as usize));
+    }
 }
 
 /// Helper function to create or update a parameter in the unified registry

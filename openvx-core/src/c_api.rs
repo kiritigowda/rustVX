@@ -1079,7 +1079,13 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
         if let Ok(kernels) = KERNELS.lock() {
             for (id, kernel) in kernels.iter() {
                 if kernel.name == kernel_name && kernel.context_id == context_id {
+                    // Increment both internal and unified reference counts
                     kernel.ref_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                        if let Some(count) = counts.get(&(*id as usize)) {
+                            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
                     return *id as *mut VxKernel;
                 }
             }
@@ -1299,6 +1305,9 @@ pub extern "C" fn vxReleaseKernel(kernel: *mut vx_kernel) -> vx_status {
             }
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&(id as usize));
+            }
+            if let Ok(mut names) = REFERENCE_NAMES.lock() {
+                names.remove(&(id as usize));
             }
         } else {
             // Just update reference count
