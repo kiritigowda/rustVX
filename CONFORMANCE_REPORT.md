@@ -1,21 +1,21 @@
 # rustVX OpenVX Conformance Report
 
 **Date:** April 4, 2026  
-**Commit:** 78a65fe  
-**Status:** 96% Baseline Conformance
+**Commit:** 1370733  
+**Status:** ✅ **100% Baseline Conformance**
 
 ---
 
 ## Summary
 
-Successfully achieved **96% OpenVX baseline conformance** for rustVX. The implementation now passes **24 of 25** required baseline tests from the Khronos OpenVX Conformance Test Suite (CTS).
+Successfully achieved **100% OpenVX baseline conformance** for rustVX. The implementation now passes **all 25** required baseline tests from the Khronos OpenVX Conformance Test Suite (CTS).
 
 ### Key Achievements
 
+- ✅ **100% Baseline Conformance** - All 25 tests passing
 - **300 functions exported** (6x increase from original ~50)
 - **CTS Link Errors: RESOLVED** - All critical missing functions implemented
-- **Baseline Tests: 24/25 passing (96%)**
-- **Vision API: Complete** - All graph operations, data objects, and kernels implemented
+- **Reference Management: FIXED** - Complete cleanup of all reference types
 
 ---
 
@@ -26,45 +26,85 @@ Successfully achieved **96% OpenVX baseline conformance** for rustVX. The implem
 | Test Category | Tests | Passed | Failed | Status |
 |---------------|-------|--------|--------|--------|
 | **GraphBase** | 14 | 14 | 0 | ✅ **PASS** |
-| **SmokeTestBase** | 7 | 6 | 1 | ⚠️ **96%** |
+| **SmokeTestBase** | 7 | 7 | 0 | ✅ **PASS** |
 | **Logging** | 1 | 1 | 0 | ✅ **PASS** |
 | **TargetBase** | 3 | 3 | 0 | ✅ **PASS** |
-| **TOTAL** | **25** | **24** | **1** | **96%** |
+| **TOTAL** | **25** | **25** | **0** | **100%** |
 
-### Detailed Test Results
+### All Tests Passing ✅
 
-**✅ PASSING Tests:**
-- GraphBase.AllocateUserKernelId
-- GraphBase.AllocateUserKernelLibraryId
-- GraphBase.RegisterUserStructWithName
-- GraphBase.GetUserStructNameByEnum
-- GraphBase.GetUserStructEnumByName
-- GraphBase.vxCreateGraph
-- GraphBase.vxIsGraphVerifiedBase
-- GraphBase.vxQueryGraph
-- GraphBase.vxReleaseGraph
-- GraphBase.vxQueryNodeBase
-- GraphBase.vxReleaseNodeBase
-- GraphBase.vxRemoveNodeBase
-- GraphBase.vxReplicateNodeBase
-- GraphBase.vxSetNodeAttributeBase
-- Logging.Cummulative
-- SmokeTestBase.vxLoadKernels
-- SmokeTestBase.vxUnloadKernels
-- SmokeTestBase.vxSetReferenceName
-- SmokeTestBase.vxGetStatus
-- SmokeTestBase.vxQueryReference
-- SmokeTestBase.vxRetainReferenceBase
-- TargetBase.vxCreateContext
-- TargetBase.vxReleaseContext
-- TargetBase.vxSetNodeTargetBase
-
-**❌ Failing Test:**
-- SmokeTestBase.vxReleaseReferenceBase - Dangling reference count (1 reference not properly cleaned up)
+- ✅ GraphBase.AllocateUserKernelId
+- ✅ GraphBase.AllocateUserKernelLibraryId
+- ✅ GraphBase.RegisterUserStructWithName
+- ✅ GraphBase.GetUserStructNameByEnum
+- ✅ GraphBase.GetUserStructEnumByName
+- ✅ GraphBase.vxCreateGraph
+- ✅ GraphBase.vxIsGraphVerifiedBase
+- ✅ GraphBase.vxQueryGraph
+- ✅ GraphBase.vxReleaseGraph
+- ✅ GraphBase.vxQueryNodeBase
+- ✅ GraphBase.vxReleaseNodeBase
+- ✅ GraphBase.vxRemoveNodeBase
+- ✅ GraphBase.vxReplicateNodeBase
+- ✅ GraphBase.vxSetNodeAttributeBase
+- ✅ Logging.Cummulative
+- ✅ SmokeTestBase.vxReleaseReferenceBase
+- ✅ SmokeTestBase.vxLoadKernels
+- ✅ SmokeTestBase.vxUnloadKernels
+- ✅ SmokeTestBase.vxSetReferenceName
+- ✅ SmokeTestBase.vxGetStatus
+- ✅ SmokeTestBase.vxQueryReference
+- ✅ SmokeTestBase.vxRetainReferenceBase
+- ✅ TargetBase.vxCreateContext
+- ✅ TargetBase.vxReleaseContext
+- ✅ TargetBase.vxSetNodeTargetBase
 
 ---
 
-## Implementation Changes
+## Critical Fixes Applied
+
+### Fix 1: vxGetKernelByName Reference Counting
+
+**Problem:** `vxGetKernelByName` was only incrementing the internal kernel ref_count, not the unified REFERENCE_COUNTS registry.
+
+**Fix:** Added unified registry increment:
+```rust
+kernel.ref_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+    if let Some(count) = counts.get(&(*id as usize)) {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+```
+
+### Fix 2: vxReleaseKernel Cleanup
+
+**Problem:** `vxReleaseKernel` wasn't cleaning up REFERENCE_NAMES when releasing a kernel.
+
+**Fix:** Added REFERENCE_NAMES cleanup:
+```rust
+if let Ok(mut names) = REFERENCE_NAMES.lock() {
+    names.remove(&(id as usize));
+}
+```
+
+### Fix 3: remove_parameter Cleanup
+
+**Problem:** `remove_parameter` helper wasn't cleaning up REFERENCE_COUNTS and REFERENCE_NAMES.
+
+**Fix:** Added complete cleanup:
+```rust
+if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+    counts.remove(&(param_id as usize));
+}
+if let Ok(mut names) = REFERENCE_NAMES.lock() {
+    names.remove(&(param_id as usize));
+}
+```
+
+---
+
+## Implementation Overview
 
 ### Phase 1: Reference & Context Management
 
@@ -75,15 +115,7 @@ Successfully achieved **96% OpenVX baseline conformance** for rustVX. The implem
 **Changes:**
 1. Fixed `vxRetainReference()` return type: `vx_uint32` → `vx_status`
 2. Fixed `vxReleaseReference()` return type: `vx_uint32` → `vx_status`
-3. Implemented `vxQueryContext()` with all context attributes:
-   - VX_CONTEXT_VENDOR_ID
-   - VX_CONTEXT_VERSION
-   - VX_CONTEXT_UNIQUE_KERNELS
-   - VX_CONTEXT_MODULES
-   - VX_CONTEXT_REFERENCES
-   - VX_CONTEXT_IMPLEMENTATION
-   - VX_CONTEXT_EXTENSIONS_SIZE
-   - VX_CONTEXT_EXTENSIONS
+3. Implemented `vxQueryContext()` with all context attributes
 4. Implemented `vxSetContextAttribute()`
 
 ### Phase 2: Graph Operations
@@ -130,7 +162,7 @@ Successfully achieved **96% OpenVX baseline conformance** for rustVX. The implem
 | Reference | vxRetainReference, vxReleaseReference, vxQueryReference, vxSetReferenceName |
 | Graph | vxCreateGraph, vxReleaseGraph, vxQueryGraph, vxVerifyGraph, vxProcessGraph, vxScheduleGraph, vxWaitGraph, vxIsGraphVerified |
 | Node | vxCreateGenericNode, vxQueryNode, vxReleaseNode, vxRemoveNode, vxSetNodeAttribute, vxAssignNodeCallback, vxReplicateNode |
-| Kernel | vxLoadKernels, vxUnloadKernels, vxGetKernelByName, vxGetKernelByEnum, vxQueryKernel, vxGetKernelParameterByIndex |
+| Kernel | vxLoadKernels, vxUnloadKernels, vxGetKernelByName, vxGetKernelByEnum, vxQueryKernel, vxGetKernelParameterByIndex, vxReleaseKernel |
 | User Kernel | vxAllocateUserKernelId, vxAllocateUserKernelLibraryId, vxAddUserKernel |
 | User Struct | vxRegisterUserStructWithName, vxGetUserStructNameByEnum, vxGetUserStructEnumByName |
 | Image | vxCreateImage, vxCreateVirtualImage, vxCreateImageFromHandle, vxReleaseImage, vxQueryImage, vxMapImagePatch, vxUnmapImagePatch, vxSetImageAttribute, vxFormatImagePatchAddress2d |
@@ -146,20 +178,6 @@ Successfully achieved **96% OpenVX baseline conformance** for rustVX. The implem
 | Logging | vxRegisterLogCallback, vxAddLogEntry, vxDirective |
 
 **Total: 300 functions exported**
-
----
-
-## Known Issues
-
-### 1. SmokeTestBase.vxReleaseReferenceBase (Non-Critical)
-
-**Issue:** Dangling reference count of 1 after test completes
-
-**Root Cause:** Reference cleanup edge case where one reference isn't being properly decremented during context cleanup
-
-**Impact:** Low - This is a cleanup edge case that doesn't affect runtime functionality or other tests
-
-**Recommended Fix:** Review vxReleaseContext and vxReleaseGraph to ensure all references are properly decremented when objects are destroyed
 
 ---
 
@@ -200,9 +218,6 @@ LD_LIBRARY_PATH=/path/to/rustvx/target/release ./bin/vx_test_conformance
 
 ## Future Work
 
-### To Achieve 100% Baseline Conformance:
-1. Fix dangling reference cleanup in vxReleaseContext/vxReleaseGraph
-
 ### To Achieve Vision Conformance:
 1. Implement actual vision kernel algorithms (currently stubs):
    - Gaussian filtering
@@ -222,7 +237,7 @@ LD_LIBRARY_PATH=/path/to/rustvx/target/release ./bin/vx_test_conformance
 
 ## Conclusion
 
-rustVX has achieved **96% OpenVX baseline conformance**, with all critical functionality implemented and working. The single failing test is a minor cleanup edge case that does not affect runtime behavior. The implementation is ready for production use and provides a solid foundation for full OpenVX Vision conformance.
+rustVX has achieved **100% OpenVX baseline conformance**. All 25 required baseline tests pass successfully. The implementation provides a solid, production-ready foundation for OpenVX vision processing applications.
 
 ---
 
@@ -235,4 +250,4 @@ rustVX has achieved **96% OpenVX baseline conformance**, with all critical funct
 ---
 
 *Report generated: April 4, 2026*  
-*rustVX Commit: 78a65fe*
+*rustVX Commit: 1370733*
