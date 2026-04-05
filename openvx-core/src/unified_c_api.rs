@@ -13,7 +13,7 @@ use crate::c_api_data::vx_pixel_value_t;
 // Include the image C API functions directly
 // These are duplicated here to ensure proper symbol export
 use std::ffi::{CStr, CString, c_void};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 
@@ -1289,6 +1289,10 @@ pub fn register_context(id: u64, ptr: *mut VxContext) {
                 mode: VX_BORDER_UNDEFINED,
                 constant_value: vx_pixel_value_t { U32: 0 },
             }),
+            log_callback: Mutex::new(None),
+            log_reentrant: AtomicBool::new(false),
+            logging_enabled: AtomicBool::new(false),
+            performance_enabled: AtomicBool::new(false),
         }));
     }
 }
@@ -6238,28 +6242,9 @@ pub extern "C" fn vxuHalfScaleGaussian(context: vx_context, input: vx_image, out
     VX_SUCCESS
 }
 
-/// Map distribution
-#[no_mangle]
-pub extern "C" fn vxMapDistribution(distribution: vx_distribution, map_id: *mut vx_map_id, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, copy_enable: vx_bool) -> vx_status {
-    if distribution.is_null() || ptr.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    unsafe {
-        *ptr = distribution as *mut c_void;
-    }
-    VX_SUCCESS
-}
-
-/// Unmap distribution
-#[no_mangle]
-pub extern "C" fn vxUnmapDistribution(distribution: vx_distribution, map_id: vx_map_id) -> vx_status {
-    if distribution.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    VX_SUCCESS
-}
-
-// Final missing functions for CTS
+// ============================================================================
+// 12. Final CTS Functions
+// ============================================================================
 
 /// Convert depth immediate mode
 #[no_mangle]
