@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicUsize;
 // Import the unified CONTEXTS registry
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
 use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData};
-use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES};
+use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES, REFERENCE_NAMES};
 use crate::c_api_data::vx_pixel_value_t;
 
 // ============================================================================
@@ -603,6 +603,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         let addr = g as usize;
         
         // Decrement reference count
+        let mut should_remove = false;
         if let Ok(counts) = REFERENCE_COUNTS.lock() {
             if let Some(count) = counts.get(&addr) {
                 let current = count.load(std::sync::atomic::Ordering::SeqCst);
@@ -612,14 +613,20 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                     *graph = std::ptr::null_mut();
                     return VX_SUCCESS;
                 } else {
-                    drop(counts);
-                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                        counts.remove(&addr);
-                    }
-                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                        types.remove(&addr);
-                    }
+                    should_remove = true;
                 }
+            }
+        }
+        
+        if should_remove {
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            if let Ok(mut names) = REFERENCE_NAMES.lock() {
+                names.remove(&addr);
             }
         }
         

@@ -1504,7 +1504,7 @@ static TARGETS: Lazy<Mutex<HashMap<u64, Arc<VxCTarget>>>> = Lazy::new(|| {
 });
 
 // Reference name storage - use CString to ensure null-terminated strings with stable pointers
-static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, CString>>> = Lazy::new(|| {
+pub static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, CString>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
