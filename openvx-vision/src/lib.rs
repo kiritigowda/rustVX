@@ -117,7 +117,7 @@ pub fn register_all_kernels(context: &Context) -> VxResult<()> {
     // Object detection
     context.register_kernel(Box::new(object_detection::CannyEdgeDetectorKernel))?;
     context.register_kernel(Box::new(object_detection::HoughLinesPKernel))?;
-    context.register_kernel(Box::new(object_detection::ThresholdKernel))?;
+    context.register_kernel(Box::new(object_detection::ThresholdKernel::new()))?;
     
     Ok(())
 }
@@ -131,7 +131,7 @@ pub use statistics::{MinMaxLocKernel, MeanStdDevKernel, HistogramKernel, Equaliz
 pub use geometric::{ScaleImageKernel, WarpAffineKernel, WarpPerspectiveKernel};
 pub use optical_flow::OpticalFlowPyrLKKernel;
 pub use features::{HarrisCornersKernel, FASTCornersKernel};
-pub use object_detection::{CannyEdgeDetectorKernel, HoughLinesPKernel, ThresholdKernel};
+pub use object_detection::{CannyEdgeDetectorKernel, HoughLinesPKernel, ThresholdKernel, ThresholdType, threshold_binary, threshold_range};
 
 // Export utility functions
 pub use utils::*;

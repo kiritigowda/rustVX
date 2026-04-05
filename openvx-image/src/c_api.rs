@@ -1401,42 +1401,74 @@ pub extern "C" fn vxCreateUniformImageFromHandle(
 /// This function creates a new image with the same dimensions and format as the source,
 /// then copies all pixel data from the source to the new image.
 ///
+/// If a rectangle is specified, only that region is cloned. If rect is NULL,
+/// the entire image is cloned.
+///
 /// # Arguments
-/// * `context` - The OpenVX context
-/// * `source` - The source image to clone
+/// * `image` - The source image to clone
+/// * `rect` - Optional rectangle defining the region to clone (NULL for entire image)
 ///
 /// # Returns
-/// A new vx_image handle that is a deep copy of the source, or null on error
+/// A new vx_image handle that is a deep copy of the source (or region), or null on error
 #[no_mangle]
 pub extern "C" fn vxCloneImage(
-    context: vx_context,
-    source: vx_image,
+    image: vx_image,
+    rect: *const vx_rectangle_t,
 ) -> vx_image {
-    // Validate parameters
-    if context.is_null() {
-        return std::ptr::null_mut();
-    }
-    if source.is_null() {
+    // Validate image parameter
+    if image.is_null() {
         return std::ptr::null_mut();
     }
 
     unsafe {
-        let source_img = &*(source as *const VxCImage);
+        let source_img = &*(image as *const VxCImage);
+
+        // Get context from the source image
+        let context = vxGetContext(image as vx_reference);
+        if context.is_null() {
+            return std::ptr::null_mut();
+        }
 
         // Get source image properties
-        let width = source_img.width;
-        let height = source_img.height;
+        let src_width = source_img.width;
+        let src_height = source_img.height;
         let format = source_img.format;
+
+        // Determine clone dimensions and offset
+        let (clone_width, clone_height, offset_x, offset_y) = if rect.is_null() {
+            // Clone entire image
+            (src_width, src_height, 0, 0)
+        } else {
+            // Clone specified region
+            let rect_ref = &*rect;
+            
+            // Validate rectangle bounds
+            if rect_ref.start_x >= rect_ref.end_x || rect_ref.start_y >= rect_ref.end_y {
+                return std::ptr::null_mut();
+            }
+            if rect_ref.end_x > src_width || rect_ref.end_y > src_height {
+                return std::ptr::null_mut();
+            }
+            
+            let width = rect_ref.end_x - rect_ref.start_x;
+            let height = rect_ref.end_y - rect_ref.start_y;
+            (width, height, rect_ref.start_x, rect_ref.start_y)
+        };
+
+        // Handle zero dimensions
+        if clone_width == 0 || clone_height == 0 {
+            return std::ptr::null_mut();
+        }
 
         // Handle virtual images - they don't have allocated data
         // Per OpenVX spec, cloning a virtual image creates a regular image
         if source_img.is_virtual && source_img.data.read().unwrap().is_empty() {
-            // Virtual image without data - just create regular image with same dimensions
-            return vxCreateImage(context, width, height, format);
+            // Virtual image without data - just create regular image with clone dimensions
+            return vxCreateImage(context, clone_width, clone_height, format);
         }
 
         // Create the destination image
-        let mut dest_image = vxCreateImage(context, width, height, format);
+        let mut dest_image = vxCreateImage(context, clone_width, clone_height, format);
         if dest_image.is_null() {
             return std::ptr::null_mut();
         }
@@ -1444,13 +1476,28 @@ pub extern "C" fn vxCloneImage(
         // Get the destination image data structure
         let dest_img = &mut *(dest_image as *mut VxCImage);
 
-        // Copy all data from source to destination
+        // Calculate bytes per pixel for the format
+        let bpp = VxCImage::bytes_per_pixel(format);
+        let src_stride = src_width as usize * bpp;
+        let dest_stride = clone_width as usize * bpp;
+
+        // Copy data from source to destination
         if let Ok(source_data) = source_img.data.read() {
             if let Ok(mut dest_data) = dest_img.data.write() {
                 // Ensure destination has enough space
-                if dest_data.len() >= source_data.len() {
-                    // Perform deep copy of pixel data
-                    dest_data.copy_from_slice(&source_data[..source_data.len()]);
+                if dest_data.len() >= clone_height as usize * dest_stride {
+                    // Copy pixel data row by row
+                    for y in 0..clone_height as usize {
+                        let src_y = (offset_y as usize) + y;
+                        let src_offset = src_y * src_stride + (offset_x as usize) * bpp;
+                        let dest_offset = y * dest_stride;
+                        let row_bytes = dest_stride;
+                        
+                        if src_offset + row_bytes <= source_data.len() {
+                            dest_data[dest_offset..dest_offset + row_bytes]
+                                .copy_from_slice(&source_data[src_offset..src_offset + row_bytes]);
+                        }
+                    }
                 } else {
                     // Shouldn't happen if vxCreateImage worked correctly, but handle it
                     vxReleaseImage(&mut dest_image);
@@ -1463,14 +1510,6 @@ pub extern "C" fn vxCloneImage(
         } else {
             vxReleaseImage(&mut dest_image);
             return std::ptr::null_mut();
-        }
-
-        // Also copy mapped patches metadata if any exist
-        if let Ok(source_patches) = source_img.mapped_patches.read() {
-            if let Ok(mut dest_patches) = dest_img.mapped_patches.write() {
-                // Copy the patch metadata (not the actual data which is owned by the patches)
-                *dest_patches = source_patches.clone();
-            }
         }
 
         dest_image
@@ -1519,8 +1558,8 @@ pub extern "C" fn vxCloneImageWithGraph(
             // Create a virtual image with same dimensions
             vxCreateVirtualImage(graph, width, height, format)
         } else {
-            // Create a regular image with data copy
-            vxCloneImage(context, source)
+            // Create a regular image with data copy (clone entire image)
+            vxCloneImage(source, std::ptr::null())
         }
     }
 }
