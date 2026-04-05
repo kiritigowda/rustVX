@@ -1746,28 +1746,28 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         // Harris Corners
         "org.khronos.openvx.harris_corners" => {
             if params.len() >= 7 {
-                // Check if params 0 and 6 exist and are not null
+                // Input (param 0) is REQUIRED
                 if params[0].is_null() {
                     eprintln!("DEBUG: harris_corners - input (param 0) is null");
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
-                if params[6].is_null() {
-                    eprintln!("DEBUG: harris_corners - corners (param 6) is null");
-                    return VX_ERROR_INVALID_PARAMETERS;
-                }
-                
                 let input = params[0] as vx_image;
-                let corners = params[6] as vx_array;
                 
-                // Validate required parameters
+                // Corners (param 6) is OPTIONAL - can be NULL
+                let corners = if params[6].is_null() {
+                    std::ptr::null_mut() // Optional output not requested
+                } else {
+                    params[6] as vx_array
+                };
+                
+                // Validate required parameter (input)
                 if input.is_null() {
                     eprintln!("DEBUG: harris_corners - input is null");
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
-                if corners.is_null() {
-                    eprintln!("DEBUG: harris_corners - corners is null");
-                    return VX_ERROR_INVALID_PARAMETERS;
-                }
+                
+                // Note: corners (param 6) is OPTIONAL - can be NULL
+                // The implementation should handle NULL by not producing output
                 // Validate image before processing
                 let status = validate_image(input);
                 if status != VX_SUCCESS { 
