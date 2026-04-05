@@ -121,6 +121,9 @@ pub type vx_target = *mut VxTarget;
 /// Node completion callback type
 pub type vx_nodecomplete_f = Option<extern "C" fn(vx_node) -> vx_action>;
 
+/// Log callback type
+pub type vx_log_callback_t = Option<extern "C" fn(vx_context, vx_reference, vx_status, *const vx_char)>;
+
 /// Action return values from callbacks
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -235,6 +238,10 @@ pub extern "C" fn vxCreateContext() -> vx_context {
                 mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
                 constant_value: vx_pixel_value_t { U32: 0 },
             }),
+            log_callback: Mutex::new(None),
+            log_reentrant: std::sync::atomic::AtomicBool::new(false),
+            logging_enabled: std::sync::atomic::AtomicBool::new(false),
+            performance_enabled: std::sync::atomic::AtomicBool::new(false),
         }));
     }
     // Initialize reference count to 1 (the creation itself counts as a reference)
