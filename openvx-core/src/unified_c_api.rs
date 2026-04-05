@@ -1009,11 +1009,24 @@ pub extern "C" fn vxReplicateNode(
 
 // Context attribute constants (calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_CONTEXT) + offset)
 // VX_ATTRIBUTE_BASE(0x000, 0x801) = 0x00080100
+pub const VX_CONTEXT_ATTRIBUTE_VENDOR_ID: vx_enum = 0x00080100;        // +0x0
+pub const VX_CONTEXT_ATTRIBUTE_VERSION: vx_enum = 0x00080101;          // +0x1
 pub const VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS: vx_enum = 0x00080102;  // +0x2
 pub const VX_CONTEXT_ATTRIBUTE_MODULES: vx_enum = 0x00080103;        // +0x3
 pub const VX_CONTEXT_ATTRIBUTE_REFERENCES: vx_enum = 0x00080104;       // +0x4
 pub const VX_CONTEXT_ATTRIBUTE_USER_MEMORY: vx_enum = 0x00080105;      // +0x5
 pub const VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION: vx_enum = 0x00080106; // +0x6
+pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS_SIZE: vx_enum = 0x00080107; // +0x7
+pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS: vx_enum = 0x00080108;       // +0x8
+pub const VX_CONTEXT_ATTRIBUTE_USER_MEMORY_FREE: vx_enum = 0x00080109; // +0x9 (callback for user memory deallocation)
+
+// Context version (OpenVX 1.3.1 = 1.3)
+// Packed as (major << 8) | minor, with patch in upper bits for 1.3.x
+pub const VX_VERSION_1_3_1: vx_uint32 = 0x00130100;  // VX_VERSION(1, 3.1)
+pub const VX_VERSION_1_3: vx_uint32 = 0x00130000;    // VX_VERSION(1, 3)
+
+// Vendor ID - using Khronos as the vendor
+pub const VX_ID_KHRONOS: vx_uint32 = 0x00000000;
 
 /// Query context attributes
 #[no_mangle]
@@ -1032,6 +1045,26 @@ pub extern "C" fn vxQueryContext(
 
     unsafe {
         match attribute {
+            VX_CONTEXT_ATTRIBUTE_VENDOR_ID => {
+                // vx_uint32 is expected per spec
+                if size == std::mem::size_of::<vx_uint32>() {
+                    // Return the vendor ID (Khronos = 0)
+                    *(ptr as *mut vx_uint32) = VX_ID_KHRONOS;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_CONTEXT_ATTRIBUTE_VERSION => {
+                // vx_uint32 is expected per spec
+                if size == std::mem::size_of::<vx_uint32>() {
+                    // Return OpenVX version (1.3.1)
+                    *(ptr as *mut vx_uint32) = VX_VERSION_1_3_1;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
             VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS => {
                 // vx_uint32 is expected per spec
                 if size == std::mem::size_of::<vx_uint32>() {
@@ -1076,7 +1109,7 @@ pub extern "C" fn vxQueryContext(
                     let context_id = context as u64;
                     let mut count = 0u32;
                     let mut counted_ids = std::collections::HashSet::new();
-                    
+
                     // Count graphs for this context in unified registry
                     if let Ok(graphs) = GRAPHS_DATA.lock() {
                         for (id, graph) in graphs.iter() {
@@ -1086,7 +1119,7 @@ pub extern "C" fn vxQueryContext(
                             }
                         }
                     }
-                    
+
                     // Count graphs in c_api registry (avoid duplicates)
                     if let Ok(c_api_graphs) = crate::c_api::GRAPHS.lock() {
                         for (id, graph) in c_api_graphs.iter() {
@@ -1095,7 +1128,7 @@ pub extern "C" fn vxQueryContext(
                             }
                         }
                     }
-                    
+
                     // Count all references in REFERENCE_COUNTS for this context
                     // Since REFERENCE_COUNTS uses address as key, we need to iterate
                     // through all registries to count per-context objects
@@ -1103,8 +1136,46 @@ pub extern "C" fn vxQueryContext(
                     if let Ok(counts) = REFERENCE_COUNTS.lock() {
                         count = counts.len() as vx_uint32;
                     }
-                    
+
                     *(ptr as *mut vx_uint32) = count;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION => {
+                // vx_char array is expected per spec
+                if size >= 1 {
+                    // Return the implementation name
+                    let impl_name = b"RustVX OpenVX Implementation\0";
+                    let len = impl_name.len().min(size);
+                    std::ptr::copy_nonoverlapping(
+                        impl_name.as_ptr() as *const u8,
+                        ptr as *mut u8,
+                        len
+                    );
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_CONTEXT_ATTRIBUTE_EXTENSIONS_SIZE => {
+                // vx_size is expected per spec
+                if size == std::mem::size_of::<vx_size>() {
+                    // Return the size of the extensions string (0 if no extensions)
+                    // For now, no extensions registered
+                    *(ptr as *mut vx_size) = 0;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_CONTEXT_ATTRIBUTE_EXTENSIONS => {
+                // vx_char array is expected per spec
+                if size >= 1 {
+                    // Return extensions string (empty for now)
+                    // Just null-terminate
+                    *(ptr as *mut u8) = 0;
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
