@@ -252,9 +252,11 @@ pub extern "C" fn vxCreateImageFromHandle(
     }
 
     unsafe {
-        let addr = &*addrs;
-        let width = addr.dim_x;
-        let height = addr.dim_y;
+        // For planar formats, addrs is an array with one entry per plane
+        // The first plane (usually Y) has the full image dimensions
+        let addr0 = &*addrs;
+        let width = addr0.dim_x;
+        let height = addr0.dim_y;
 
         // Validate dimensions
         if width == 0 || height == 0 {
@@ -270,6 +272,24 @@ pub extern "C" fn vxCreateImageFromHandle(
         let expected_planes = VxCImage::num_planes(color) as vx_uint32;
         if num_planes != expected_planes {
             return std::ptr::null_mut();
+        }
+
+        // For planar formats, validate each plane's addressing info
+        let is_planar = VxCImage::is_planar_format(color);
+        if is_planar {
+            for plane_idx in 0..num_planes as usize {
+                let plane_addr = &*addrs.add(plane_idx);
+                // Each plane should have valid dimensions
+                if plane_addr.dim_x == 0 || plane_addr.dim_y == 0 {
+                    return std::ptr::null_mut();
+                }
+                // Validate stride is reasonable
+                if plane_addr.stride_y < plane_addr.dim_x as vx_int32 {
+                    // stride_y should be at least dim_x * bytes_per_pixel
+                    // For planar formats, each pixel is 1 byte
+                    return std::ptr::null_mut();
+                }
+            }
         }
 
         // Calculate total size for the image
@@ -803,20 +823,7 @@ pub extern "C" fn vxMapImagePatch(
     unsafe {
         let rect_ref = &*rect;
 
-        // Calculate the mapped region
-        let start_x = rect_ref.start_x as usize;
-        let start_y = rect_ref.start_y as usize;
-        let end_x = rect_ref.end_x as usize;
-        let end_y = rect_ref.end_y as usize;
-        
-        let width = end_x.saturating_sub(start_x);
-        let height = end_y.saturating_sub(start_y);
-        
-        if width == 0 || height == 0 {
-            return VX_ERROR_INVALID_PARAMETERS;
-        }
-
-        // Get image data
+        // Get image data first
         let data_guard = match img.data.read() {
             Ok(guard) => guard,
             Err(_) => return VX_ERROR_INVALID_REFERENCE,
@@ -833,6 +840,19 @@ pub extern "C" fn vxMapImagePatch(
 
         // Validate the plane_index
         if is_planar && plane_index as usize >= VxCImage::num_planes(img.format) {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Calculate the mapped region, clamped to plane bounds
+        let start_x = (rect_ref.start_x as usize).min(plane_width);
+        let start_y = (rect_ref.start_y as usize).min(plane_height);
+        let end_x = (rect_ref.end_x as usize).min(plane_width);
+        let end_y = (rect_ref.end_y as usize).min(plane_height);
+        
+        let width = end_x.saturating_sub(start_x);
+        let height = end_y.saturating_sub(start_y);
+        
+        if width == 0 || height == 0 {
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
@@ -853,13 +873,15 @@ pub extern "C" fn vxMapImagePatch(
         let offset = plane_offset + start_y * stride_y + start_x * bpp;
 
         // Create a copy of the data for the mapped patch
-        let patch_size = height * width * bpp;
+        // Use the mapped region width for stride, not the full plane width
+        let mapped_stride_y = width * bpp;
+        let patch_size = height * mapped_stride_y;
         let mut patch_data = vec![0u8; patch_size];
         
         // Copy data row by row
         for y in 0..height {
             let src_start = offset + y * stride_y;
-            let dst_start = y * width * bpp;
+            let dst_start = y * mapped_stride_y;
             if src_start + width * bpp <= data_guard.len() {
                 patch_data[dst_start..dst_start + width * bpp]
                     .copy_from_slice(&data_guard[src_start..src_start + width * bpp]);
@@ -867,10 +889,11 @@ pub extern "C" fn vxMapImagePatch(
         }
         
         // Store the patch FIRST, then get pointer to the stored data
+        // Store: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
         let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
             let id = patches.len() + 1;
-            // Store patch with plane_index explicitly tracked (6-tuple now)
-            patches.push((id, patch_data, usage, offset, stride_y, plane_index));
+            // Store patch with mapped_width to correctly unmap later
+            patches.push((id, patch_data, usage, offset, stride_y, plane_index, width as u32));
             id
         } else {
             return VX_ERROR_INVALID_REFERENCE;
@@ -881,7 +904,8 @@ pub extern "C" fn vxMapImagePatch(
         (*addr).dim_x = width as vx_uint32;
         (*addr).dim_y = height as vx_uint32;
         (*addr).stride_x = bpp as vx_int32;
-        (*addr).stride_y = stride_y as vx_int32;
+        // The stride returned should be for the mapped region (contiguous), not full plane
+        (*addr).stride_y = mapped_stride_y as vx_int32;
         (*addr).step_x = 1;
         (*addr).step_y = 1;
         (*addr).scale_x = 1024; // VX_SCALE_UNITY
@@ -891,7 +915,7 @@ pub extern "C" fn vxMapImagePatch(
         
         // Return pointer to the STORED patch data (not the local variable)
         if let Ok(patches) = img.mapped_patches.read() {
-            if let Some(patch) = patches.iter().find(|(id, _, _, _, _, _)| *id == map_id_val) {
+            if let Some(patch) = patches.iter().find(|(id, _, _, _, _, _, _)| *id == map_id_val) {
                 *ptr = patch.1.as_ptr() as *mut c_void;
             }
         }
@@ -916,8 +940,20 @@ pub extern "C" fn vxUnmapImagePatch(
     let img = unsafe { &mut *(image as *mut VxCImage) };
 
     if let Ok(mut patches) = img.mapped_patches.write() {
-        if let Some(pos) = patches.iter().position(|(id, _, _, _, _, _)| *id == map_id) {
-            let (_, patch_data, usage, offset, stride_y, plane_index) = patches.remove(pos);
+        // Find the patch with matching id - handle both old 6-tuple and new 7-tuple formats
+        if let Some(pos) = patches.iter().position(|p| {
+            // Check based on tuple length - first element is always id
+            let &(id, _, _, _, _, _, ..) = p;
+            id == map_id
+        }) {
+            // Extract the stored patch data
+            let patch_tuple = patches.remove(pos);
+            
+            // Unpack the tuple - we support both 6-tuple and 7-tuple for backward compatibility
+            // But the storage is now 7-tuple: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
+            let (_, patch_data, usage, offset, stride_y, plane_index, mapped_width): 
+                (usize, Vec<u8>, vx_enum, usize, usize, vx_uint32, u32) = 
+                unsafe { std::mem::transmute_copy(&patch_tuple) };
             
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
@@ -930,21 +966,19 @@ pub extern "C" fn vxUnmapImagePatch(
                         VxCImage::bytes_per_pixel(img.format)
                     };
                     
-                    // Calculate width based on stride_y and bpp
-                    let width = if stride_y > 0 {
-                        stride_y / bpp
-                    } else {
-                        0
-                    };
-                    let height = if stride_y > 0 && width > 0 {
-                        patch_data.len() / stride_y
+                    // Use stored mapped_width for correct dimensions
+                    let width = mapped_width as usize;
+                    // Calculate height from stored patch data size and mapped region width
+                    let mapped_stride = width * bpp;
+                    let height = if mapped_stride > 0 {
+                        patch_data.len() / mapped_stride
                     } else {
                         0
                     };
                     
                     // Copy data back row by row
                     for y in 0..height {
-                        let src_start = y * width * bpp;
+                        let src_start = y * mapped_stride;
                         let dst_start = offset + y * stride_y;
                         if dst_start + width * bpp <= data.len() && src_start + width * bpp <= patch_data.len() {
                             data[dst_start..dst_start + width * bpp]

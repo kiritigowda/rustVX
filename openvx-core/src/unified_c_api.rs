@@ -78,8 +78,8 @@ pub struct VxCImage {
     pub context: vx_context,
     pub data: Arc<RwLock<Vec<u8>>>,
     /// Structure for tracking mapped patches
-    /// Fields: (map_id, patch_data, usage, offset, stride_y, plane_index)
-    pub mapped_patches: Arc<RwLock<Vec<(usize, Vec<u8>, vx_enum, usize, usize, u32)>>>,
+    /// Fields: (map_id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
+    pub mapped_patches: Arc<RwLock<Vec<(usize, Vec<u8>, vx_enum, usize, usize, u32, u32)>>>,
     /// Optional parent image reference for sub-images (channel, ROI)
     /// Stores the parent image pointer to keep parent alive while sub-image exists
     pub parent: Option<usize>, // Store vx_image pointer as usize for Send + Sync
