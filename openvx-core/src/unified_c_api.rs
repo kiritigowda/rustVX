@@ -306,6 +306,9 @@ pub struct VxCDistribution {
     range: u32,
     data: RwLock<Vec<u32>>,
     ref_count: AtomicUsize,
+    /// Structure for tracking mapped distributions
+    /// Fields: (map_id, mapped_data, usage)
+    pub mapped_distributions: Arc<RwLock<Vec<(usize, Vec<u32>, vx_enum)>>>,
 }
 
 /// Threshold data
@@ -2920,6 +2923,7 @@ pub extern "C" fn vxCreateDistribution(
         range,
         data: RwLock::new(vec![0u32; bins]),
         ref_count: AtomicUsize::new(1),
+        mapped_distributions: Arc::new(RwLock::new(Vec::new())),
     });
     
     let dist_ptr = Box::into_raw(distribution) as vx_distribution;
@@ -2939,6 +2943,7 @@ pub extern "C" fn vxCreateDistribution(
                 range,
                 data: RwLock::new(vec![0u32; bins]),
                 ref_count: AtomicUsize::new(1),
+                mapped_distributions: Arc::new(RwLock::new(Vec::new())),
             }));
         }
     }
@@ -2996,6 +3001,94 @@ pub extern "C" fn vxCopyDistribution(
         return -2;
     }
     0
+}
+
+/// Map distribution for CPU access
+#[no_mangle]
+pub extern "C" fn vxMapDistribution(
+    distribution: vx_distribution,
+    map_id: *mut vx_map_id,
+    ptr: *mut *mut c_void,
+    usage: vx_enum,
+    mem_type: vx_enum,
+    _flags: vx_uint32,
+) -> vx_status {
+    if distribution.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if map_id.is_null() || ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if mem_type != VX_MEMORY_TYPE_HOST {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    let dist = unsafe { &mut *(distribution as *mut VxCDistribution) };
+
+    unsafe {
+        // Get distribution data
+        let data_guard = match dist.data.read() {
+            Ok(guard) => guard,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        // Create a copy of the data for the mapped distribution
+        let mut mapped_data = data_guard.clone();
+
+        // Store the mapped data
+        let map_id_val = if let Ok(mut mappings) = dist.mapped_distributions.write() {
+            let id = mappings.len() + 1;
+            mappings.push((id, mapped_data, usage));
+            id
+        } else {
+            return VX_ERROR_INVALID_REFERENCE;
+        };
+
+        // Set output parameters
+        *map_id = map_id_val;
+
+        // Return pointer to the STORED mapped data
+        if let Ok(mappings) = dist.mapped_distributions.read() {
+            if let Some(mapping) = mappings.iter().find(|(id, _, _)| *id == map_id_val) {
+                *ptr = mapping.1.as_ptr() as *mut c_void;
+            }
+        }
+
+        // Keep the data_guard alive until after we've set the ptr
+        drop(data_guard);
+    }
+
+    VX_SUCCESS
+}
+
+/// Unmap distribution
+#[no_mangle]
+pub extern "C" fn vxUnmapDistribution(
+    distribution: vx_distribution,
+    map_id: vx_map_id,
+) -> vx_status {
+    if distribution.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    let dist = unsafe { &mut *(distribution as *mut VxCDistribution) };
+
+    if let Ok(mut mappings) = dist.mapped_distributions.write() {
+        if let Some(pos) = mappings.iter().position(|(id, _, _)| *id == map_id) {
+            let (_, mapped_data, usage) = mappings.remove(pos);
+
+            // If write access, copy data back
+            if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
+                if let Ok(mut data) = dist.data.write() {
+                    data.copy_from_slice(&mapped_data);
+                }
+            }
+
+            return VX_SUCCESS;
+        }
+    }
+
+    VX_ERROR_INVALID_REFERENCE
 }
 
 #[no_mangle]
