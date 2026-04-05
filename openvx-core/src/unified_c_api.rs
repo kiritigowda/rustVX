@@ -1802,17 +1802,17 @@ pub extern "C" fn vxQueryReference(
 }
 
 /// Release reference (decrement reference count)
-/// Returns the new reference count (0 if freed)
+/// Returns VX_SUCCESS or error code
 #[no_mangle]
-pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_uint32 {
+pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
     if ref_.is_null() {
-        return 0;
+        return VX_ERROR_INVALID_REFERENCE;
     }
 
     unsafe {
         let inner_ref = *ref_;
         if inner_ref.is_null() {
-            return 0;
+            return VX_ERROR_INVALID_REFERENCE;
         }
         
         let addr = inner_ref as usize;
@@ -1871,7 +1871,7 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_uint32 {
         // Always set the caller's pointer to null
         *ref_ = std::ptr::null_mut();
         
-        return ref_count_was as vx_uint32;
+        return VX_SUCCESS;
     }
 }
 
