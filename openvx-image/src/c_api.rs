@@ -1798,3 +1798,30 @@ pub extern "C" fn vxQueryPyramid(
         }
     }
 }
+
+/// Create a virtual pyramid
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualPyramid(
+    graph: vx_graph,
+    num_levels: vx_size,
+    scale: vx_float32,
+    width: vx_uint32,
+    height: vx_uint32,
+    format: vx_df_image,
+) -> vx_pyramid {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    if num_levels == 0 || width == 0 || height == 0 {
+        return std::ptr::null_mut();
+    }
+    
+    // Get context from graph
+    let context = unsafe { vxGetContext(graph as vx_reference) };
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    // Virtual pyramids are created like regular ones
+    vxCreatePyramid(context, num_levels, scale, width, height, format)
+}
