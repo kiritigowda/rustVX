@@ -650,6 +650,14 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     if let Some(node_data) = nodes_data.get(node_id) {
                         if let Ok(params) = node_data.parameters.lock() {
                             let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
+                            eprintln!("DEBUG vxVerifyGraph: node_id=0x{:x}, params={:?}", node_id, param_refs.len());
+                            for (i, p) in param_refs.iter().enumerate() {
+                                if let Some(v) = p {
+                                    eprintln!("  param[{}] = 0x{:x}", i, v);
+                                } else {
+                                    eprintln!("  param[{}] = None", i);
+                                }
+                            }
                             node_params.push((*node_id, param_refs));
                         }
                     }
@@ -698,11 +706,42 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 }
             }
             
-            // Detect cycles using DFS
+            // Build node-to-consumers map for forward traversal (input -> output direction)
+            // For cycle detection, we need to follow: input image -> producing node -> output images -> consuming nodes
+            let mut node_to_outputs: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+            for (node_id, params) in &node_params {
+                let mut outputs = Vec::new();
+                for (idx, param_opt) in params.iter().enumerate().skip(1) { // Skip param 0 (input)
+                    if let Some(param_ref) = param_opt {
+                        if is_image_reference(*param_ref) {
+                            outputs.push(*param_ref);
+                        }
+                    }
+                }
+                if !outputs.is_empty() {
+                    node_to_outputs.insert(*node_id, outputs);
+                }
+            }
+            
+            // Build image -> consuming nodes map
+            let mut image_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+            for (node_id, params) in &node_params {
+                if let Some(input) = params.get(0) {
+                    if let Some(img_ref) = input {
+                        if is_image_reference(*img_ref) {
+                            image_to_consumers.entry(*img_ref)
+                                .or_insert_with(Vec::new)
+                                .push(*node_id);
+                        }
+                    }
+                }
+            }
+            
+            // Detect cycles using DFS following data flow: producer -> output image -> consumer
             fn has_cycle(
                 node_id: u64,
-                node_params: &[(u64, Vec<Option<u64>>)],
-                param_to_producer: &std::collections::HashMap<u64, u64>,
+                node_to_outputs: &std::collections::HashMap<u64, Vec<u64>>,
+                image_to_consumers: &std::collections::HashMap<u64, Vec<u64>>,
                 visited: &mut std::collections::HashSet<u64>,
                 rec_stack: &mut std::collections::HashSet<u64>,
             ) -> bool {
@@ -716,13 +755,12 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 visited.insert(node_id);
                 rec_stack.insert(node_id);
                 
-                // Find this node's params
-                if let Some((_, params)) = node_params.iter().find(|(id, _)| *id == node_id) {
-                    for param_opt in params.iter() {
-                        if let Some(param_ref) = param_opt {
-                            // If this param is produced by another node, follow that edge
-                            if let Some(producer) = param_to_producer.get(param_ref) {
-                                if has_cycle(*producer, node_params, param_to_producer, visited, rec_stack) {
+                // Follow outputs of this node to consuming nodes
+                if let Some(outputs) = node_to_outputs.get(&node_id) {
+                    for output_img in outputs {
+                        if let Some(consumers) = image_to_consumers.get(output_img) {
+                            for consumer_id in consumers {
+                                if has_cycle(*consumer_id, node_to_outputs, image_to_consumers, visited, rec_stack) {
                                     return true;
                                 }
                             }
@@ -739,7 +777,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             
             for (node_id, _) in &node_params {
                 if !visited.contains(node_id) {
-                    if has_cycle(*node_id, &node_params, &param_to_producer, &mut visited, &mut rec_stack) {
+                    if has_cycle(*node_id, &node_to_outputs, &image_to_consumers, &mut visited, &mut rec_stack) {
                         return VX_ERROR_INVALID_GRAPH;
                     }
                 }
@@ -6945,6 +6983,28 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
     // Register in REFERENCE_COUNTS
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         counts.entry(param_id as usize).or_insert(AtomicUsize::new(1));
+    }
+    
+    // Also create an entry in PARAMETERS registry for vxQueryParameter to find
+    // Check if this parameter already exists in the registry
+    let param_exists = if let Ok(params) = PARAMETERS.lock() {
+        params.contains_key(&param_id)
+    } else {
+        false
+    };
+    
+    if !param_exists {
+        // Create a new parameter entry
+        if let Ok(mut params) = PARAMETERS.lock() {
+            let param = Arc::new(VxCParameter {
+                index,
+                direction: VX_INPUT,
+                data_type: 0,
+                ref_count: AtomicUsize::new(1),
+                value: Mutex::new(None),
+            });
+            params.insert(param_id, param);
+        }
     }
     
     param_id as vx_parameter

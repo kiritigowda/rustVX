@@ -626,6 +626,32 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             }
         }
         
+        // Get the list of nodes to release before removing the graph
+        let mut node_ids_to_release: Vec<u64> = Vec::new();
+        if let Ok(graphs) = GRAPHS.lock() {
+            if let Some(g) = graphs.get(&id) {
+                if let Ok(graph_nodes) = g.nodes.lock() {
+                    node_ids_to_release = graph_nodes.clone();
+                }
+            }
+        }
+        
+        // Release all nodes belonging to this graph
+        for node_id in node_ids_to_release {
+            // Check if node still exists in NODES registry
+            let should_release = if let Ok(nodes) = NODES.lock() {
+                nodes.contains_key(&node_id)
+            } else {
+                false
+            };
+            
+            if should_release {
+                let node_ptr = node_id as *mut VxNode;
+                let mut node_ptr_mut = node_ptr;
+                vxReleaseNode(&mut node_ptr_mut);
+            }
+        }
+        
         if let Ok(mut graphs) = GRAPHS.lock() {
             graphs.remove(&id);
         }
@@ -743,10 +769,12 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         let id = n as u64;
         let mut count = 0;
         let num_params: usize;
+        let graph_id: u64;
         
         // Get node data and parameters
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
+                graph_id = node_data.graph_id;
                 count = node_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                 if let Ok(params) = node_data.parameters.lock() {
                     num_params = params.len();
@@ -754,10 +782,13 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
                     num_params = 0;
                 }
             } else {
-                num_params = 0;
+                // Node not found, might already be freed
+                *node = std::ptr::null_mut();
+                return VX_SUCCESS;
             }
         } else {
-            num_params = 0;
+            *node = std::ptr::null_mut();
+            return VX_SUCCESS;
         }
         
         if count <= 1 {
@@ -772,6 +803,24 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
                 }
                 if let Ok(mut types) = REFERENCE_TYPES.lock() {
                     types.remove(&(param_id as usize));
+                }
+            }
+            
+            // Remove from graph's node list BEFORE removing node
+            // Remove from c_api graph registry
+            if let Ok(graphs) = GRAPHS.lock() {
+                if let Some(g) = graphs.get(&graph_id) {
+                    if let Ok(mut graph_nodes) = g.nodes.lock() {
+                        graph_nodes.retain(|&nid| nid != id);
+                    }
+                }
+            }
+            // Remove from unified graph registry
+            if let Ok(graphs_data) = GRAPHS_DATA.lock() {
+                if let Some(g) = graphs_data.get(&graph_id) {
+                    if let Ok(mut graph_nodes) = g.nodes.write() {
+                        graph_nodes.retain(|&nid| nid != id);
+                    }
                 }
             }
             
@@ -810,7 +859,7 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
         }
         let id = n as u64;
         
-        // Remove from graph's node list
+        // Remove from graph's node list (c_api registry)
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
                 let graph_id = node_data.graph_id;
@@ -818,6 +867,15 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
                 if let Ok(graphs) = GRAPHS.lock() {
                     if let Some(graph) = graphs.get(&graph_id) {
                         if let Ok(mut graph_nodes) = graph.nodes.lock() {
+                            graph_nodes.retain(|&nid| nid != id);
+                        }
+                    }
+                }
+                
+                // Also remove from unified GRAPHS_DATA registry (where vxQueryGraph reads from)
+                if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                    if let Some(graph) = graphs_data.get(&graph_id) {
+                        if let Ok(mut graph_nodes) = graph.nodes.write() {
                             graph_nodes.retain(|&nid| nid != id);
                         }
                     }
@@ -1250,7 +1308,19 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
     });
     
     if let Ok(mut params) = PARAMETERS.lock() {
-        params.insert(id, param);
+        params.insert(id, param.clone());
+    }
+    
+    // Also register in unified_c_api PARAMETERS for vxQueryParameter to find
+    if let Ok(mut unified_params) = crate::unified_c_api::PARAMETERS.lock() {
+        let unified_param = Arc::new(crate::unified_c_api::VxCParameter {
+            index,
+            direction: 0, // VX_INPUT
+            data_type: 0,
+            ref_count: std::sync::atomic::AtomicUsize::new(1),
+            value: Mutex::new(None),
+        });
+        unified_params.insert(id, unified_param);
     }
     
     // Initialize reference count and type for the parameter
@@ -1334,10 +1404,13 @@ pub extern "C" fn vxQueryParameter(
     }
     unsafe {
         let id = param as u64;
+        eprintln!("DEBUG vxQueryParameter: param_id=0x{:x}, attribute=0x{:x}", id, attribute);
         
-        // Use unified_c_api's PARAMETERS only
-        if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
+        // First check local c_api PARAMETERS (where vxGetKernelParameterByIndex stores params)
+        if let Ok(params) = PARAMETERS.lock() {
+            eprintln!("DEBUG vxQueryParameter: {} params in c_api::PARAMETERS", params.len());
             if let Some(param_data) = params.get(&id) {
+                eprintln!("DEBUG vxQueryParameter: found in c_api::PARAMETERS");
                 match attribute {
                     VX_PARAMETER_INDEX => { // VX_PARAMETER_INDEX
                         if size >= 4 {
@@ -1392,9 +1465,71 @@ pub extern "C" fn vxQueryParameter(
             }
         }
         
+        // Also check unified_c_api's PARAMETERS
+        if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
+            eprintln!("DEBUG vxQueryParameter: {} params in unified_c_api::PARAMETERS", params.len());
+            if let Some(param_data) = params.get(&id) {
+                eprintln!("DEBUG vxQueryParameter: found in unified_c_api::PARAMETERS");
+                match attribute {
+                    VX_PARAMETER_INDEX => { // VX_PARAMETER_INDEX
+                        if size >= 4 {
+                            let ptr_u8 = ptr as *mut u8;
+                            std::ptr::copy_nonoverlapping(
+                                &param_data.index as *const u32 as *const u8,
+                                ptr_u8,
+                                4,
+                            );
+                            return VX_SUCCESS;
+                        }
+                    }
+                    VX_PARAMETER_DIRECTION => { // VX_PARAMETER_DIRECTION
+                        if size >= 4 {
+                            let ptr_u8 = ptr as *mut u8;
+                            std::ptr::copy_nonoverlapping(
+                                &param_data.direction as *const i32 as *const u8,
+                                ptr_u8,
+                                4,
+                            );
+                            return VX_SUCCESS;
+                        }
+                    }
+                    VX_PARAMETER_TYPE => { // VX_PARAMETER_TYPE
+                        if size >= 4 {
+                            let ptr_u8 = ptr as *mut u8;
+                            std::ptr::copy_nonoverlapping(
+                                &param_data.data_type as *const i32 as *const u8,
+                                ptr_u8,
+                                4,
+                            );
+                            return VX_SUCCESS;
+                        }
+                    }
+                    VX_PARAMETER_REF => {
+                        if size >= std::mem::size_of::<vx_reference>() {
+                            // Get the reference value from the parameter
+                            if let Ok(value) = param_data.value.lock() {
+                                let ref_ptr = value.unwrap_or(0) as vx_reference;
+                                let ptr_u8 = ptr as *mut u8;
+                                std::ptr::copy_nonoverlapping(
+                                    &ref_ptr as *const _ as *const u8,
+                                    ptr_u8,
+                                    std::mem::size_of::<vx_reference>(),
+                                );
+                                return VX_SUCCESS;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        eprintln!("DEBUG vxQueryParameter: parameter not found, trying helper functions");
+        
         // Also check unified_c_api's PARAMETERS via helper function
         if attribute == VX_PARAMETER_REF {
             if let Some(ref_value) = crate::unified_c_api::get_parameter_value(id) {
+                eprintln!("DEBUG vxQueryParameter: found via get_parameter_value");
                 if size >= std::mem::size_of::<vx_reference>() {
                     let ref_ptr = ref_value as vx_reference;
                     let ptr_u8 = ptr as *mut u8;
@@ -1408,6 +1543,7 @@ pub extern "C" fn vxQueryParameter(
             }
             // If we reach here, check if parameter exists in unified registry
             if crate::unified_c_api::parameter_exists(id) {
+                eprintln!("DEBUG vxQueryParameter: parameter exists but no value, returning NULL");
                 // Parameter exists but has no value, return NULL reference
                 let ref_ptr: vx_reference = std::ptr::null_mut();
                 let ptr_u8 = ptr as *mut u8;
@@ -1419,6 +1555,7 @@ pub extern "C" fn vxQueryParameter(
                 return VX_SUCCESS;
             }
         }
+        eprintln!("DEBUG vxQueryParameter: returning NOT_IMPLEMENTED");
     }
     VX_ERROR_NOT_IMPLEMENTED
 }
@@ -1429,7 +1566,9 @@ pub extern "C" fn vxSetParameterByIndex(
     index: vx_uint32,
     value: vx_reference,
 ) -> vx_status {
+    eprintln!("DEBUG vxSetParameterByIndex: START node={:?}, index={}", node, index);
     if node.is_null() {
+        eprintln!("DEBUG vxSetParameterByIndex: NULL node!");
         return VX_ERROR_INVALID_REFERENCE;
     }
     // Check if trying to set NULL for required parameters
@@ -1438,9 +1577,12 @@ pub extern "C" fn vxSetParameterByIndex(
     
     // Store node data before dropping the lock
     let (context_id, kernel_id) = if let Ok(nodes) = NODES.lock() {
+        eprintln!("DEBUG vxSetParameterByIndex: got NODES lock, {} nodes", nodes.len());
         if let Some(node_data) = nodes.get(&id) {
+            eprintln!("DEBUG vxSetParameterByIndex: found node_data");
             let cid = node_data.context_id;
             let kid = node_data.kernel_id;
+            eprintln!("DEBUG vxSetParameterByIndex: cid={}, kid={}", cid, kid);
             if let Ok(kernels) = KERNELS.lock() {
                 if let Some(kernel_data) = kernels.get(&kid) {
                     // Check if trying to set NULL to a required parameter
@@ -1478,6 +1620,7 @@ pub extern "C" fn vxSetParameterByIndex(
     
     // Also create/update parameter entry in unified_c_api for vxQueryParameter
     let param_id = (id << 32) | (index as u64);
+    eprintln!("DEBUG vxSetParameterByIndex: node_id=0x{:x}, index={}, param_id=0x{:x}, value=0x{:x}", id, index, param_id, value as u64);
     crate::unified_c_api::create_or_update_parameter(
         param_id,
         index,
