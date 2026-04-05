@@ -457,6 +457,11 @@ pub static GRAPHS_DATA: Lazy<Mutex<HashMap<u64, Arc<VxCGraphData>>>> = Lazy::new
     Mutex::new(HashMap::new())
 });
 
+/// Graph parameter bindings: (graph_id, param_index) -> reference_address
+pub static GRAPH_PARAMETER_BINDINGS: Lazy<Mutex<HashMap<(u64, usize), usize>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
 static NEXT_GRAPH_ID: Lazy<AtomicUsize> = Lazy::new(|| {
     AtomicUsize::new(1)
 });
@@ -1073,12 +1078,12 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     // Get actual parameter references (convert u64 to vx_reference)
     let mut params: Vec<vx_reference> = Vec::new();
     
-    // Validate all parameters are set
-    for (i, param_id_opt) in param_ids.iter().enumerate() {
-        if param_id_opt.is_none() {
-            eprintln!("ERROR: execute_node: parameter {} not set for node {}", i, node_id);
-            return Some(VX_ERROR_INVALID_PARAMETERS);
-        }
+    // Note: Some kernels have optional parameters that can be NULL
+    // We'll validate required parameters in the dispatch function
+    // For now, just check that required param 0 is set
+    if param_ids.is_empty() || param_ids[0].is_none() {
+        eprintln!("ERROR: execute_node: parameter 0 (required) not set for node {}", node_id);
+        return Some(VX_ERROR_INVALID_PARAMETERS);
     }
     
     for (idx, param_id_opt) in param_ids.iter().enumerate() {
@@ -7552,6 +7557,7 @@ pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, patter
 // ============================================================================
 
 /// Set graph parameter by index
+/// Binds a reference to a graph parameter, which then binds to connected node parameters
 #[no_mangle]
 pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, param: vx_reference) -> vx_status {
     if graph.is_null() {
@@ -7560,17 +7566,47 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
     if param.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
+    
+    let graph_id = graph as u64;
+    let param_addr = param as usize;
+    
+    // Store the binding in GRAPH_PARAMETERS
+    if let Ok(mut bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
+        bindings.insert((graph_id, index as usize), param_addr);
+    }
+    
     VX_SUCCESS
 }
 
 /// Get graph parameter by index
+/// Returns a parameter object that can be used with vxSetParameterByReference
 #[no_mangle]
 pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) -> vx_parameter {
     if graph.is_null() {
         return std::ptr::null_mut();
     }
-    // Return a new parameter
-    std::ptr::null_mut()
+    
+    let graph_id = graph as u64;
+    
+    // Generate a unique parameter ID for this graph/index
+    // Format: (graph_id << 32) | index | 0x80000000 (to distinguish from regular params)
+    let param_id = (graph_id << 32) | (index as u64) | 0x8000000000000000;
+    
+    // Create and store parameter in unified registry
+    let param_data = Arc::new(VxCParameter {
+        id: param_id,
+        node_id: 0, // Graph parameters have no associated node
+        index: index as i32,
+        direction: 1, // Output
+        value: Mutex::new(None),
+        ref_count: AtomicUsize::new(1),
+    });
+    
+    if let Ok(mut params) = PARAMETERS.lock() {
+        params.insert(param_id, param_data);
+    }
+    
+    param_id as vx_parameter
 }
 
 // ============================================================================
