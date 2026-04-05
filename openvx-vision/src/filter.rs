@@ -193,8 +193,9 @@ pub fn convolve_generic(src: &Image, dst: &Image, kernel: &[[i32; 3]; 3], border
     Ok(())
 }
 
-/// Gaussian 3x3: [1,2,1; 2,4,2; 1,2,1] / 16
+/// Gaussian 3x3: Separable [1,2,1] horizontal then vertical
 /// Uses REPLICATE border mode for edge pixels
+/// Total normalization: 4 * 4 = 16
 pub fn gaussian3x3(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
@@ -202,27 +203,34 @@ pub fn gaussian3x3(src: &Image, dst: &Image) -> VxResult<()> {
     let mut dst_data = dst.data_mut();
     let border = BorderMode::Replicate;
     
+    // Separable kernel: [1, 2, 1]
+    // Horizontal pass: temp[y][x] = sum of src[y][x-1]*1 + src[y][x]*2 + src[y][x+1]*1
+    // Vertical pass: dst[y][x] = sum of temp[y-1][x]*1 + temp[y][x]*2 + temp[y+1][x]*1
+    // Combined normalization: 4 * 4 = 16
+    
+    // Temporary buffer for horizontal pass
+    let mut temp = vec![0u16; width * height];
+    
+    // Horizontal pass
     for y in 0..height {
         for x in 0..width {
-            // Full 3x3 Gaussian kernel: [1,2,1; 2,4,2; 1,2,1] / 16
-            let mut sum: i32 = 0;
+            let p_left = get_pixel_bordered(src, x as isize - 1, y as isize, border) as u16;
+            let p_center = get_pixel_bordered(src, x as isize, y as isize, border) as u16;
+            let p_right = get_pixel_bordered(src, x as isize + 1, y as isize, border) as u16;
             
-            // Row y-1
-            sum += get_pixel_bordered(src, x as isize - 1, y as isize - 1, border) as i32 * 1;
-            sum += get_pixel_bordered(src, x as isize,     y as isize - 1, border) as i32 * 2;
-            sum += get_pixel_bordered(src, x as isize + 1, y as isize - 1, border) as i32 * 1;
+            temp[y * width + x] = p_left + p_center * 2 + p_right;
+        }
+    }
+    
+    // Vertical pass
+    for y in 0..height {
+        for x in 0..width {
+            let p_top = temp[((y as isize - 1).max(0).min(height as isize - 1) as usize) * width + x];
+            let p_center = temp[y * width + x];
+            let p_bottom = temp[((y as isize + 1).max(0).min(height as isize - 1) as usize) * width + x];
             
-            // Row y
-            sum += get_pixel_bordered(src, x as isize - 1, y as isize, border) as i32 * 2;
-            sum += get_pixel_bordered(src, x as isize,     y as isize, border) as i32 * 4;
-            sum += get_pixel_bordered(src, x as isize + 1, y as isize, border) as i32 * 2;
-            
-            // Row y+1
-            sum += get_pixel_bordered(src, x as isize - 1, y as isize + 1, border) as i32 * 1;
-            sum += get_pixel_bordered(src, x as isize,     y as isize + 1, border) as i32 * 2;
-            sum += get_pixel_bordered(src, x as isize + 1, y as isize + 1, border) as i32 * 1;
-            
-            dst_data[y * width + x] = (sum >> 4) as u8; // Divide by 16
+            let sum = (p_top + p_center * 2 + p_bottom) >> 4; // Divide by 16
+            dst_data[y * width + x] = sum as u8;
         }
     }
     
@@ -276,31 +284,31 @@ pub fn gaussian5x5(src: &Image, dst: &Image) -> VxResult<()> {
     Ok(())
 }
 
-/// Box filter 3x3 using moving average optimization
+/// Box filter 3x3: Average of 3x3 neighborhood
+/// Uses REPLICATE border mode for edge pixels
+/// Normalization: divide by 9
 pub fn box3x3(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
     
     let mut dst_data = dst.data_mut();
+    let border = BorderMode::Replicate;
     
-    // Moving average optimization
     for y in 0..height {
         for x in 0..width {
-            let mut sum: u32 = 0;
-            let mut count: u32 = 0;
+            let mut sum: i32 = 0;
             
+            // Apply 3x3 box filter with border handling
             for dy in -1..=1 {
                 for dx in -1..=1 {
-                    let py = y as isize + dy;
                     let px = x as isize + dx;
-                    if py >= 0 && py < height as isize && px >= 0 && px < width as isize {
-                        sum += src.get_pixel(px as usize, py as usize) as u32;
-                        count += 1;
-                    }
+                    let py = y as isize + dy;
+                    sum += get_pixel_bordered(src, px, py, border) as i32;
                 }
             }
             
-            dst_data[y * width + x] = (sum / count.max(1)) as u8;
+            // Normalize by dividing by 9 and clamp to valid range
+            dst_data[y * width + x] = clamp_u8(sum / 9);
         }
     }
     

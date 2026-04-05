@@ -7,11 +7,13 @@ use std::sync::{RwLock, Arc};
 extern "C" {
     fn register_image(addr: usize);
     fn unregister_image(addr: usize);
+    fn vxGetContext(ref_: vx_reference) -> vx_context;
 }
 use openvx_core::unified_c_api::VxCImage;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_image, vx_status, vx_enum, vx_size, vx_uint32,
     vx_rectangle_t, vx_imagepatch_addressing_t, vx_map_id, vx_df_image, vx_int32,
+    vx_reference,
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_DF_IMAGE_RGB, VX_DF_IMAGE_RGBA, VX_DF_IMAGE_RGBX, VX_DF_IMAGE_NV12,
@@ -174,6 +176,13 @@ pub extern "C" fn vxCreateVirtualImage(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
+
+    // Get the context from the graph
+    let context = unsafe { vxGetContext(graph as vx_reference) };
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
     // Note: Virtual images CAN have width/height of 0 - they get dimensions
     // from connected nodes during graph verification
     // VX_DF_IMAGE_VIRT is valid for virtual images
@@ -191,7 +200,7 @@ pub extern "C" fn vxCreateVirtualImage(
         height: store_height,
         format: store_format,
         is_virtual: true,
-        context: std::ptr::null_mut(), // Virtual images use graph context
+        context, // Store the context from the graph
         data: Arc::new(RwLock::new(Vec::new())),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
         parent: None,
