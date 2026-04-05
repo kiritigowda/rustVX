@@ -239,6 +239,9 @@ pub extern "C" fn vxCreateVirtualImage(
 }
 
 /// Create an image from existing handles
+/// 
+/// IMPORTANT: The image created does NOT own the memory - it references external memory
+/// provided by the caller. vxReleaseImage will NOT free this memory.
 #[no_mangle]
 pub extern "C" fn vxCreateImageFromHandle(
     context: vx_context,
@@ -265,15 +268,14 @@ pub extern "C" fn vxCreateImageFromHandle(
             return std::ptr::null_mut();
         }
 
-        // Validate dimensions are reasonable
-        const MAX_DIMENSION: u32 = 65536; // Max reasonable dimension
+        const MAX_DIMENSION: u32 = 65536;
         if width > MAX_DIMENSION || height > MAX_DIMENSION {
             return std::ptr::null_mut();
         }
 
-        // For planar formats, validate num_planes matches expected
+        // Validate expected number of planes for the format
         let expected_planes = VxCImage::num_planes(color) as vx_uint32;
-        if VxCImage::is_planar_format(color) && num_planes != expected_planes {
+        if num_planes != expected_planes {
             return std::ptr::null_mut();
         }
 
@@ -283,66 +285,19 @@ pub extern "C" fn vxCreateImageFromHandle(
             return std::ptr::null_mut();
         }
 
-        // Allocate data buffer
-        let mut data = vec![0u8; total_size];
-
-        // Copy data from each plane
-        let is_planar = VxCImage::is_planar_format(color);
-        
-        if is_planar {
-            // For planar formats, copy each plane separately
-            let num_planes_usize = num_planes as usize;
-            for plane_idx in 0..num_planes_usize {
-                let plane_ptr_ptr = ptrs.add(plane_idx);
-                let plane_ptr = *plane_ptr_ptr;
-                
-                if plane_ptr.is_null() {
-                    return std::ptr::null_mut();
-                }
-                
-                let plane_offset = VxCImage::plane_offset(width, height, color, plane_idx);
-                let plane_size = VxCImage::plane_size(width, height, color, plane_idx);
-                
-                if plane_size > 0 && plane_offset + plane_size <= total_size {
-                    std::ptr::copy_nonoverlapping(
-                        plane_ptr as *const u8,
-                        data.as_mut_ptr().add(plane_offset),
-                        plane_size
-                    );
-                }
+        // Validate all plane pointers
+        let mut external_ptrs: Vec<*mut u8> = Vec::with_capacity(num_planes as usize);
+        for plane_idx in 0..num_planes as usize {
+            let plane_ptr = *ptrs.add(plane_idx);
+            if plane_ptr.is_null() {
+                return std::ptr::null_mut();
             }
-        } else {
-            // For packed/interleaved formats, copy from first plane
-            let user_ptr = *ptrs;
-            if !user_ptr.is_null() {
-                // CRITICAL FIX: Check stride_y is positive BEFORE using
-                if addr.stride_y <= 0 {
-                    return std::ptr::null_mut();
-                }
-                
-                let stride = addr.stride_y as usize;
-                let expected_stride = width as usize * VxCImage::bytes_per_pixel(color);
-                
-                // Validate stride is reasonable
-                if stride > expected_stride * 100 {
-                    return std::ptr::null_mut();
-                }
-                
-                // Copy row by row to handle stride
-                let bpp = VxCImage::bytes_per_pixel(color);
-                let row_size = width as usize * bpp;
-                
-                for y in 0..height as usize {
-                    let src_offset = y * stride;
-                    let dst_offset = y * row_size;
-                    std::ptr::copy_nonoverlapping(
-                        (user_ptr as *const u8).add(src_offset),
-                        data.as_mut_ptr().add(dst_offset),
-                        row_size
-                    );
-                }
-            }
+            external_ptrs.push(plane_ptr as *mut u8);
         }
+
+        // Create an empty Vec - we won't use it for external memory
+        // The Vec will have capacity 0 and won't allocate
+        let data = Vec::with_capacity(0);
 
         let image = Box::new(VxCImage {
             width,
@@ -353,16 +308,14 @@ pub extern "C" fn vxCreateImageFromHandle(
             data: Arc::new(RwLock::new(data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: None,
-            is_external_memory: false,
-            external_ptrs: Vec::new(),
+            is_external_memory: true,
+            external_ptrs,
         });
 
         let image_ptr = Box::into_raw(image) as vx_image;
 
         // Register image address in unified registry for type queries (vxQueryReference)
-        unsafe {
-            register_image(image_ptr as usize);
-        }
+        register_image(image_ptr as usize);
         
         // Register as valid image for double-free protection
         register_valid_image(image_ptr as usize);
