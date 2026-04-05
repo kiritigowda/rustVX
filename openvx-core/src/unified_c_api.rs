@@ -864,71 +864,141 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     eprintln!("DEBUG vxProcessGraph: START graph={:?}", graph);
     
+    // Null check for graph pointer
     if graph.is_null() {
-        eprintln!("DEBUG vxProcessGraph: NULL graph");
+        eprintln!("ERROR: vxProcessGraph: graph is NULL");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     let graph_id = graph as u64;
     eprintln!("DEBUG vxProcessGraph: graph_id=0x{:x}", graph_id);
     
-    if let Ok(graphs) = GRAPHS_DATA.lock() {
-        eprintln!("DEBUG vxProcessGraph: got GRAPHS_DATA lock, {} graphs", graphs.len());
-        if let Some(g) = graphs.get(&graph_id) {
-            // Check if verified
-            let verified = g.verified.lock().unwrap();
-            eprintln!("DEBUG vxProcessGraph: verified={}", *verified);
-            if !*verified {
+    // Validate graph_id is valid
+    if graph_id == 0 {
+        eprintln!("ERROR: vxProcessGraph: graph_id is 0 (invalid)");
+        return VX_ERROR_INVALID_GRAPH;
+    }
+    
+    // Get graph data with null check
+    let graph_data = {
+        match GRAPHS_DATA.lock() {
+            Ok(graphs) => {
+                eprintln!("DEBUG vxProcessGraph: got GRAPHS_DATA lock, {} graphs", graphs.len());
+                match graphs.get(&graph_id) {
+                    Some(g) => {
+                        // Clone necessary data to avoid holding lock during execution
+                        Some(g.clone())
+                    }
+                    None => {
+                        eprintln!("ERROR: vxProcessGraph: graph {} not found in GRAPHS_DATA", graph_id);
+                        return VX_ERROR_INVALID_GRAPH;
+                    }
+                }
+            }
+            Err(_) => {
+                eprintln!("ERROR: vxProcessGraph: failed to acquire GRAPHS_DATA lock");
                 return VX_ERROR_INVALID_GRAPH;
             }
-            drop(verified);
-            
-            // Set state to running
+        }
+    };
+    
+    let g = match graph_data {
+        Some(g) => g,
+        None => {
+            eprintln!("ERROR: vxProcessGraph: graph data is None");
+            return VX_ERROR_INVALID_GRAPH;
+        }
+    };
+    
+    // Check if verified
+    let verified = match g.verified.lock() {
+        Ok(v) => {
+            eprintln!("DEBUG vxProcessGraph: verified={}", *v);
+            *v
+        }
+        Err(_) => {
+            eprintln!("ERROR: vxProcessGraph: failed to acquire verified lock");
+            return VX_ERROR_INVALID_GRAPH;
+        }
+    };
+    
+    if !verified {
+        eprintln!("ERROR: vxProcessGraph: graph is not verified");
+        return VX_ERROR_INVALID_GRAPH;
+    }
+    
+    // Set state to running
+    if let Ok(mut state) = g.state.lock() {
+        *state = VxGraphState::VxGraphStateRunning;
+    }
+    
+    // Get nodes and execute them
+    let nodes = match g.nodes.read() {
+        Ok(n) => {
+            eprintln!("DEBUG vxProcessGraph: {} nodes in graph", n.len());
+            n
+        }
+        Err(_) => {
+            eprintln!("ERROR: vxProcessGraph: failed to acquire nodes lock");
+            return VX_ERROR_INVALID_GRAPH;
+        }
+    };
+    
+    // Check if there are any nodes to execute
+    if nodes.is_empty() {
+        eprintln!("DEBUG vxProcessGraph: graph has no nodes to execute");
+        // Mark as completed (empty graph is valid)
+        if let Ok(mut state) = g.state.lock() {
+            *state = VxGraphState::VxGraphStateCompleted;
+        }
+        return VX_SUCCESS;
+    }
+    
+    // Execute each node in order with null checks
+    for (i, node_id) in nodes.iter().enumerate() {
+        eprintln!("DEBUG vxProcessGraph: executing node {} with node_id=0x{:x}", i, node_id);
+        
+        // Validate node_id
+        if *node_id == 0 {
+            eprintln!("ERROR: vxProcessGraph: node_id is 0 at index {}", i);
             if let Ok(mut state) = g.state.lock() {
-                *state = VxGraphState::VxGraphStateRunning;
+                *state = VxGraphState::VxGraphStateAbandoned;
             }
-            
-            // Get nodes and execute them
-            let nodes = g.nodes.read().unwrap();
-            eprintln!("DEBUG vxProcessGraph: {} nodes in graph", nodes.len());
-            
-            // Execute each node in order
-            for node_id in nodes.iter() {
-                eprintln!("DEBUG vxProcessGraph: executing node_id=0x{:x}", node_id);
-                if let Some(status) = execute_node(*node_id) {
-                    eprintln!("DEBUG vxProcessGraph: execute_node returned {}", status);
-                    if status != VX_SUCCESS {
-                        // Mark as abandoned on failure
-                        if let Ok(mut state) = g.state.lock() {
-                            *state = VxGraphState::VxGraphStateAbandoned;
-                        }
-                        return status;
-                    }
-                } else {
-                    // Node not found - mark as abandoned
-                    eprintln!("DEBUG vxProcessGraph: execute_node returned None");
+            return VX_ERROR_INVALID_NODE;
+        }
+        
+        match execute_node(*node_id) {
+            Some(status) => {
+                eprintln!("DEBUG vxProcessGraph: execute_node returned {}", status);
+                if status != VX_SUCCESS {
+                    // Mark as abandoned on failure
+                    eprintln!("ERROR: vxProcessGraph: node {} failed with status {}", node_id, status);
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
-                    return VX_ERROR_INVALID_NODE;
+                    return status;
                 }
             }
-            
-            // Mark as completed
-            if let Ok(mut state) = g.state.lock() {
-                *state = VxGraphState::VxGraphStateCompleted;
+            None => {
+                // Node not found - mark as abandoned
+                eprintln!("ERROR: vxProcessGraph: execute_node returned None for node {}", node_id);
+                if let Ok(mut state) = g.state.lock() {
+                    *state = VxGraphState::VxGraphStateAbandoned;
+                }
+                return VX_ERROR_INVALID_NODE;
             }
-            
-            // Auto-age any registered delays
-            auto_age_delays(graph_id);
-            
-            return VX_SUCCESS;
-        } else {
-            eprintln!("DEBUG vxProcessGraph: graph not found in GRAPHS_DATA");
         }
     }
     
-    VX_ERROR_INVALID_GRAPH
+    // Mark as completed
+    if let Ok(mut state) = g.state.lock() {
+        *state = VxGraphState::VxGraphStateCompleted;
+    }
+    
+    // Auto-age any registered delays
+    auto_age_delays(graph_id);
+    
+    VX_SUCCESS
 }
 
 /// Execute a single node by looking up its kernel and parameters
@@ -953,26 +1023,36 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                 let border = node_data.border_mode.lock().ok()?;
                 (node_data.kernel_id, param_refs, *border)
             } else {
-                eprintln!("DEBUG execute_node: node not found in NODES");
-                return None;
+                eprintln!("ERROR: execute_node: node {} not found", node_id);
+                return Some(VX_ERROR_INVALID_NODE);
             }
         } else {
             return None;
         }
     };
     
+    // Validate kernel_id
+    if kernel_id == 0 {
+        eprintln!("ERROR: execute_node: kernel_id is 0 for node {}", node_id);
+        return Some(VX_ERROR_INVALID_KERNEL);
+    }
+    
     // Get kernel name
+    eprintln!("DEBUG execute_node: looking up kernel_id=0x{:x}", kernel_id);
     let kernel_name = {
         if let Ok(kernels) = crate::c_api::KERNELS.lock() {
             if let Some(kernel) = kernels.get(&kernel_id) {
+                eprintln!("DEBUG execute_node: found kernel name in c_api KERNELS: {}", kernel.name);
                 kernel.name.clone()
             } else {
                 // Check unified kernels
                 drop(kernels);
                 if let Ok(unified_kernels) = KERNELS.lock() {
                     if let Some(kernel) = unified_kernels.get(&kernel_id) {
+                        eprintln!("DEBUG execute_node: found kernel name in unified KERNELS: {}", kernel.name);
                         kernel.name.clone()
                     } else {
+                        eprintln!("ERROR: execute_node: kernel {} not found for node {}", kernel_id, node_id);
                         return Some(VX_ERROR_INVALID_KERNEL);
                     }
                 } else {
@@ -984,18 +1064,42 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
         }
     };
     
+    // Validate kernel_name is not empty
+    if kernel_name.is_empty() {
+        eprintln!("ERROR: execute_node: kernel name is empty for node {}", node_id);
+        return Some(VX_ERROR_INVALID_KERNEL);
+    }
+    
     // Get actual parameter references (convert u64 to vx_reference)
     let mut params: Vec<vx_reference> = Vec::new();
-    for param_id_opt in param_ids.iter() {
+    
+    // Validate all parameters are set
+    for (i, param_id_opt) in param_ids.iter().enumerate() {
+        if param_id_opt.is_none() {
+            eprintln!("ERROR: execute_node: parameter {} not set for node {}", i, node_id);
+            return Some(VX_ERROR_INVALID_PARAMETERS);
+        }
+    }
+    
+    for (idx, param_id_opt) in param_ids.iter().enumerate() {
         if let Some(param_id) = param_id_opt {
+            eprintln!("DEBUG execute_node: param[{}] = 0x{:x}", idx, param_id);
+            // Validate parameter is not null pointer
+            if *param_id == 0 {
+                eprintln!("ERROR: execute_node: parameter {} is null pointer (0) for node {}", idx, node_id);
+                return Some(VX_ERROR_INVALID_PARAMETERS);
+            }
             params.push(*param_id as vx_reference);
         } else {
+            eprintln!("ERROR: execute_node: param[{}] = null", idx);
             params.push(std::ptr::null_mut());
         }
     }
     
+    eprintln!("DEBUG execute_node: dispatching to kernel '{}' with {} params", kernel_name, params.len());
     // Dispatch to appropriate VXU implementation based on kernel name
     let result = dispatch_kernel_with_border(&kernel_name, &params, Some(node_border));
+    eprintln!("DEBUG execute_node: dispatch_kernel_with_border returned {}", result);
     Some(result)
 }
 
@@ -1644,22 +1748,49 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 7 {
                 let input = params[0] as vx_image;
                 let corners = params[6] as vx_array;
-                if !input.is_null() && !corners.is_null() {
-                    // Use default values for optional parameters
-                    crate::vxu_impl::vxu_harris_corners_impl(
-                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
-                        input,
-                        std::ptr::null_mut(), // strength_thresh
-                        std::ptr::null_mut(), // min_distance
-                        std::ptr::null_mut(), // sensitivity
-                        3, // gradient_size
-                        3, // block_size
-                        corners,
-                        std::ptr::null_mut() // num_corners
-                    )
-                } else {
-                    VX_ERROR_INVALID_PARAMETERS
+                // Validate required parameters
+                if input.is_null() {
+                    eprintln!("DEBUG: harris_corners - input is null");
+                    return VX_ERROR_INVALID_PARAMETERS;
                 }
+                if corners.is_null() {
+                    eprintln!("DEBUG: harris_corners - corners is null");
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                // Validate image before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { 
+                    eprintln!("DEBUG: harris_corners - input image validation failed");
+                    return status; 
+                }
+                
+                // Get optional scalar parameters (params 1-5) - validate if present
+                let strength_thresh = if params.len() > 1 && !params[1].is_null() { params[1] as vx_scalar } else { std::ptr::null_mut() };
+                let min_distance = if params.len() > 2 && !params[2].is_null() { params[2] as vx_scalar } else { std::ptr::null_mut() };
+                let sensitivity = if params.len() > 3 && !params[3].is_null() { params[3] as vx_scalar } else { std::ptr::null_mut() };
+                // Validate gradient_size and block_size parameters
+                if params.len() <= 4 {
+                    eprintln!("DEBUG: harris_corners - params too short for gradient_size");
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                if params.len() <= 5 {
+                    eprintln!("DEBUG: harris_corners - params too short for block_size");
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                let gradient_size = if !params[4].is_null() { params[4] as vx_enum } else { 3 };
+                let block_size = if !params[5].is_null() { params[5] as vx_enum } else { 3 };
+                
+                crate::vxu_impl::vxu_harris_corners_impl(
+                    unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                    input,
+                    strength_thresh,
+                    min_distance,
+                    sensitivity,
+                    gradient_size,
+                    block_size,
+                    corners,
+                    std::ptr::null_mut() // num_corners
+                )
             } else {
                 VX_ERROR_INVALID_PARAMETERS
             }
@@ -2904,7 +3035,9 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
         }
         
         let addr = inner_ref as usize;
+        let addr_u64 = addr as u64;
         let mut ref_count_was = 0;
+        let mut should_remove = false;
         
         // Decrement reference count in unified registry
         if let Ok(counts) = REFERENCE_COUNTS.lock() {
@@ -2914,13 +3047,13 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
                     count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
                     ref_count_was = current - 1;
                 } else {
+                    should_remove = true;
                     ref_count_was = 0;
                 }
             }
         }
         
         // Also decrement internal ref_count based on object type
-        let addr_u64 = addr as u64;
         // Try kernel
         if let Ok(kernels) = crate::c_api::KERNELS.lock() {
             if let Some(k) = kernels.get(&addr_u64) {
@@ -2951,7 +3084,12 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
         }
         
         // Clean up unified registry if count reached zero
-        if ref_count_was == 0 {
+        if should_remove || ref_count_was == 0 {
+            // Remove from GRAPHS_DATA if it's a graph
+            if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
+                graphs_data.remove(&addr_u64);
+            }
+            
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
             }

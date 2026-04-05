@@ -406,6 +406,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
         return VX_ERROR_INVALID_REFERENCE;
     }
     let addr = _ref_ as usize;
+    let id = _ref_ as u64;
     
     // Increment reference count in unified registry
     if let Ok(counts) = REFERENCE_COUNTS.lock() {
@@ -413,6 +414,73 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return VX_SUCCESS;
         }
+    }
+    
+    // If not in REFERENCE_COUNTS, check if reference exists in any registry
+    // and if so, add it to REFERENCE_COUNTS with count=2 (original + retained)
+    let mut found = false;
+    
+    // Check graphs
+    if let Ok(graphs) = GRAPHS.lock() {
+        if graphs.contains_key(&id) {
+            found = true;
+        }
+    }
+    if let Ok(graphs) = crate::unified_c_api::GRAPHS_DATA.lock() {
+        if graphs.contains_key(&id) {
+            found = true;
+        }
+    }
+    
+    // Check contexts
+    if !found {
+        if let Ok(contexts) = CONTEXTS.lock() {
+            if contexts.contains(&id) {
+                found = true;
+            }
+        }
+    }
+    if !found {
+        if let Ok(contexts) = UNIFIED_CONTEXTS.lock() {
+            if contexts.contains_key(&addr) {
+                found = true;
+            }
+        }
+    }
+    
+    // Check kernels
+    if !found {
+        if let Ok(kernels) = KERNELS.lock() {
+            if kernels.contains_key(&id) {
+                found = true;
+            }
+        }
+    }
+    
+    // Check nodes
+    if !found {
+        if let Ok(nodes) = NODES.lock() {
+            if nodes.contains_key(&id) {
+                found = true;
+            }
+        }
+    }
+    
+    // Check parameters
+    if !found {
+        if let Ok(params) = PARAMETERS.lock() {
+            if params.contains_key(&id) {
+                found = true;
+            }
+        }
+    }
+    
+    if found {
+        // Add to REFERENCE_COUNTS with count=2 (original reference + retained)
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(addr, std::sync::atomic::AtomicUsize::new(2));
+        }
+        return VX_SUCCESS;
     }
     
     VX_ERROR_INVALID_REFERENCE
@@ -601,10 +669,43 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = g as u64;
+        let addr = g as usize;
         
-        // Just remove from GRAPHS - reference counting is handled by vxReleaseReference
-        if let Ok(mut graphs) = GRAPHS.lock() {
-            graphs.remove(&id);
+        // Decrement reference count first
+        let mut should_remove = false;
+        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+            if let Some(count) = counts.get(&addr) {
+                let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                if current > 1 {
+                    count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    should_remove = true;
+                }
+            }
+        }
+        
+        if should_remove {
+            // Remove from all registries when count reaches 0
+            if let Ok(mut graphs) = GRAPHS.lock() {
+                graphs.remove(&id);
+            }
+            if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                graphs_data.remove(&id);
+            }
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+            if let Ok(mut names) = REFERENCE_NAMES.lock() {
+                names.remove(&addr);
+            }
+        } else {
+            // Just remove from GRAPHS but keep in unified registries
+            if let Ok(mut graphs) = GRAPHS.lock() {
+                graphs.remove(&id);
+            }
         }
         
         *graph = std::ptr::null_mut();

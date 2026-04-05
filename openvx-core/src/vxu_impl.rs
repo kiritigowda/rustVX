@@ -2266,14 +2266,23 @@ pub fn vxu_harris_corners_impl(
     _corners: vx_array,
     _num_corners: vx_scalar,
 ) -> vx_status {
-    if context.is_null() || input.is_null() {
+    // Validate all required parameters with null checks
+    if context.is_null() {
+        eprintln!("DEBUG vxu_harris_corners_impl: context is null");
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if input.is_null() {
+        eprintln!("DEBUG vxu_harris_corners_impl: input is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            None => {
+                eprintln!("DEBUG vxu_harris_corners_impl: c_image_to_rust failed");
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
         };
 
         // Default parameters
