@@ -17,10 +17,10 @@ pub fn register_vision_kernels_in_global_registry() {
     use openvx_core::unified_c_api::KERNELS;
     
     if let Ok(mut kernels) = KERNELS.lock() {
-        // Register vision kernels using their correct enum values as keys
-        // This ensures vxGetKernelByEnum returns the correct kernel
+        // Register vision kernels using kernel enum + offset
+        // Use 0x10000 + kernel_enum to match c_api.rs registration
         for (name, kernel_enum, _num_params) in VISION_KERNELS.iter() {
-            let kernel_id = *kernel_enum as u64;
+            let kernel_id = 0x10000 + *kernel_enum as u64;
             
             // Only register if not already present
             if !kernels.contains_key(&kernel_id) {

@@ -324,7 +324,10 @@ fn register_standard_kernels(context_id: u32) {
     
     if let Ok(mut kernels) = KERNELS.lock() {
         for (name, kernel_enum, num_params) in standard_kernels {
-            let kernel_id = kernel_enum as u64;  // Use enum value as ID, not random ID!
+            // Use kernel enum + offset to avoid collision with graph IDs
+            // Graph IDs use generate_id() starting at 1
+            // Kernel IDs use 0x10000 + kernel_enum to ensure they're unique
+            let kernel_id = 0x10000 + kernel_enum as u64;
             let kernel = Arc::new(KernelData {
                 id: kernel_id,
                 context_id,
@@ -335,7 +338,7 @@ fn register_standard_kernels(context_id: u32) {
             });
             kernels.insert(kernel_id, kernel);
             
-            // Register kernel in REFERENCE_COUNTS and REFERENCE_TYPES
+            // Register kernel in REFERENCE_COUNTS and REFERENCE_TYPES using the offset ID
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.insert(kernel_id as usize, AtomicUsize::new(1));
             }
