@@ -3488,12 +3488,13 @@ pub const VX_MATRIX_PATTERN_GAUSSIAN: vx_enum = 2;
 pub const VX_MATRIX_PATTERN_CUSTOM: vx_enum = 3;
 pub const VX_MATRIX_PATTERN_PYRAMID_SCALE: vx_enum = 4;
 
-// Pyramid attributes
-pub const VX_PYRAMID_LEVELS: vx_enum = 0x00;
-pub const VX_PYRAMID_SCALE: vx_enum = 0x01;
-pub const VX_PYRAMID_FORMAT: vx_enum = 0x02;
-pub const VX_PYRAMID_WIDTH: vx_enum = 0x03;
-pub const VX_PYRAMID_HEIGHT: vx_enum = 0x04;
+// Pyramid attributes - calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_PYRAMID) + offset
+// VX_ATTRIBUTE_BASE(0x000, 0x809) = 0x00080900
+pub const VX_PYRAMID_LEVELS: vx_enum = 0x00080900;
+pub const VX_PYRAMID_SCALE: vx_enum = 0x00080901;
+pub const VX_PYRAMID_FORMAT: vx_enum = 0x00080902;
+pub const VX_PYRAMID_WIDTH: vx_enum = 0x00080903;
+pub const VX_PYRAMID_HEIGHT: vx_enum = 0x00080904;
 
 // Matrix attributes
 pub const VX_MATRIX_TYPE: vx_enum = 0x00;
@@ -4389,11 +4390,49 @@ pub extern "C" fn vxReleaseTensor(tensor: *mut vx_tensor) -> i32 {
 pub extern "C" fn vxAddParameterToGraph(
     graph: vx_graph,
     parameter: vx_parameter,
-) -> vx_graph_parameter {
-    if graph.is_null() || parameter.is_null() {
-        return std::ptr::null_mut();
+) -> vx_status {
+    if graph.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    parameter as vx_graph_parameter
+    if parameter.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    
+    // Get the graph ID
+    let graph_id = graph as u64;
+    
+    // Add parameter to graph's parameter list
+    if let Ok(graphs) = GRAPHS_DATA.lock() {
+        if let Some(g) = graphs.get(&graph_id) {
+            let param_id = parameter as u64;
+            
+            // Verify parameter exists in either PARAMETERS registry
+            let param_exists = if let Ok(params) = PARAMETERS.lock() {
+                params.contains_key(&param_id)
+            } else {
+                false
+            };
+            
+            let param_exists = param_exists || if let Ok(c_api_params) = crate::c_api::PARAMETERS.lock() {
+                c_api_params.contains_key(&param_id)
+            } else {
+                false
+            };
+            
+            if !param_exists {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+            
+            // Add to graph's parameter list
+            if let Ok(mut graph_params) = g.parameters.write() {
+                graph_params.push(param_id);
+            }
+            
+            return VX_SUCCESS;
+        }
+    }
+    
+    VX_ERROR_INVALID_GRAPH
 }
 
 #[no_mangle]
