@@ -394,22 +394,21 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
 // ============================================================================
 
 #[no_mangle]
-pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
+pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_uint32 {
     if _ref_.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
+        return 0;
     }
     let addr = _ref_ as usize;
     
     // Increment reference count in unified registry
     if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if let Some(count) = counts.get(&addr) {
-            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        } else {
-            return VX_ERROR_INVALID_REFERENCE;
+            let new_count = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            return new_count as vx_uint32;
         }
     }
     
-    VX_SUCCESS
+    0
 }
 
 #[no_mangle]

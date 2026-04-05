@@ -1719,77 +1719,77 @@ pub extern "C" fn vxQueryReference(
 }
 
 /// Release reference (decrement reference count)
-/// Returns VX_SUCCESS
+/// Returns the new reference count (0 if freed)
 #[no_mangle]
-pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
+pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_uint32 {
     if ref_.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
+        return 0;
     }
 
     unsafe {
         let inner_ref = *ref_;
-        if !inner_ref.is_null() {
-            let addr = inner_ref as usize;
-            let mut ref_count_was = 0;
-            
-            // Decrement reference count in unified registry
-            if let Ok(counts) = REFERENCE_COUNTS.lock() {
-                if let Some(count) = counts.get(&addr) {
-                    let current = count.load(std::sync::atomic::Ordering::SeqCst);
-                    if current > 1 {
-                        count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                        ref_count_was = current - 1;
-                    } else {
-                        ref_count_was = 0;
-                    }
-                }
-            }
-            
-            // Also decrement internal ref_count based on object type
-            let addr_u64 = addr as u64;
-            // Try kernel
-            if let Ok(kernels) = crate::c_api::KERNELS.lock() {
-                if let Some(k) = kernels.get(&addr_u64) {
-                    k.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                    drop(kernels);
-                }
-            }
-            // Try parameter
-            if let Ok(params) = crate::c_api::PARAMETERS.lock() {
-                if let Some(p) = params.get(&addr_u64) {
-                    p.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                    drop(params);
-                }
-            }
-            // Try node
-            if let Ok(nodes) = crate::c_api::NODES.lock() {
-                if let Some(n) = nodes.get(&addr_u64) {
-                    n.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                    drop(nodes);
-                }
-            }
-            
-            // Clean up unified registry if count reached zero
-            if ref_count_was == 0 {
-                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                    counts.remove(&addr);
-                }
-                if let Ok(mut names) = REFERENCE_NAMES.lock() {
-                    names.remove(&addr);
-                }
-                if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                    types.remove(&addr);
-                }
-            }
-            
-            // Always set the caller's pointer to null
-            *ref_ = std::ptr::null_mut();
-            
-            return VX_SUCCESS;
+        if inner_ref.is_null() {
+            return 0;
         }
+        
+        let addr = inner_ref as usize;
+        let mut ref_count_was = 0;
+        
+        // Decrement reference count in unified registry
+        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+            if let Some(count) = counts.get(&addr) {
+                let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                if current > 1 {
+                    count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                    ref_count_was = current - 1;
+                } else {
+                    ref_count_was = 0;
+                }
+            }
+        }
+        
+        // Also decrement internal ref_count based on object type
+        let addr_u64 = addr as u64;
+        // Try kernel
+        if let Ok(kernels) = crate::c_api::KERNELS.lock() {
+            if let Some(k) = kernels.get(&addr_u64) {
+                k.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                drop(kernels);
+            }
+        }
+        // Try parameter
+        if let Ok(params) = crate::c_api::PARAMETERS.lock() {
+            if let Some(p) = params.get(&addr_u64) {
+                p.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                drop(params);
+            }
+        }
+        // Try node
+        if let Ok(nodes) = crate::c_api::NODES.lock() {
+            if let Some(n) = nodes.get(&addr_u64) {
+                n.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                drop(nodes);
+            }
+        }
+        
+        // Clean up unified registry if count reached zero
+        if ref_count_was == 0 {
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut names) = REFERENCE_NAMES.lock() {
+                names.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+        }
+        
+        // Always set the caller's pointer to null
+        *ref_ = std::ptr::null_mut();
+        
+        return ref_count_was as vx_uint32;
     }
-
-    VX_SUCCESS
 }
 
 /// Set reference name for debugging
