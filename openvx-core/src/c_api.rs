@@ -324,7 +324,7 @@ fn register_standard_kernels(context_id: u32) {
     
     if let Ok(mut kernels) = KERNELS.lock() {
         for (name, kernel_enum, num_params) in standard_kernels {
-            let kernel_id = generate_id();
+            let kernel_id = kernel_enum as u64;  // Use enum value as ID, not random ID!
             let kernel = Arc::new(KernelData {
                 id: kernel_id,
                 context_id,

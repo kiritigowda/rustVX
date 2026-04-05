@@ -17,33 +17,20 @@ pub fn register_vision_kernels_in_global_registry() {
     use openvx_core::unified_c_api::KERNELS;
     
     if let Ok(mut kernels) = KERNELS.lock() {
-        // Generate unique IDs for each kernel
-        static NEXT_KERNEL_ID: AtomicUsize = AtomicUsize::new(0x10000);
-        
-        // Track registered kernel names to avoid duplicates
-        let registered_names: HashSet<String> = VISION_KERNELS
-            .iter()
-            .filter_map(|(name, _, _)| {
-                // Check if a kernel with this name already exists in the registry
-                // Since VxCKernel fields are private, we can't check directly
-                // Instead, we rely on the fact that standard kernels are already
-                // registered by c_api.rs register_standard_kernels()
-                Some(name.to_string())
-            })
-            .collect();
-        
+        // Register vision kernels using their correct enum values as keys
+        // This ensures vxGetKernelByEnum returns the correct kernel
         for (name, kernel_enum, _num_params) in VISION_KERNELS.iter() {
-            // The standard_kernels in c_api.rs already register kernels by enum
-            // We just need to ensure vision kernel modules can be found
-            // For now, skip registration if standard_kernels already covers this
-            let kernel_id = NEXT_KERNEL_ID.fetch_add(1, Ordering::SeqCst) as u64;
+            let kernel_id = *kernel_enum as u64;
             
-            let kernel_data = Arc::new(openvx_core::unified_c_api::VxCKernel::new(
-                *kernel_enum,
-                name.to_string(),
-            ));
-            
-            kernels.insert(kernel_id, kernel_data);
+            // Only register if not already present
+            if !kernels.contains_key(&kernel_id) {
+                let kernel_data = Arc::new(openvx_core::unified_c_api::VxCKernel::new(
+                    *kernel_enum,
+                    name.to_string(),
+                ));
+                
+                kernels.insert(kernel_id, kernel_data);
+            }
         }
     }
 }

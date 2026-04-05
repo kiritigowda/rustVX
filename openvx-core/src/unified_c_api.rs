@@ -517,6 +517,40 @@ fn is_image_reference(ref_id: u64) -> bool {
     false
 }
 
+/// Validate image reference before access
+fn validate_image(image: vx_image) -> vx_status {
+    if image.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    // Check if image pointer is valid by attempting to access its data
+    unsafe {
+        // Try to read the image data lock - if it fails, the image is invalid
+        let img = &*(image as *const VxCImage);
+        if img.data.read().is_err() {
+            return VX_ERROR_INVALID_REFERENCE;
+        }
+    }
+    VX_SUCCESS
+}
+
+/// Get image data safely with validation
+unsafe fn get_image_data_safe(image: vx_image) -> Result<std::sync::RwLockReadGuard<'static, Vec<u8>>, vx_status> {
+    if image.is_null() {
+        return Err(VX_ERROR_INVALID_REFERENCE);
+    }
+    let img = &*(image as *const VxCImage);
+    img.data.read().map_err(|_| VX_ERROR_INVALID_REFERENCE)
+}
+
+/// Get mutable image data safely with validation
+unsafe fn get_image_data_mut_safe(image: vx_image) -> Result<std::sync::RwLockWriteGuard<'static, Vec<u8>>, vx_status> {
+    if image.is_null() {
+        return Err(VX_ERROR_INVALID_REFERENCE);
+    }
+    let img = &*(image as *mut VxCImage);
+    img.data.write().map_err(|_| VX_ERROR_INVALID_REFERENCE)
+}
+
 /// Virtual image info - tracks virtual image state
 #[derive(Debug, Clone)]
 pub struct VirtualImageInfo {
@@ -572,6 +606,10 @@ fn infer_virtual_image_dimensions(
         // The input to the producer node should determine the dimensions
         if !producer_params.is_empty() {
             if let Some(Some(input_ref)) = producer_params.get(0) {
+                // Validate image before accessing
+                if validate_image(*input_ref as vx_image) != VX_SUCCESS {
+                    return None;
+                }
                 // Get dimensions from the input image
                 unsafe {
                     let img = &*(*input_ref as *const VxCImage);
@@ -824,16 +862,22 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 /// Process graph - execute nodes in topological order
 #[no_mangle]
 pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
+    eprintln!("DEBUG vxProcessGraph: START graph={:?}", graph);
+    
     if graph.is_null() {
+        eprintln!("DEBUG vxProcessGraph: NULL graph");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     let graph_id = graph as u64;
+    eprintln!("DEBUG vxProcessGraph: graph_id=0x{:x}", graph_id);
     
     if let Ok(graphs) = GRAPHS_DATA.lock() {
+        eprintln!("DEBUG vxProcessGraph: got GRAPHS_DATA lock, {} graphs", graphs.len());
         if let Some(g) = graphs.get(&graph_id) {
             // Check if verified
             let verified = g.verified.lock().unwrap();
+            eprintln!("DEBUG vxProcessGraph: verified={}", *verified);
             if !*verified {
                 return VX_ERROR_INVALID_GRAPH;
             }
@@ -846,10 +890,13 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
             
             // Get nodes and execute them
             let nodes = g.nodes.read().unwrap();
+            eprintln!("DEBUG vxProcessGraph: {} nodes in graph", nodes.len());
             
             // Execute each node in order
             for node_id in nodes.iter() {
+                eprintln!("DEBUG vxProcessGraph: executing node_id=0x{:x}", node_id);
                 if let Some(status) = execute_node(*node_id) {
+                    eprintln!("DEBUG vxProcessGraph: execute_node returned {}", status);
                     if status != VX_SUCCESS {
                         // Mark as abandoned on failure
                         if let Ok(mut state) = g.state.lock() {
@@ -859,6 +906,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                     }
                 } else {
                     // Node not found - mark as abandoned
+                    eprintln!("DEBUG vxProcessGraph: execute_node returned None");
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
@@ -875,6 +923,8 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
             auto_age_delays(graph_id);
             
             return VX_SUCCESS;
+        } else {
+            eprintln!("DEBUG vxProcessGraph: graph not found in GRAPHS_DATA");
         }
     }
     
@@ -883,16 +933,27 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
 /// Execute a single node by looking up its kernel and parameters
 fn execute_node(node_id: u64) -> Option<vx_status> {
-    // Debug logging removed
+    eprintln!("DEBUG execute_node: START node_id=0x{:x}", node_id);
+    
     // Get node data including border mode
     let (kernel_id, param_ids, node_border) = {
         if let Ok(nodes) = crate::c_api::NODES.lock() {
+            eprintln!("DEBUG execute_node: got NODES lock, {} nodes", nodes.len());
             if let Some(node_data) = nodes.get(&node_id) {
                 let params = node_data.parameters.lock().ok()?;
                 let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
+                eprintln!("DEBUG execute_node: node_id=0x{:x}, kernel_id=0x{:x}, num_params={}", node_id, node_data.kernel_id, param_refs.len());
+                for (i, p) in param_refs.iter().enumerate() {
+                    if let Some(v) = p {
+                        eprintln!("  param[{}] = 0x{:x}", i, v);
+                    } else {
+                        eprintln!("  param[{}] = None", i);
+                    }
+                }
                 let border = node_data.border_mode.lock().ok()?;
                 (node_data.kernel_id, param_refs, *border)
             } else {
+                eprintln!("DEBUG execute_node: node not found in NODES");
                 return None;
             }
         } else {
@@ -946,6 +1007,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_box3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -965,6 +1032,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_median3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -984,6 +1057,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_gaussian3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -1003,6 +1082,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_gaussian5x5_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -1022,6 +1107,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_dilate3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -1041,6 +1132,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_erode3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -1060,6 +1157,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_color_convert_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -1079,6 +1182,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let input = params[0] as vx_image;
                 let matrix = params[1] as vx_matrix;
                 let output = params[3] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !matrix.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_warp_perspective_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -1100,6 +1209,12 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let input = params[0] as vx_image;
                 let thresh = params[1] as vx_threshold;
                 let output = params[2] as vx_image;
+                // Validate images before processing
+                let status = validate_image(input);
+                if status != VX_SUCCESS { return status; }
+                let status = validate_image(output);
+                if status != VX_SUCCESS { return status; }
+                
                 if !input.is_null() && !thresh.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_threshold_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },

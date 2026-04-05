@@ -16,7 +16,8 @@ use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage};
 /// Image format enum for internal use
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageFormat {
-    Gray,
+    Gray,       // U8 - single byte per pixel
+    GrayU32,    // U32 - four bytes per pixel (for integral image)
     Rgb,
     Rgba,
     NV12,
@@ -29,6 +30,7 @@ impl ImageFormat {
     pub fn channels(&self) -> usize {
         match self {
             ImageFormat::Gray => 1,
+            ImageFormat::GrayU32 => 4,
             ImageFormat::Rgb => 3,
             ImageFormat::Rgba => 4,
             // Planar formats return 1 for buffer calculation base
@@ -45,6 +47,7 @@ impl ImageFormat {
     pub fn buffer_size(&self, width: usize, height: usize) -> usize {
         match self {
             ImageFormat::Gray => width.saturating_mul(height),
+            ImageFormat::GrayU32 => width.saturating_mul(height).saturating_mul(4), // U32 = 4 bytes per pixel
             ImageFormat::Rgb => width.saturating_mul(height).saturating_mul(3),
             ImageFormat::Rgba => width.saturating_mul(height).saturating_mul(4),
             // IYUV/I420: Y (full) + U (quarter) + V (quarter) = 1.5 * width * height
@@ -144,6 +147,7 @@ impl Image {
 fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
     match df {
         0x38303055 => Some(ImageFormat::Gray), // VX_DF_IMAGE_U8 ('U008')
+        0x32333055 => Some(ImageFormat::GrayU32), // VX_DF_IMAGE_U32 ('U032') - integral image output
         0x32424752 => Some(ImageFormat::Rgb),  // VX_DF_IMAGE_RGB ('RGB2')
         0x41424752 => Some(ImageFormat::Rgba), // VX_DF_IMAGE_RGBA/RGBX ('RGBA')
         0x3231564E => Some(ImageFormat::NV12), // VX_DF_IMAGE_NV12 ('NV12')
@@ -4249,25 +4253,40 @@ pub fn vxu_or_impl(
     in2: vx_image,
     output: vx_image,
 ) -> vx_status {
+    eprintln!("DEBUG vxu_or_impl: START in1={:?}, in2={:?}, out={:?}", in1, in2, output);
+    
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        eprintln!("DEBUG vxu_or_impl: NULL check failed");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            None => {
+                eprintln!("DEBUG vxu_or_impl: c_image_to_rust(in1) failed");
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
         };
+        eprintln!("DEBUG vxu_or_impl: src1 OK, {}x{}", src1.width(), src1.height());
 
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            None => {
+                eprintln!("DEBUG vxu_or_impl: c_image_to_rust(in2) failed");
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
         };
+        eprintln!("DEBUG vxu_or_impl: src2 OK, {}x{}", src2.width(), src2.height());
 
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            None => {
+                eprintln!("DEBUG vxu_or_impl: create_matching_image(output) failed");
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
         };
+        eprintln!("DEBUG vxu_or_impl: dst OK, {}x{}", dst.width(), dst.height());
 
         // Bitwise OR implementation
         let width = dst.width();
