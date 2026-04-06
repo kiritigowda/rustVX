@@ -690,6 +690,48 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         
         if should_remove {
             eprintln!("DEBUG vxReleaseGraph: removing graph");
+            
+            // Release the graph's parameters
+            eprintln!("DEBUG vxReleaseGraph: releasing graph parameters");
+            if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                if let Some(g) = graphs_data.get(&id) {
+                    let graph_params: Vec<u64> = {
+                        if let Ok(params) = g.parameters.read() {
+                            params.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+                    
+                    eprintln!("DEBUG vxReleaseGraph: graph has {} parameters to release", graph_params.len());
+                    for param_id in graph_params {
+                        let param_addr = param_id as usize;
+                        eprintln!("DEBUG vxReleaseGraph: releasing parameter 0x{:x}", param_id);
+                        
+                        // Decrement ref count
+                        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                            if let Some(cnt) = counts.get(&param_addr) {
+                                let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                if current > 1 {
+                                    cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                                    eprintln!("DEBUG vxReleaseGraph: decremented ref_count to {} for param 0x{:x}", current - 1, param_id);
+                                } else {
+                                    // Last reference - remove the parameter
+                                    counts.remove(&param_addr);
+                                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                        types.remove(&param_addr);
+                                    }
+                                    if let Ok(mut params) = crate::unified_c_api::PARAMETERS.lock() {
+                                        params.remove(&param_id);
+                                    }
+                                    eprintln!("DEBUG vxReleaseGraph: removed param 0x{:x}", param_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
             // Remove from all registries when count reaches 0
             if let Ok(mut graphs) = GRAPHS.lock() {
                 graphs.remove(&id);

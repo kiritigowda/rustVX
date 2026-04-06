@@ -4835,6 +4835,14 @@ pub extern "C" fn vxAddParameterToGraph(
         return VX_ERROR_INVALID_REFERENCE;
     }
     
+    // Retain the parameter (increment ref count)
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        if let Some(cnt) = counts.get(&(param_id as usize)) {
+            cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            eprintln!("DEBUG vxAddParameterToGraph: incremented ref_count for param 0x{:x}", param_id);
+        }
+    }
+    
     // Add parameter to graph's parameter list
     if let Ok(graphs) = GRAPHS_DATA.lock() {
         if let Some(g) = graphs.get(&graph_id) {
@@ -7687,37 +7695,33 @@ pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) 
     
     let graph_id = graph as u64;
     
-    // Look up the graph's parameter list
-    let param_id = if let Ok(graphs) = GRAPHS_DATA.lock() {
+    // Look up the graph parameter binding (set by vxSetGraphParameterByIndex)
+    if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
+        if let Some(&ref_addr) = bindings.get(&(graph_id, index as usize)) {
+            eprintln!("DEBUG vxGetGraphParameterByIndex: found binding ref_addr=0x{:x}", ref_addr);
+            // Return the reference address directly as a parameter handle
+            return ref_addr as vx_parameter;
+        }
+    }
+    
+    // If not found in bindings, try the graph's parameter list
+    // (for parameters added via vxAddParameterToGraph)
+    if let Ok(graphs) = GRAPHS_DATA.lock() {
         if let Some(g) = graphs.get(&graph_id) {
             if let Ok(graph_params) = g.parameters.read() {
                 if (index as usize) < graph_params.len() {
                     let pid = graph_params[index as usize];
                     eprintln!("DEBUG vxGetGraphParameterByIndex: found param_id=0x{:x} in graph_params[{}]", pid, index);
-                    Some(pid)
-                } else {
-                    eprintln!("DEBUG vxGetGraphParameterByIndex: index {} out of bounds (len={})", index, graph_params.len());
-                    None
+                    // Increment ref count for the existing parameter
+                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                        if let Some(cnt) = counts.get(&(pid as usize)) {
+                            cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                    return pid as vx_parameter;
                 }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    
-    if let Some(pid) = param_id {
-        // Increment ref count for the existing parameter
-        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-            if let Some(cnt) = counts.get(&(pid as usize)) {
-                cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                eprintln!("DEBUG vxGetGraphParameterByIndex: incremented ref_count for 0x{:x}", pid);
             }
         }
-        return pid as vx_parameter;
     }
     
     eprintln!("DEBUG vxGetGraphParameterByIndex: parameter not found, returning null");
