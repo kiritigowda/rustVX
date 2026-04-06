@@ -660,6 +660,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
 
 #[no_mangle]
 pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
+    eprintln!("DEBUG vxReleaseGraph: START");
     if graph.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -671,11 +672,14 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         let id = g as u64;
         let addr = g as usize;
         
+        eprintln!("DEBUG vxReleaseGraph: graph_id=0x{:x}", id);
+        
         // Decrement reference count first
         let mut should_remove = false;
         if let Ok(counts) = REFERENCE_COUNTS.lock() {
             if let Some(count) = counts.get(&addr) {
                 let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                eprintln!("DEBUG vxReleaseGraph: ref_count={}", current);
                 if current > 1 {
                     count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
                 } else {
@@ -685,6 +689,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         }
         
         if should_remove {
+            eprintln!("DEBUG vxReleaseGraph: removing graph");
             // Remove from all registries when count reaches 0
             if let Ok(mut graphs) = GRAPHS.lock() {
                 graphs.remove(&id);
@@ -702,6 +707,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                 names.remove(&addr);
             }
         } else {
+            eprintln!("DEBUG vxReleaseGraph: decrementing ref count only");
             // Just remove from GRAPHS but keep in unified registries
             if let Ok(mut graphs) = GRAPHS.lock() {
                 graphs.remove(&id);
@@ -710,6 +716,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         
         *graph = std::ptr::null_mut();
     }
+    eprintln!("DEBUG vxReleaseGraph: DONE");
     VX_SUCCESS
 }
 

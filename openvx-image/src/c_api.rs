@@ -628,6 +628,7 @@ fn unregister_valid_image(addr: usize) -> bool {
 pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
     eprintln!("DEBUG vxReleaseImage: START");
     if image.is_null() {
+        eprintln!("DEBUG vxReleaseImage: image pointer is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
@@ -662,15 +663,18 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
             };
             
             if should_free {
+                eprintln!("DEBUG vxReleaseImage: calling unregister_valid_image");
                 // Check if this image was already freed
                 if !unregister_valid_image(addr) {
-                    // Image was already freed or never existed
+                    eprintln!("DEBUG vxReleaseImage: image was already freed!");
                     return VX_ERROR_INVALID_REFERENCE;
                 }
                 
+                eprintln!("DEBUG vxReleaseImage: calling unregister_image");
                 // Unregister from unified registry
                 unregister_image(addr);
 
+                eprintln!("DEBUG vxReleaseImage: removing from REFERENCE_COUNTS");
                 // Remove from counts
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                     counts.remove(&addr);
@@ -678,25 +682,33 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
                 
                 // Don't remove from types - keep for reference queries
 
+                eprintln!("DEBUG vxReleaseImage: calling unregister_virtual_image");
                 // Clean up virtual image info if this was a virtual image
                 unregister_virtual_image(addr);
 
+                eprintln!("DEBUG vxReleaseImage: accessing image data");
                 // IMPORTANT: Access image data BEFORE freeing the Box
                 // The external_ptrs Vec will be dropped when the Box is freed
                 // For external memory images, we don't free the external data
                 // but the Vec container itself is properly cleaned up
                 let img_data = &mut *(img as *mut VxCImage);
                 
+                eprintln!("DEBUG vxReleaseImage: clearing external_ptrs");
                 // Clear external_ptrs to drop the Vec properly
                 img_data.external_ptrs.clear();
                 
+                eprintln!("DEBUG vxReleaseImage: freeing the Box");
                 // Free the image - this drops the Box and all its fields
                 let _ = Box::from_raw(img as *mut VxCImage);
             }
             
+            eprintln!("DEBUG vxReleaseImage: nulling image pointer");
             *image = std::ptr::null_mut();
+        } else {
+            eprintln!("DEBUG vxReleaseImage: *image is null");
         }
     }
+    eprintln!("DEBUG vxReleaseImage: DONE");
 
     VX_SUCCESS
 }
