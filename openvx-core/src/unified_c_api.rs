@@ -126,7 +126,7 @@ impl VxCImage {
     /// Check if the format is a planar YUV format
     pub fn is_planar_format(format: u32) -> bool {
         matches!(format, 0x3231564E | 0x3132564E | 0x56555949 | 0x34555659 | 0x34565559)
-            // NV12 | NV21 | IYUV | YUV4
+            // NV12 | NV21 | IYUV | YUV4 | YVU4
     }
 
     /// Get the number of planes for a format
@@ -134,7 +134,7 @@ impl VxCImage {
         match format {
             0x3231564E | 0x3132564E => 2, // NV12, NV21: Y plane + interleaved UV plane
             0x56555949 => 3, // IYUV: Y, U, V planes (I420)
-            0x34555659 | 0x34565559 => 3, // YUV4: Y, U, V planes (4:4:4)
+            0x34555659 | 0x34565559 => 3, // YUV4, YVU4: Y, U, V planes (4:4:4)
             _ => 1, // All other formats are single plane
         }
     }
@@ -221,8 +221,8 @@ impl VxCImage {
                     (0, 0)
                 }
             }
-            // YUV4: All planes full size
-            0x34555659 => {
+            // YUV4 and YVU4: All planes full size
+            0x34555659 | 0x34565559 => {
                 if plane_index >= 1 && plane_index <= 3 {
                     (width, height)
                 } else {

@@ -849,10 +849,13 @@ pub extern "C" fn vxMapImagePatch(
     mem_type: vx_enum,
     _flags: vx_uint32,
 ) -> vx_status {
+    eprintln!("DEBUG vxMapImagePatch: START image={:p}, plane={}, usage=0x{:x}", image, plane_index, usage);
     if image.is_null() || rect.is_null() || map_id.is_null() || addr.is_null() || ptr.is_null() {
+        eprintln!("DEBUG vxMapImagePatch: ERROR - null pointer");
         return VX_ERROR_INVALID_PARAMETERS;
     }
     if mem_type != VX_MEMORY_TYPE_HOST {
+        eprintln!("DEBUG vxMapImagePatch: ERROR - invalid mem_type");
         return VX_ERROR_NOT_IMPLEMENTED;
     }
 
@@ -871,6 +874,7 @@ pub extern "C" fn vxMapImagePatch(
         let is_planar = VxCImage::is_planar_format(img.format);
         let (plane_width, plane_height) = if is_planar {
             let (pw, ph) = VxCImage::plane_dimensions(img.width, img.height, img.format, plane_index as usize);
+            eprintln!("DEBUG vxMapImagePatch: format=0x{:x}, is_planar={}, plane_dims=({}, {})", img.format, is_planar, pw, ph);
             (pw as usize, ph as usize)
         } else {
             (img.width as usize, img.height as usize)
@@ -878,6 +882,7 @@ pub extern "C" fn vxMapImagePatch(
 
         // Validate the plane_index
         if is_planar && plane_index as usize >= VxCImage::num_planes(img.format) {
+            eprintln!("DEBUG vxMapImagePatch: ERROR - plane_index {} >= num_planes {}", plane_index, VxCImage::num_planes(img.format));
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
@@ -890,7 +895,10 @@ pub extern "C" fn vxMapImagePatch(
         let width = end_x.saturating_sub(start_x);
         let height = end_y.saturating_sub(start_y);
         
+        eprintln!("DEBUG vxMapImagePatch: width={}, height={}, plane_width={}, plane_height={}", width, height, plane_width, plane_height);
+        
         if width == 0 || height == 0 {
+            eprintln!("DEBUG vxMapImagePatch: ERROR - zero width or height");
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
