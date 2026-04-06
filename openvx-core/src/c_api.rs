@@ -738,6 +738,36 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                 }
             }
             
+            // Free the graph's nodes
+            eprintln!("DEBUG vxReleaseGraph: freeing graph nodes");
+            if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                if let Some(g) = graphs_data.get(&id) {
+                    let graph_nodes: Vec<u64> = {
+                        if let Ok(nodes) = g.nodes.read() {
+                            nodes.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+                    
+                    eprintln!("DEBUG vxReleaseGraph: graph has {} nodes to free", graph_nodes.len());
+                    for node_id in graph_nodes {
+                        eprintln!("DEBUG vxReleaseGraph: freeing node 0x{:x}", node_id);
+                        // Remove node from registries
+                        if let Ok(mut nodes_mut) = NODES.lock() {
+                            nodes_mut.remove(&node_id);
+                        }
+                        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                            counts.remove(&(node_id as usize));
+                        }
+                        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                            types.remove(&(node_id as usize));
+                        }
+                        eprintln!("DEBUG vxReleaseGraph: freed node 0x{:x}", node_id);
+                    }
+                }
+            }
+            
             // Remove from all registries when count reaches 0
             eprintln!("DEBUG vxReleaseGraph: removing from GRAPHS");
             if let Ok(mut graphs) = GRAPHS.lock() {
@@ -1124,6 +1154,16 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
         }
         if let Ok(mut types) = REFERENCE_TYPES.lock() {
             types.insert(ptr as usize, crate::unified_c_api::VX_TYPE_NODE);
+        }
+    }
+    
+    // Increment ref count for the graph's ownership
+    // When vxReleaseNode is called, it will decrement but not free
+    // The graph will free the node when vxReleaseGraph is called
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        if let Some(cnt) = counts.get(&(ptr as usize)) {
+            cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            eprintln!("DEBUG vxCreateGenericNode: incremented ref_count to 2 for graph ownership");
         }
     }
     
@@ -1835,11 +1875,14 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
             // Remove from unified PARAMETERS only (remove_parameter handles types/counts)
             crate::unified_c_api::remove_parameter(id);
         }
-        
-        eprintln!("DEBUG vxReleaseParameter: setting *param to null");
-        *param = std::ptr::null_mut();
-        eprintln!("DEBUG vxReleaseParameter: DONE");
     }
+    
+    eprintln!("DEBUG vxReleaseParameter: setting *param to null");
+    unsafe {
+        *param = std::ptr::null_mut();
+    }
+    eprintln!("DEBUG vxReleaseParameter: DONE");
+    eprintln!("DEBUG vxReleaseParameter: RETURNING");
     VX_SUCCESS
 }
 
