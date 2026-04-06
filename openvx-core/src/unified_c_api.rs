@@ -7729,17 +7729,7 @@ pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) 
     
     let graph_id = graph as u64;
     
-    // Look up the graph parameter binding (set by vxSetGraphParameterByIndex)
-    if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
-        if let Some(&ref_addr) = bindings.get(&(graph_id, index as usize)) {
-            eprintln!("DEBUG vxGetGraphParameterByIndex: found binding ref_addr=0x{:x}", ref_addr);
-            // Return the reference address directly as a parameter handle
-            return ref_addr as vx_parameter;
-        }
-    }
-    
-    // If not found in bindings, try the graph's parameter list
-    // (for parameters added via vxAddParameterToGraph)
+    // Look up the graph's parameter list (set by vxAddParameterToGraph)
     if let Ok(graphs) = GRAPHS_DATA.lock() {
         if let Some(g) = graphs.get(&graph_id) {
             if let Ok(graph_params) = g.parameters.read() {
@@ -7750,11 +7740,33 @@ pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) 
                     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                         if let Some(cnt) = counts.get(&(pid as usize)) {
                             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            eprintln!("DEBUG vxGetGraphParameterByIndex: incremented ref_count for param 0x{:x}", pid);
                         }
                     }
                     return pid as vx_parameter;
+                } else {
+                    eprintln!("DEBUG vxGetGraphParameterByIndex: index {} out of bounds (len={})", index, graph_params.len());
                 }
+            } else {
+                eprintln!("DEBUG vxGetGraphParameterByIndex: failed to read graph params");
             }
+        } else {
+            eprintln!("DEBUG vxGetGraphParameterByIndex: graph 0x{:x} not found", graph_id);
+        }
+    } else {
+        eprintln!("DEBUG vxGetGraphParameterByIndex: failed to lock GRAPHS_DATA");
+    }
+    
+    // If not found in graph's parameter list, try GRAPH_PARAMETER_BINDINGS
+    // This is for parameters set via vxSetGraphParameterByIndex
+    if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
+        if let Some(&ref_addr) = bindings.get(&(graph_id, index as usize)) {
+            eprintln!("DEBUG vxGetGraphParameterByIndex: found binding ref_addr=0x{:x} in GRAPH_PARAMETER_BINDINGS", ref_addr);
+            // For now, return the ref_addr directly (this is an image/array, not a parameter)
+            // The caller should use this as the actual object, not as a parameter handle
+            // This is a temporary workaround
+            eprintln!("DEBUG vxGetGraphParameterByIndex: WARNING - returning raw reference address");
+            return ref_addr as vx_parameter;
         }
     }
     

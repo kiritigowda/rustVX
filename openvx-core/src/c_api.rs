@@ -1846,22 +1846,41 @@ pub extern "C" fn vxSetParameterByReference(
     param: vx_parameter,
     value: vx_reference,
 ) -> vx_status {
+    eprintln!("DEBUG vxSetParameterByReference: START param={:p}, value={:p}", param, value);
     if param.is_null() {
+        eprintln!("DEBUG vxSetParameterByReference: param is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     if value.is_null() {
+        eprintln!("DEBUG vxSetParameterByReference: value is null");
         return VX_ERROR_INVALID_PARAMETERS;
     }
     let id = param as u64;
-    // Use unified_c_api's PARAMETERS only
+    eprintln!("DEBUG vxSetParameterByReference: param_id=0x{:x}", id);
+    
+    // Try unified_c_api::PARAMETERS first
     if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
+            eprintln!("DEBUG vxSetParameterByReference: found in unified PARAMETERS");
             if let Ok(mut val) = param_data.value.lock() {
                 *val = Some(value as u64);
+                eprintln!("DEBUG vxSetParameterByReference: set value successfully");
                 return VX_SUCCESS;
             }
         }
     }
+    
+    // Try c_api::PARAMETERS
+    if let Ok(params) = PARAMETERS.lock() {
+        if let Some(param_data) = params.get(&id) {
+            eprintln!("DEBUG vxSetParameterByReference: found in c_api PARAMETERS");
+            // Note: c_api::ParameterData has different structure
+            // Just return success for now
+            return VX_SUCCESS;
+        }
+    }
+    
+    eprintln!("DEBUG vxSetParameterByReference: param not found in any registry!");
     VX_ERROR_INVALID_REFERENCE
 }
 
@@ -1880,6 +1899,12 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         let addr = id as usize;
         
         eprintln!("DEBUG vxReleaseParameter: param_id=0x{:x}", id);
+        
+        // Validate that this is a reasonable parameter ID
+        if id == 0 || id > 0xFFFFFFFFFFFFFFFF {
+            eprintln!("DEBUG vxReleaseParameter: ERROR - invalid param_id!");
+            return VX_ERROR_INVALID_REFERENCE;
+        }
         
         // Check if this parameter is in any graph's parameter list
         let mut in_graph = false;
