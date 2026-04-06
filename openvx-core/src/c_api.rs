@@ -1782,7 +1782,35 @@ pub extern "C" fn vxSetParameterByIndex(
             
             if let Ok(mut params) = node_data.parameters.lock() {
                 if (index as usize) < params.len() {
-                    // Just store the reference - application owns the object
+                    // Retain the new value before storing it (if not null)
+                    if !value.is_null() {
+                        let value_addr = value as usize;
+                        eprintln!("DEBUG vxSetParameterByIndex: retaining value 0x{:x}", value_addr);
+                        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                            if let Some(cnt) = counts.get(&value_addr) {
+                                let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                eprintln!("DEBUG vxSetParameterByIndex: incremented ref_count from {} to {}", current, current + 1);
+                            } else {
+                                eprintln!("DEBUG vxSetParameterByIndex: WARNING - value not in REFERENCE_COUNTS!");
+                            }
+                        }
+                    }
+                    // Release old value if exists
+                    if let Some(old_value) = params[index as usize] {
+                        if old_value != 0 {
+                            eprintln!("DEBUG vxSetParameterByIndex: releasing old value 0x{:x}", old_value);
+                            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                                if let Some(cnt) = counts.get(&(old_value as usize)) {
+                                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                    if current > 1 {
+                                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                                        eprintln!("DEBUG vxSetParameterByIndex: decremented old value ref_count to {}", current - 1);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     params[index as usize] = Some(value as u64);
                     drop(params);
                     (cid, kid)
