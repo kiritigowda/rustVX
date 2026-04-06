@@ -1970,18 +1970,8 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         *param = std::ptr::null_mut();
     }
     
-    // Verify graph is still valid after parameter release
-    eprintln!("DEBUG vxReleaseParameter: verifying graph state...");
-    if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
-        eprintln!("DEBUG vxReleaseParameter: GRAPHS_DATA has {} graphs", graphs_data.len());
-        for (gid, g) in graphs_data.iter() {
-            if let Ok(params) = g.parameters.read() {
-                eprintln!("DEBUG vxReleaseParameter: graph 0x{:x} has {} parameters", gid, params.len());
-            }
-        }
-    }
-    
     eprintln!("DEBUG vxReleaseParameter: DONE - returning VX_SUCCESS");
+    
     VX_SUCCESS
 }
 
