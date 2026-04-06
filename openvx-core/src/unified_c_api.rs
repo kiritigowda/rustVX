@@ -1023,6 +1023,27 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     VX_SUCCESS
 }
 
+/// Helper function to get the graph ID for a given node
+fn get_node_graph_id(node_id: u64) -> Result<u64, ()> {
+    if let Ok(nodes) = crate::c_api::NODES.lock() {
+        if let Some(node_data) = nodes.get(&node_id) {
+            return Ok(node_data.graph_id);
+        }
+    }
+    Err(())
+}
+
+/// Helper function to resolve a graph parameter to its actual value
+fn resolve_graph_parameter(graph_id: u64, graph_param_index: usize) -> Option<u64> {
+    // Look up in GRAPH_PARAMETER_BINDINGS: (graph_id, index) -> reference
+    if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
+        if let Some(&ref_addr) = bindings.get(&(graph_id, graph_param_index)) {
+            return Some(ref_addr as u64);
+        }
+    }
+    None
+}
+
 /// Execute a single node by looking up its kernel and parameters
 fn execute_node(node_id: u64) -> Option<vx_status> {
     eprintln!("DEBUG execute_node: START node_id=0x{:x}", node_id);
@@ -1113,8 +1134,38 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
             }
             params.push(*param_id as vx_reference);
         } else {
-            eprintln!("ERROR: execute_node: param[{}] = null", idx);
-            params.push(std::ptr::null_mut());
+            // Parameter not directly set - check if it has a graph binding
+            eprintln!("DEBUG execute_node: param[{}] = null, checking graph binding", idx);
+            
+            // Check NODE_PARAMETER_BINDINGS for (node_id, param_index) -> graph binding
+            let binding_key = (node_id, idx);
+            let graph_binding = if let Ok(bindings) = NODE_PARAMETER_BINDINGS.lock() {
+                bindings.get(&binding_key).copied()
+            } else {
+                None
+            };
+            
+            if let Some(NodeParamBinding::GraphParam(graph_param_index)) = graph_binding {
+                // This parameter is bound to a graph parameter
+                // Get the graph parameter's actual value
+                if let Ok(graph_id) = get_node_graph_id(node_id) {
+                    if let Some(resolved_value) = resolve_graph_parameter(graph_id, graph_param_index) {
+                        eprintln!("DEBUG execute_node: resolved param[{}] from graph param {} to 0x{:x}", 
+                                 idx, graph_param_index, resolved_value);
+                        params.push(resolved_value as vx_reference);
+                    } else {
+                        eprintln!("ERROR: execute_node: could not resolve graph parameter {} for node {} param {}", 
+                                 graph_param_index, node_id, idx);
+                        return Some(VX_ERROR_INVALID_PARAMETERS);
+                    }
+                } else {
+                    eprintln!("ERROR: execute_node: could not get graph ID for node {}", node_id);
+                    return Some(VX_ERROR_INVALID_PARAMETERS);
+                }
+            } else {
+                eprintln!("ERROR: execute_node: param[{}] = null and no graph binding for node {}", idx, node_id);
+                params.push(std::ptr::null_mut());
+            }
         }
     }
     
