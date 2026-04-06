@@ -1916,8 +1916,7 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
     unsafe {
         *param = std::ptr::null_mut();
     }
-    eprintln!("DEBUG vxReleaseParameter: DONE");
-    eprintln!("DEBUG vxReleaseParameter: RETURNING");
+    eprintln!("DEBUG vxReleaseParameter: DONE - returning VX_SUCCESS");
     VX_SUCCESS
 }
 

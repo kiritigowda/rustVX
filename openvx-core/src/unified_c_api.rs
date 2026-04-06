@@ -7679,6 +7679,35 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
     let graph_id = graph as u64;
     let param_addr = param as usize;
     
+    // Check if there's an existing binding and release it first
+    if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
+        if let Some(&old_addr) = bindings.get(&(graph_id, index as usize)) {
+            eprintln!("DEBUG vxSetGraphParameterByIndex: releasing old binding 0x{:x}", old_addr);
+            // Decrement ref count of old binding
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&(old_addr)) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 1 {
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    } else {
+                        counts.remove(&(old_addr));
+                    }
+                }
+            }
+        }
+    }
+    
+    // Increment ref count of the new parameter being bound
+    eprintln!("DEBUG vxSetGraphParameterByIndex: incrementing ref_count for 0x{:x}", param_addr);
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        if let Some(cnt) = counts.get(&(param_addr)) {
+            cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            eprintln!("DEBUG vxSetGraphParameterByIndex: incremented ref_count");
+        } else {
+            eprintln!("DEBUG vxSetGraphParameterByIndex: WARNING - param not in REFERENCE_COUNTS!");
+        }
+    }
+    
     // Store the binding in GRAPH_PARAMETERS
     if let Ok(mut bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
         bindings.insert((graph_id, index as usize), param_addr);
