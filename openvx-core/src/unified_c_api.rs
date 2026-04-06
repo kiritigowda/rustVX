@@ -4801,6 +4801,8 @@ pub extern "C" fn vxAddParameterToGraph(
     let graph_id = graph as u64;
     let param_id = parameter as u64;
     
+    eprintln!("DEBUG vxAddParameterToGraph: graph=0x{:x}, param=0x{:x}", graph_id, param_id);
+    
     // Find the parameter in unified registry to get its node_id and index
     let mut node_id = 0u64;
     let mut param_index = 0u32;
@@ -4811,6 +4813,7 @@ pub extern "C" fn vxAddParameterToGraph(
             node_id = param.node_id;
             param_index = param.index;
             found = true;
+            eprintln!("DEBUG vxAddParameterToGraph: found in PARAMETERS, node_id=0x{:x}, index={}", node_id, param_index);
         }
     }
     
@@ -4822,11 +4825,13 @@ pub extern "C" fn vxAddParameterToGraph(
                 node_id = 0; // Will determine from the parameter ID
                 param_index = param.index;
                 found = true;
+                eprintln!("DEBUG vxAddParameterToGraph: found in c_api PARAMETERS, index={}", param_index);
             }
         }
     }
     
     if !found {
+        eprintln!("DEBUG vxAddParameterToGraph: param 0x{:x} NOT FOUND in any registry!", param_id);
         return VX_ERROR_INVALID_REFERENCE;
     }
     
@@ -4835,22 +4840,15 @@ pub extern "C" fn vxAddParameterToGraph(
         if let Some(g) = graphs.get(&graph_id) {
             if let Ok(mut graph_params) = g.parameters.write() {
                 graph_params.push(param_id);
+                eprintln!("DEBUG vxAddParameterToGraph: added to graph_params");
             }
         }
     }
     
-    // Store binding: (node_id, param_index) -> graph_param_slot
-    // The next graph parameter index will be assigned when vxSetGraphParameterByIndex is called
-    // For now, store a placeholder binding
-    if let Ok(graphs) = GRAPHS_DATA.lock() {
-        if graphs.contains_key(&graph_id) {
-            // Store in GRAPH_PARAMETER_BINDINGS: (graph_id, node_param_key) -> graph_param_index (to be determined)
-            // Actually, we need to wait for vxSetGraphParameterByIndex to know which graph param index
-            // For now, just mark this node parameter as being part of a graph
-            if let Ok(mut bindings) = NODE_PARAMETER_BINDINGS.lock() {
-                bindings.insert((node_id, param_index as usize), NodeParamBinding::GraphParam(0)); // Placeholder
-            }
-        }
+    // Store binding
+    if let Ok(mut bindings) = NODE_PARAMETER_BINDINGS.lock() {
+        bindings.insert((node_id, param_index as usize), NodeParamBinding::GraphParam(0));
+        eprintln!("DEBUG vxAddParameterToGraph: stored binding for (node_id=0x{:x}, index={})", node_id, param_index);
     }
     
     VX_SUCCESS
@@ -7381,7 +7379,7 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
         if let Ok(mut params) = PARAMETERS.lock() {
             let param = Arc::new(VxCParameter {
                 id: param_id,
-                node_id: 0, // Graph parameters have no associated node
+                node_id: node_id, // Store the actual node ID
                 index,
                 direction: VX_INPUT,
                 data_type: 0,

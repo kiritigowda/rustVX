@@ -1653,6 +1653,15 @@ pub extern "C" fn vxSetParameterByIndex(
             
             if let Ok(mut params) = node_data.parameters.lock() {
                 if (index as usize) < params.len() {
+                    // Retain the new value before storing it
+                    if !value.is_null() {
+                        let addr = value as usize;
+                        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                            if let Some(count) = counts.get(&addr) {
+                                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                    }
                     params[index as usize] = Some(value as u64);
                     drop(params);
                     (cid, kid)
