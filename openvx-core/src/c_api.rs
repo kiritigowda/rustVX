@@ -1853,27 +1853,62 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         
         eprintln!("DEBUG vxReleaseParameter: param_id=0x{:x}", id);
         
-        // Simple reference counting - decrement and remove if 0
-        let mut should_remove = false;
-        if let Ok(counts) = REFERENCE_COUNTS.lock() {
-            if let Some(count) = counts.get(&addr) {
-                let current = count.load(std::sync::atomic::Ordering::SeqCst);
-                eprintln!("DEBUG vxReleaseParameter: ref_count={}", current);
-                if current > 1 {
-                    count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                    eprintln!("DEBUG vxReleaseParameter: decremented");
-                } else {
-                    should_remove = true;
-                    eprintln!("DEBUG vxReleaseParameter: will remove");
+        // Check if this parameter is in any graph's parameter list
+        let mut in_graph = false;
+        if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+            for (graph_id, g) in graphs_data.iter() {
+                if let Ok(graph_params) = g.parameters.read() {
+                    if graph_params.contains(&id) {
+                        in_graph = true;
+                        eprintln!("DEBUG vxReleaseParameter: param 0x{:x} is in graph 0x{:x}", id, graph_id);
+                        break;
+                    }
                 }
-            } else {
-                eprintln!("DEBUG vxReleaseParameter: not in REFERENCE_COUNTS!");
             }
         }
         
-        if should_remove {
-            // Remove from unified PARAMETERS only (remove_parameter handles types/counts)
-            crate::unified_c_api::remove_parameter(id);
+        if in_graph {
+            // Parameter is in a graph - just decrement ref count
+            // DO NOT remove from graph - the graph owns the parameter
+            // The graph will free the parameter when vxReleaseGraph is called
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("DEBUG vxReleaseParameter: in graph, ref_count={}", current);
+                    if current > 1 {
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        eprintln!("DEBUG vxReleaseParameter: decremented to {}", current - 1);
+                    } else {
+                        // Last reference but still in graph - keep it alive
+                        eprintln!("DEBUG vxReleaseParameter: last ref but in graph, keeping alive");
+                    }
+                }
+            }
+            // NOTE: Do NOT remove from graph's parameter list
+            // The graph owns this parameter and will free it when released
+        } else {
+            // Parameter is not in any graph - can safely remove
+            let mut should_remove = false;
+            if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(count) = counts.get(&addr) {
+                    let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("DEBUG vxReleaseParameter: ref_count={}", current);
+                    if current > 1 {
+                        count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                        eprintln!("DEBUG vxReleaseParameter: decremented");
+                    } else {
+                        should_remove = true;
+                        eprintln!("DEBUG vxReleaseParameter: will remove");
+                    }
+                } else {
+                    eprintln!("DEBUG vxReleaseParameter: not in REFERENCE_COUNTS!");
+                }
+            }
+            
+            if should_remove {
+                // Remove from unified PARAMETERS only (remove_parameter handles types/counts)
+                crate::unified_c_api::remove_parameter(id);
+            }
         }
     }
     
