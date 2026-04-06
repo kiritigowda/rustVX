@@ -905,42 +905,72 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         }
         
         if count <= 1 {
-            eprintln!("DEBUG vxReleaseNode: count <= 1, last reference - cleaning up");
-            // Note: Node does NOT release parameter values - application owns them
-            // The application calls vxReleaseScalar, vxReleaseImage, etc. on its own objects
-            // Node parameters are just references/borrowed objects
+            eprintln!("DEBUG vxReleaseNode: count <= 1, checking if node can be freed");
             
-            // Note: Parameter handles returned by vxGetParameterByIndex are owned by the caller
-            // Do NOT remove parameter entries here - vxReleaseParameter will handle them
-            // Only clean up the node's parameter value storage (not the handles)
-            
-            // Remove from graph's node list BEFORE removing node
-            // Remove from c_api graph registry
-            if let Ok(graphs) = GRAPHS.lock() {
-                if let Some(g) = graphs.get(&graph_id) {
-                    if let Ok(mut graph_nodes) = g.nodes.lock() {
-                        graph_nodes.retain(|&nid| nid != id);
-                    }
-                }
-            }
-            // Remove from unified graph registry
-            if let Ok(graphs_data) = GRAPHS_DATA.lock() {
+            // Check if the graph still exists and owns this node
+            let graph_still_exists = if let Ok(graphs_data) = GRAPHS_DATA.lock() {
                 if let Some(g) = graphs_data.get(&graph_id) {
-                    if let Ok(mut graph_nodes) = g.nodes.write() {
-                        graph_nodes.retain(|&nid| nid != id);
+                    if let Ok(graph_nodes) = g.nodes.read() {
+                        graph_nodes.contains(&id)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            
+            if graph_still_exists {
+                // Node is still owned by graph - just decrement unified ref count
+                // Don't free the node, the graph will free it when released
+                eprintln!("DEBUG vxReleaseNode: node still in graph, not freeing");
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    if let Some(cnt) = counts.get_mut(&(id as usize)) {
+                        cnt.store(count - 1, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
-            }
-            
-            // Remove from NODES and unified registries
-            if let Ok(mut nodes_mut) = NODES.lock() {
-                nodes_mut.remove(&id);
-            }
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&(id as usize));
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&(id as usize));
+            } else {
+                eprintln!("DEBUG vxReleaseNode: graph doesn't own node, freeing");
+                // Graph doesn't exist or doesn't own this node - safe to free
+                
+                // Note: Node does NOT release parameter values - application owns them
+                // The application calls vxReleaseScalar, vxReleaseImage, etc. on its own objects
+                // Node parameters are just references/borrowed objects
+                
+                // Note: Parameter handles returned by vxGetParameterByIndex are owned by the caller
+                // Do NOT remove parameter entries here - vxReleaseParameter will handle them
+                // Only clean up the node's parameter value storage (not the handles)
+                
+                // Remove from graph's node list BEFORE removing node
+                // Remove from c_api graph registry
+                if let Ok(graphs) = GRAPHS.lock() {
+                    if let Some(g) = graphs.get(&graph_id) {
+                        if let Ok(mut graph_nodes) = g.nodes.lock() {
+                            graph_nodes.retain(|&nid| nid != id);
+                        }
+                    }
+                }
+                // Remove from unified graph registry
+                if let Ok(graphs_data) = GRAPHS_DATA.lock() {
+                    if let Some(g) = graphs_data.get(&graph_id) {
+                        if let Ok(mut graph_nodes) = g.nodes.write() {
+                            graph_nodes.retain(|&nid| nid != id);
+                        }
+                    }
+                }
+                
+                // Remove from NODES and unified registries
+                if let Ok(mut nodes_mut) = NODES.lock() {
+                    nodes_mut.remove(&id);
+                }
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&(id as usize));
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&(id as usize));
+                }
             }
         } else {
             // Decrement unified reference count
