@@ -7388,6 +7388,13 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
             });
             params.insert(param_id, param);
         }
+        // Also register in REFERENCE_COUNTS
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(param_id as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(param_id as usize, VX_TYPE_PARAMETER);
+        }
     }
     
     param_id as vx_parameter

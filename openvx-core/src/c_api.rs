@@ -807,6 +807,7 @@ pub extern "C" fn vxSetNodeAttribute(
 
 #[no_mangle]
 pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
+    eprintln!("DEBUG vxReleaseNode: START");
     if node.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -819,6 +820,8 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         let mut count = 0;
         let num_params: usize;
         let graph_id: u64;
+        
+        eprintln!("DEBUG vxReleaseNode: node_id=0x{:x}", id);
         
         // Get node data and parameters
         if let Ok(nodes) = NODES.lock() {
@@ -841,47 +844,14 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         }
         
         if count <= 1 {
-            // Last reference - clean up parameters first
-            // First, release any values that parameters reference
-            if let Ok(nodes) = NODES.lock() {
-                if let Some(node_data) = nodes.get(&id) {
-                    if let Ok(params) = node_data.parameters.lock() {
-                        for (index, param_value) in params.iter().enumerate() {
-                            if let Some(value_addr) = param_value {
-                                let value_addr_usize = *value_addr as usize;
-                                // Release this value - decrement its reference count
-                                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                                    if let Some(cnt) = counts.get(&value_addr_usize) {
-                                        let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
-                                        if current > 1 {
-                                            cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                                        } else {
-                                            // Last reference - will be removed when object is freed
-                                            counts.remove(&value_addr_usize);
-                                            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                                                types.remove(&value_addr_usize);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            eprintln!("DEBUG vxReleaseNode: count <= 1, last reference - cleaning up");
+            // Note: Node does NOT release parameter values - application owns them
+            // The application calls vxReleaseScalar, vxReleaseImage, etc. on its own objects
+            // Node parameters are just references/borrowed objects
             
-            for index in 0..num_params {
-                let param_id = (id << 32) | (index as u64);
-                // Remove parameter from unified registry
-                crate::unified_c_api::remove_parameter(param_id);
-                // Remove from reference tracking
-                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                    counts.remove(&(param_id as usize));
-                }
-                if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                    types.remove(&(param_id as usize));
-                }
-            }
+            // Note: Parameter handles returned by vxGetParameterByIndex are owned by the caller
+            // Do NOT remove parameter entries here - vxReleaseParameter will handle them
+            // Only clean up the node's parameter value storage (not the handles)
             
             // Remove from graph's node list BEFORE removing node
             // Remove from c_api graph registry
@@ -1681,15 +1651,7 @@ pub extern "C" fn vxSetParameterByIndex(
             
             if let Ok(mut params) = node_data.parameters.lock() {
                 if (index as usize) < params.len() {
-                    // Retain the new value before storing it
-                    if !value.is_null() {
-                        let addr = value as usize;
-                        if let Ok(counts) = REFERENCE_COUNTS.lock() {
-                            if let Some(count) = counts.get(&addr) {
-                                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            }
-                        }
-                    }
+                    // Just store the reference - application owns the object
                     params[index as usize] = Some(value as u64);
                     drop(params);
                     (cid, kid)
@@ -1746,6 +1708,7 @@ pub extern "C" fn vxSetParameterByReference(
 
 #[no_mangle]
 pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
+    eprintln!("DEBUG vxReleaseParameter: START");
     if param.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -1757,16 +1720,23 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         let id = p as u64;
         let addr = id as usize;
         
+        eprintln!("DEBUG vxReleaseParameter: param_id=0x{:x}", id);
+        
         // Simple reference counting - decrement and remove if 0
         let mut should_remove = false;
         if let Ok(counts) = REFERENCE_COUNTS.lock() {
             if let Some(count) = counts.get(&addr) {
                 let current = count.load(std::sync::atomic::Ordering::SeqCst);
+                eprintln!("DEBUG vxReleaseParameter: ref_count={}", current);
                 if current > 1 {
                     count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("DEBUG vxReleaseParameter: decremented");
                 } else {
                     should_remove = true;
+                    eprintln!("DEBUG vxReleaseParameter: will remove");
                 }
+            } else {
+                eprintln!("DEBUG vxReleaseParameter: not in REFERENCE_COUNTS!");
             }
         }
         
