@@ -7690,19 +7690,43 @@ pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) 
     // Format: (graph_id << 32) | index | 0x80000000 (to distinguish from regular params)
     let param_id = (graph_id << 32) | (index as u64) | 0x8000000000000000;
     
-    // Create and store parameter in unified registry
-    let param_data = Arc::new(VxCParameter {
-        id: param_id,
-        node_id: 0, // Graph parameters have no associated node
-        index: index as u32,
-        direction: 1, // Output
-        data_type: 0,
-        value: Mutex::new(None),
-        ref_count: AtomicUsize::new(1),
-    });
+    // Check if this parameter already exists
+    let param_exists = if let Ok(params) = PARAMETERS.lock() {
+        params.contains_key(&param_id)
+    } else {
+        false
+    };
     
-    if let Ok(mut params) = PARAMETERS.lock() {
-        params.insert(param_id, param_data);
+    if !param_exists {
+        // Create and store parameter in unified registry
+        let param_data = Arc::new(VxCParameter {
+            id: param_id,
+            node_id: 0, // Graph parameters have no associated node
+            index: index as u32,
+            direction: 1, // Output
+            data_type: 0,
+            value: Mutex::new(None),
+            ref_count: AtomicUsize::new(1),
+        });
+        
+        if let Ok(mut params) = PARAMETERS.lock() {
+            params.insert(param_id, param_data);
+        }
+        
+        // Register in REFERENCE_COUNTS
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(param_id as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(param_id as usize, VX_TYPE_PARAMETER);
+        }
+    } else {
+        // Increment ref count for existing parameter
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            if let Some(cnt) = counts.get(&(param_id as usize)) {
+                cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
     }
     
     param_id as vx_parameter

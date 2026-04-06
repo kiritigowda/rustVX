@@ -1,7 +1,7 @@
 //! C API for OpenVX Buffer and Array
 
 use std::ffi::c_void;
-use std::sync::RwLock;
+use std::sync::{RwLock, atomic::AtomicUsize, Mutex};
 use std::collections::HashMap;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id, vx_int32,
@@ -54,8 +54,7 @@ impl VxCArray {
 }
 
 // Internal storage for arrays
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{Ordering};
 static ARRAY_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Create an array
@@ -320,6 +319,7 @@ pub extern "C" fn vxCreateVirtualDistribution(
 /// Release array
 #[no_mangle]
 pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
+    eprintln!("DEBUG vxReleaseArray: START");
     if arr.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -327,19 +327,49 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
     unsafe {
         if !(*arr).is_null() {
             let addr = *arr as usize;
+            eprintln!("DEBUG vxReleaseArray: addr=0x{:x}", addr);
             
-            // Remove from reference counts and types
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
+            // Check reference count before freeing
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("DEBUG vxReleaseArray: ref_count={}", current);
+                    if current > 1 {
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        eprintln!("DEBUG vxReleaseArray: decremented, not freeing");
+                        false
+                    } else {
+                        eprintln!("DEBUG vxReleaseArray: last reference, will free");
+                        true
+                    }
+                } else {
+                    eprintln!("DEBUG vxReleaseArray: not in registry, will free");
+                    true
+                }
+            } else {
+                false
+            };
+            
+            if should_free {
+                // Remove from reference counts and types
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&addr);
+                }
+                
+                eprintln!("DEBUG vxReleaseArray: freeing the Box");
+                let _ = Box::from_raw(*arr as *mut VxCArray);
             }
             
-            let _ = Box::from_raw(*arr as *mut VxCArray);
+            eprintln!("DEBUG vxReleaseArray: nulling pointer");
             *arr = std::ptr::null_mut();
+        } else {
+            eprintln!("DEBUG vxReleaseArray: *arr is null");
         }
     }
+    eprintln!("DEBUG vxReleaseArray: DONE");
 
     VX_SUCCESS
 }
