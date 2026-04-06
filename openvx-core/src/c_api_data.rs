@@ -172,16 +172,45 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
     unsafe {
         if !(*scalar).is_null() {
             let addr = *scalar as usize;
+            eprintln!("DEBUG vxReleaseScalar: addr=0x{:x}", addr);
             
-            // Remove from reference counts and types
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
+            // Check reference count before freeing
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("DEBUG vxReleaseScalar: ref_count={}", current);
+                    if current > 1 {
+                        // Decrement and don't free
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        eprintln!("DEBUG vxReleaseScalar: decremented, not freeing");
+                        false
+                    } else {
+                        // Last reference - free it
+                        eprintln!("DEBUG vxReleaseScalar: last reference, will free");
+                        true
+                    }
+                } else {
+                    // Not in registry - just free
+                    eprintln!("DEBUG vxReleaseScalar: not in registry, freeing");
+                    true
+                }
+            } else {
+                eprintln!("DEBUG vxReleaseScalar: couldn't get counts lock");
+                false
+            };
+            
+            if should_free {
+                // Remove from reference counts and types
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&addr);
+                }
+                
+                let _ = Box::from_raw(*scalar as *mut VxCScalarData);
             }
             
-            let _ = Box::from_raw(*scalar as *mut VxCScalarData);
             *scalar = std::ptr::null_mut();
         }
     }

@@ -842,6 +842,34 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         
         if count <= 1 {
             // Last reference - clean up parameters first
+            // First, release any values that parameters reference
+            if let Ok(nodes) = NODES.lock() {
+                if let Some(node_data) = nodes.get(&id) {
+                    if let Ok(params) = node_data.parameters.lock() {
+                        for (index, param_value) in params.iter().enumerate() {
+                            if let Some(value_addr) = param_value {
+                                let value_addr_usize = *value_addr as usize;
+                                // Release this value - decrement its reference count
+                                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                                    if let Some(cnt) = counts.get(&value_addr_usize) {
+                                        let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                        if current > 1 {
+                                            cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                                        } else {
+                                            // Last reference - will be removed when object is freed
+                                            counts.remove(&value_addr_usize);
+                                            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                                types.remove(&value_addr_usize);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
             for index in 0..num_params {
                 let param_id = (id << 32) | (index as u64);
                 // Remove parameter from unified registry
