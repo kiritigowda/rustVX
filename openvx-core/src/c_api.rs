@@ -662,11 +662,13 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
 pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
     eprintln!("DEBUG vxReleaseGraph: START");
     if graph.is_null() {
+        eprintln!("DEBUG vxReleaseGraph: graph pointer is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     unsafe {
         let g = *graph;
         if g.is_null() {
+            eprintln!("DEBUG vxReleaseGraph: *graph is null");
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = g as u64;
@@ -682,9 +684,13 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                 eprintln!("DEBUG vxReleaseGraph: ref_count={}", current);
                 if current > 1 {
                     count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("DEBUG vxReleaseGraph: decremented ref_count");
                 } else {
                     should_remove = true;
+                    eprintln!("DEBUG vxReleaseGraph: ref_count is 1, will remove");
                 }
+            } else {
+                eprintln!("DEBUG vxReleaseGraph: graph not in REFERENCE_COUNTS");
             }
         }
         
@@ -733,18 +739,23 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             }
             
             // Remove from all registries when count reaches 0
+            eprintln!("DEBUG vxReleaseGraph: removing from GRAPHS");
             if let Ok(mut graphs) = GRAPHS.lock() {
                 graphs.remove(&id);
             }
+            eprintln!("DEBUG vxReleaseGraph: removing from GRAPHS_DATA");
             if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 graphs_data.remove(&id);
             }
+            eprintln!("DEBUG vxReleaseGraph: removing from REFERENCE_COUNTS");
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
             }
+            eprintln!("DEBUG vxReleaseGraph: removing from REFERENCE_TYPES");
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
+            eprintln!("DEBUG vxReleaseGraph: removing from REFERENCE_NAMES");
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
             }
@@ -756,6 +767,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             }
         }
         
+        eprintln!("DEBUG vxReleaseGraph: setting *graph to null");
         *graph = std::ptr::null_mut();
     }
     eprintln!("DEBUG vxReleaseGraph: DONE");
@@ -1794,7 +1806,9 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
             crate::unified_c_api::remove_parameter(id);
         }
         
+        eprintln!("DEBUG vxReleaseParameter: setting *param to null");
         *param = std::ptr::null_mut();
+        eprintln!("DEBUG vxReleaseParameter: DONE");
     }
     VX_SUCCESS
 }

@@ -7666,10 +7666,13 @@ pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, patter
 /// Binds a reference to a graph parameter, which then binds to connected node parameters
 #[no_mangle]
 pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, param: vx_reference) -> vx_status {
+    eprintln!("DEBUG vxSetGraphParameterByIndex: START graph=0x{:x}, index={}, param=0x{:x}", graph as u64, index, param as usize);
     if graph.is_null() {
+        eprintln!("DEBUG vxSetGraphParameterByIndex: graph is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     if param.is_null() {
+        eprintln!("DEBUG vxSetGraphParameterByIndex: param is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     
@@ -7679,8 +7682,10 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
     // Store the binding in GRAPH_PARAMETERS
     if let Ok(mut bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
         bindings.insert((graph_id, index as usize), param_addr);
+        eprintln!("DEBUG vxSetGraphParameterByIndex: stored binding");
     }
     
+    eprintln!("DEBUG vxSetGraphParameterByIndex: DONE");
     VX_SUCCESS
 }
 
