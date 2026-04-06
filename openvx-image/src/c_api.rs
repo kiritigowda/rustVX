@@ -987,11 +987,9 @@ pub extern "C" fn vxUnmapImagePatch(
             // Extract the stored patch data
             let patch_tuple = patches.remove(pos);
             
-            // Unpack the tuple - we support both 6-tuple and 7-tuple for backward compatibility
-            // But the storage is now 7-tuple: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
-            let (_, patch_data, usage, offset, stride_y, plane_index, mapped_width): 
-                (usize, Vec<u8>, vx_enum, usize, usize, vx_uint32, u32) = 
-                unsafe { std::mem::transmute_copy(&patch_tuple) };
+            // Unpack the tuple - storage is 7-tuple: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
+            // Use proper destructuring instead of transmute to avoid memory corruption
+            let (_, patch_data, usage, offset, stride_y, plane_index, mapped_width) = patch_tuple;
             
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
