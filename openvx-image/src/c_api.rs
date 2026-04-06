@@ -1,7 +1,7 @@
 //! C API for OpenVX Image
 
 use std::ffi::c_void;
-use std::sync::{RwLock, Arc};
+use std::sync::{RwLock, Arc, atomic::AtomicUsize};
 // FFI declarations for register/unregister image - ensure we use the same symbol
 // as defined in openvx-core's unified_c_api
 extern "C" {
@@ -626,6 +626,7 @@ fn unregister_valid_image(addr: usize) -> bool {
 /// Release an image
 #[no_mangle]
 pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
+    eprintln!("DEBUG vxReleaseImage: START");
     if image.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -634,39 +635,65 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
         let img = *image;
         if !img.is_null() {
             let addr = img as usize;
+            eprintln!("DEBUG vxReleaseImage: addr=0x{:x}", addr);
             
-            // Check if this image was already freed
-            if !unregister_valid_image(addr) {
-                // Image was already freed or never existed
-                return VX_ERROR_INVALID_REFERENCE;
+            // Check reference count before freeing
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("DEBUG vxReleaseImage: ref_count={}", current);
+                    if current > 1 {
+                        // Decrement and don't free
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        eprintln!("DEBUG vxReleaseImage: decremented, not freeing");
+                        false
+                    } else {
+                        // Last reference - free it
+                        eprintln!("DEBUG vxReleaseImage: last reference, will free");
+                        true
+                    }
+                } else {
+                    // Not in registry - free it
+                    eprintln!("DEBUG vxReleaseImage: not in registry, will free");
+                    true
+                }
+            } else {
+                false
+            };
+            
+            if should_free {
+                // Check if this image was already freed
+                if !unregister_valid_image(addr) {
+                    // Image was already freed or never existed
+                    return VX_ERROR_INVALID_REFERENCE;
+                }
+                
+                // Unregister from unified registry
+                unregister_image(addr);
+
+                // Remove from counts
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                
+                // Don't remove from types - keep for reference queries
+
+                // Clean up virtual image info if this was a virtual image
+                unregister_virtual_image(addr);
+
+                // IMPORTANT: Access image data BEFORE freeing the Box
+                // The external_ptrs Vec will be dropped when the Box is freed
+                // For external memory images, we don't free the external data
+                // but the Vec container itself is properly cleaned up
+                let img_data = &mut *(img as *mut VxCImage);
+                
+                // Clear external_ptrs to drop the Vec properly
+                img_data.external_ptrs.clear();
+                
+                // Free the image - this drops the Box and all its fields
+                let _ = Box::from_raw(img as *mut VxCImage);
             }
             
-            // Unregister from unified registry
-            unregister_image(addr);
-
-            // For now, remove from counts - the decrement approach needs more work
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            
-            // Don't remove from types - keep for reference queries
-
-            // Clean up virtual image info if this was a virtual image
-            unregister_virtual_image(addr);
-
-            // IMPORTANT: Access image data BEFORE freeing the Box
-            // The external_ptrs Vec will be dropped when the Box is freed
-            // For external memory images, we don't free the external data
-            // but the Vec container itself is properly cleaned up
-            let img_data = &mut *(img as *mut VxCImage);
-            
-            // Clear external_ptrs to drop the Vec properly
-            // This is a no-op for external memory (we don't own it)
-            // but ensures the Vec is properly dropped before the Box
-            img_data.external_ptrs.clear();
-            
-            // Free the image - this drops the Box and all its fields
-            let _ = Box::from_raw(img as *mut VxCImage);
             *image = std::ptr::null_mut();
         }
     }
