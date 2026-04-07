@@ -729,14 +729,19 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 // Check if parameter 0 (required) is set
                 if params.len() > 0 {
                     if params[0].is_none() {
+                        eprintln!("DEBUG vxVerifyGraph: node 0x{:x} param[0] is None - FAIL", node_id);
                         return VX_ERROR_INVALID_PARAMETERS;
                     }
                 }
             }
             
+            eprintln!("DEBUG vxVerifyGraph: all required parameters set");
+            
             // Build connection graph to detect cycles and validate structure
             let mut param_to_producer: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
             let mut param_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+            
+            eprintln!("DEBUG vxVerifyGraph: building connection graph...");
             
             for (node_id, params) in &node_params {
                 for (idx, param_opt) in params.iter().enumerate() {
@@ -806,6 +811,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 rec_stack: &mut std::collections::HashSet<u64>,
             ) -> bool {
                 if rec_stack.contains(&node_id) {
+                    eprintln!("DEBUG has_cycle: node 0x{:x} already in recursion stack - CYCLE DETECTED", node_id);
                     return true; // Cycle detected
                 }
                 if visited.contains(&node_id) {
@@ -817,9 +823,13 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 
                 // Follow outputs of this node to consuming nodes
                 if let Some(outputs) = node_to_outputs.get(&node_id) {
+                    eprintln!("DEBUG has_cycle: node 0x{:x} has {} outputs", node_id, outputs.len());
                     for output_img in outputs {
+                        eprintln!("DEBUG has_cycle: checking output 0x{:x}", output_img);
                         if let Some(consumers) = image_to_consumers.get(output_img) {
+                            eprintln!("DEBUG has_cycle: output 0x{:x} has {} consumers", output_img, consumers.len());
                             for consumer_id in consumers {
+                                eprintln!("DEBUG has_cycle: following to consumer 0x{:x}", consumer_id);
                                 if has_cycle(*consumer_id, node_to_outputs, image_to_consumers, visited, rec_stack) {
                                     return true;
                                 }
@@ -838,10 +848,12 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             for (node_id, _) in &node_params {
                 if !visited.contains(node_id) {
                     if has_cycle(*node_id, &node_to_outputs, &image_to_consumers, &mut visited, &mut rec_stack) {
+                        eprintln!("DEBUG vxVerifyGraph: cycle detected - FAIL");
                         return VX_ERROR_INVALID_GRAPH;
                     }
                 }
             }
+            eprintln!("DEBUG vxVerifyGraph: no cycles detected");
             
             // Allocate backing storage for virtual images
             for (node_id, params) in &node_params {
@@ -854,6 +866,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                 dim
                             } else {
                                 // Cannot determine dimensions
+                                eprintln!("DEBUG vxVerifyGraph: cannot determine dimensions for virtual image 0x{:x}", param_ref);
                                 return VX_ERROR_INVALID_GRAPH;
                             };
                             
@@ -874,10 +887,16 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 *state = VxGraphState::VxGraphStateVerified;
             }
             
+            eprintln!("DEBUG vxVerifyGraph: SUCCESS - graph verified");
             return VX_SUCCESS;
+        } else {
+            eprintln!("ERROR: vxVerifyGraph: graph not found in GRAPHS_DATA");
         }
+    } else {
+        eprintln!("ERROR: vxVerifyGraph: failed to lock GRAPHS_DATA");
     }
     
+    eprintln!("ERROR: vxVerifyGraph: returning INVALID_GRAPH");
     VX_ERROR_INVALID_GRAPH
 }
 
