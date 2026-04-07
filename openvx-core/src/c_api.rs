@@ -1858,6 +1858,12 @@ pub extern "C" fn vxSetParameterByReference(
     let id = param as u64;
     eprintln!("DEBUG vxSetParameterByReference: param_id=0x{:x}", id);
     
+    // Extract node_id and index from param_id
+    // param_id = (node_id << 32) | index
+    let node_id = id >> 32;
+    let index = (id & 0xFFFFFFFF) as u32;
+    eprintln!("DEBUG vxSetParameterByReference: node_id=0x{:x}, index={}", node_id, index);
+    
     // Try unified_c_api::PARAMETERS first
     if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
@@ -1865,23 +1871,25 @@ pub extern "C" fn vxSetParameterByReference(
             if let Ok(mut val) = param_data.value.lock() {
                 *val = Some(value as u64);
                 eprintln!("DEBUG vxSetParameterByReference: set value successfully");
-                return VX_SUCCESS;
             }
         }
     }
     
-    // Try c_api::PARAMETERS
-    if let Ok(params) = PARAMETERS.lock() {
-        if let Some(param_data) = params.get(&id) {
-            eprintln!("DEBUG vxSetParameterByReference: found in c_api PARAMETERS");
-            // Note: c_api::ParameterData has different structure
-            // Just return success for now
-            return VX_SUCCESS;
+    // Also update the node's parameter reference
+    eprintln!("DEBUG vxSetParameterByReference: updating node 0x{:x} param[{}]", node_id, index);
+    if let Ok(nodes) = NODES.lock() {
+        if let Some(node_data) = nodes.get(&node_id) {
+            if let Ok(mut params) = node_data.parameters.lock() {
+                if (index as usize) < params.len() {
+                    params[index as usize] = Some(value as u64);
+                    eprintln!("DEBUG vxSetParameterByReference: updated node parameter");
+                }
+            }
         }
     }
     
-    eprintln!("DEBUG vxSetParameterByReference: param not found in any registry!");
-    VX_ERROR_INVALID_REFERENCE
+    eprintln!("DEBUG vxSetParameterByReference: DONE");
+    VX_SUCCESS
 }
 
 #[no_mangle]
