@@ -94,14 +94,42 @@ jobs:
       if: steps.cache-cts.outputs.cache-hit != 'true'
       run: |
         echo "Building OpenVX CTS..."
+        
+        # Create symlink for include directory if needed
+        if [ ! -d "openvx" ]; then
+          echo "Creating openvx symlink..."
+          ln -sf include openvx 2>/dev/null || true
+        fi
+        
         cd OpenVX-cts
         mkdir -p build
         cd build
+        
+        # Configure with CMake
+        echo "Configuring with CMake..."
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
-          -G Ninja
-        ninja -j$(nproc) || make -j$(nproc)
-        echo "CTS build complete."
+          -DCMAKE_C_COMPILER=gcc \
+          -DCMAKE_CXX_COMPILER=g++ \
+          2>&1
+        
+        if [ $? -ne 0 ]; then
+          echo "CMake configuration failed!"
+          cat CMakeFiles/CMakeError.log 2>/dev/null | head -50 || echo "No error log found"
+          exit 1
+        fi
+        
+        echo "Building with Make..."
+        make -j$(nproc) 2>&1
+        
+        if [ $? -ne 0 ]; then
+          echo "Build failed!"
+          exit 1
+        fi
+        
+        echo "CTS build complete. Checking for binary..."
+        ls -la bin/vx_test_conformance 2>/dev/null || echo "Binary not found in bin/"
+        find . -name "vx_test_conformance" -type f 2>/dev/null
     
     - name: Prepare test environment
       run: |
