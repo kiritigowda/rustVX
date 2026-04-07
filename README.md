@@ -1,5 +1,7 @@
 # rustVX
 
+[![OpenVX Vision Conformance](https://github.com/simoncatbot/rustVX/actions/workflows/openvx-conformance.yml/badge.svg)](https://github.com/simoncatbot/rustVX/actions/workflows/openvx-conformance.yml)
+
 OpenVX 1.3.1 Vision Conformant Implementation in Rust
 
 ## Overview
@@ -101,6 +103,29 @@ This implementation passes the Khronos OpenVX Conformance Test Suite for:
 - Vision Conformance Feature Set
 
 See CONFORMANCE.md for detailed results.
+
+## Continuous Integration
+
+This project uses GitHub Actions to automatically build and run OpenVX Vision Conformance tests on every push and pull request.
+
+### CI Workflow
+- **Build**: Compiles rustVX with `cargo build --release`
+- **CTS**: Builds the Khronos OpenVX Conformance Test Suite
+- **Test**: Runs Vision Conformance tests with rustVX implementation
+- **Report**: Uploads test results and generates summary
+
+### Running Tests Locally
+```bash
+# Build rustVX
+cargo build --release
+
+# Build and run CTS
+cd OpenVX-cts/build
+LD_LIBRARY_PATH=../../target/release ./bin/vx_test_conformance
+```
+
+### Workflow Status
+See [Actions tab](https://github.com/simoncatbot/rustVX/actions) for latest test results.
 
 ## License
 
