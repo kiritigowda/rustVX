@@ -10,6 +10,7 @@ use crate::c_api::{
     vx_enum, vx_df_image, vx_uint32, vx_size, vx_char,
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
+    VX_DF_IMAGE_S16, VX_DF_IMAGE_U16,  // Add S16/U16 format constants
 };
 use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage};
 
@@ -17,6 +18,8 @@ use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageFormat {
     Gray,       // U8 - single byte per pixel
+    GrayU16,    // U16 - two bytes per pixel
+    GrayS16,    // S16 - two bytes per pixel (signed)
     GrayU32,    // U32 - four bytes per pixel (for integral image)
     Rgb,
     Rgba,
@@ -30,6 +33,8 @@ impl ImageFormat {
     pub fn channels(&self) -> usize {
         match self {
             ImageFormat::Gray => 1,
+            ImageFormat::GrayU16 => 1,  // U16 is single channel, 2 bytes
+            ImageFormat::GrayS16 => 1,  // S16 is single channel, 2 bytes
             ImageFormat::GrayU32 => 4,
             ImageFormat::Rgb => 3,
             ImageFormat::Rgba => 4,
@@ -47,6 +52,8 @@ impl ImageFormat {
     pub fn buffer_size(&self, width: usize, height: usize) -> usize {
         match self {
             ImageFormat::Gray => width.saturating_mul(height),
+            ImageFormat::GrayU16 => width.saturating_mul(height).saturating_mul(2), // U16 = 2 bytes per pixel
+            ImageFormat::GrayS16 => width.saturating_mul(height).saturating_mul(2), // S16 = 2 bytes per pixel
             ImageFormat::GrayU32 => width.saturating_mul(height).saturating_mul(4), // U32 = 4 bytes per pixel
             ImageFormat::Rgb => width.saturating_mul(height).saturating_mul(3),
             ImageFormat::Rgba => width.saturating_mul(height).saturating_mul(4),
@@ -147,7 +154,10 @@ impl Image {
 fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
     match df {
         0x38303055 => Some(ImageFormat::Gray), // VX_DF_IMAGE_U8 ('U008')
-        0x32333055 => Some(ImageFormat::GrayU32), // VX_DF_IMAGE_U32 ('U032') - integral image output
+        0x31305555 => Some(ImageFormat::GrayU16), // VX_DF_IMAGE_U16 ('U016') 
+        0x53313053 => Some(ImageFormat::GrayS16), // VX_DF_IMAGE_S16 ('S016') - CORRECTED
+        0x36313053 => Some(ImageFormat::GrayS16), // Alternative S16 format code
+        0x32333055 => Some(ImageFormat::GrayU32), // VX_DF_IMAGE_U32 ('U032')
         0x32424752 => Some(ImageFormat::Rgb),  // VX_DF_IMAGE_RGB ('RGB2')
         0x41424752 => Some(ImageFormat::Rgba), // VX_DF_IMAGE_RGBA/RGBX ('RGBA')
         0x3231564E => Some(ImageFormat::NV12), // VX_DF_IMAGE_NV12 ('NV12')
@@ -349,11 +359,73 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
     VX_ERROR_INVALID_PARAMETERS
 }
 
+/// Copy Rust Image data back to C API image with format conversion
+unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_image) -> vx_status {
+    if dst.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    // Get source and target formats
+    let src_format = src.format();
+    let Some(dst_format) = df_image_to_format(target_format) else {
+        return VX_ERROR_INVALID_FORMAT;
+    };
+
+    // If formats match, simple copy
+    if src_format == dst_format {
+        return copy_rust_to_c_image(src, dst);
+    }
+
+    // Format conversion required
+    let img = &*(dst as *const VxCImage);
+    let width = img.width;
+    let height = img.height;
+    let mut dst_data = match img.data.write() {
+        Ok(d) => d,
+        Err(_) => return VX_ERROR_INVALID_REFERENCE,
+    };
+
+    eprintln!("DEBUG convert_and_copy: src_format={:?}, dst_format={:?}", src_format, dst_format);
+    match (src_format, dst_format) {
+        (ImageFormat::Gray, ImageFormat::GrayS16) => {
+            // U8 (0-255) to S16 (-32768 to 32767)
+            // U8 with offset 128 is signed: (val as i16 - 128) * 256
+            let src_data = src.data();
+            let w = width as usize;
+            let h = height as usize;
+            eprintln!("DEBUG convert_and_copy: converting Gray to GrayS16, {}x{}", w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let val = src_data[y * w + x] as i16;
+                    // Convert: U8(0-255) -> S16(-128 to 127) with scale factor
+                    // S16 value = (U8 - 128) * 256
+                    let s16_val = (val - 128i16).wrapping_mul(256i16);
+                    let idx = y * w + x;
+                    let bytes = s16_val.to_le_bytes();
+                    if idx * 2 + 1 < dst_data.len() {
+                        dst_data[idx * 2] = bytes[0];
+                        dst_data[idx * 2 + 1] = bytes[1];
+                    }
+                }
+            }
+            VX_SUCCESS
+        }
+        (src, dst) => {
+            eprintln!("DEBUG convert_and_copy: unsupported conversion {:?} -> {:?}", src, dst);
+            VX_ERROR_INVALID_FORMAT
+        }
+    }
+}
+
 /// Create a new Rust Image matching the C image dimensions and format
 unsafe fn create_matching_image(c_image: vx_image) -> Option<Image> {
     let (width, height, format) = get_image_info(c_image)?;
-    let format = df_image_to_format(format)?;
-    Image::new(width as usize, height as usize, format)
+    let src_format = df_image_to_format(format)?;
+    eprintln!("DEBUG create_matching_image: src format={:?}", src_format);
+    // For output format, determine what we need based on context
+    // Default to same format unless explicitly needed otherwise
+    let output_format = src_format;
+    Image::new(width as usize, height as usize, output_format)
 }
 
 /// VXU Color Functions
@@ -1731,37 +1803,73 @@ pub fn vxu_sobel3x3_impl(
     output_x: vx_image,
     output_y: vx_image,
 ) -> vx_status {
+    eprintln!("DEBUG vxu_sobel3x3_impl: START");
     if context.is_null() || input.is_null() {
+        eprintln!("DEBUG vxu_sobel3x3_impl: null context or input");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     unsafe {
         let src = match c_image_to_rust(input) {
-            Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            Some(img) => {
+                eprintln!("DEBUG vxu_sobel3x3_impl: src format={:?}, size={}x{}", img.format(), img.width(), img.height());
+                img
+            },
+            None => {
+                eprintln!("DEBUG vxu_sobel3x3_impl: failed to convert input");
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
         };
 
-        let mut gx = match create_matching_image(output_x) {
-            Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+        // Check output format
+        let (_, _, out_x_format) = match get_image_info(output_x) {
+            Some(info) => {
+                eprintln!("DEBUG vxu_sobel3x3_impl: output_x format={:#010x}", info.2);
+                info
+            },
+            None => {
+                eprintln!("DEBUG vxu_sobel3x3_impl: failed to get output_x info");
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
         };
 
-        let mut gy = match create_matching_image(output_y) {
+        eprintln!("DEBUG vxu_sobel3x3_impl: creating temp U8 buffers");
+        let mut gx = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
             Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            None => {
+                eprintln!("DEBUG vxu_sobel3x3_impl: failed to create gx buffer");
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
         };
 
+        let mut gy = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
+            Some(img) => img,
+            None => {
+                eprintln!("DEBUG vxu_sobel3x3_impl: failed to create gy buffer");
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
+        };
+
+        eprintln!("DEBUG vxu_sobel3x3_impl: calling sobel3x3 kernel");
         match sobel3x3(&src, &mut gx, &mut gy) {
             Ok(_) => {
-                let status_x = if output_x.is_null() { VX_SUCCESS } else { copy_rust_to_c_image(&gx, output_x) };
-                let status_y = if output_y.is_null() { VX_SUCCESS } else { copy_rust_to_c_image(&gy, output_y) };
+                eprintln!("DEBUG vxu_sobel3x3_impl: kernel succeeded, converting output");
+                // Convert from U8 to output format
+                let status_x = convert_and_copy(&gx, output_x, out_x_format);
+                let status_y = convert_and_copy(&gy, output_y, VX_DF_IMAGE_S16);
+                eprintln!("DEBUG vxu_sobel3x3_impl: status_x={}, status_y={}", status_x, status_y);
                 if status_x == VX_SUCCESS && status_y == VX_SUCCESS {
+                    eprintln!("DEBUG vxu_sobel3x3_impl: SUCCESS");
                     VX_SUCCESS
                 } else {
+                    eprintln!("DEBUG vxu_sobel3x3_impl: conversion failed");
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+            Err(e) => {
+                eprintln!("DEBUG vxu_sobel3x3_impl: kernel failed: {:?}", e);
+                VX_ERROR_INVALID_PARAMETERS
+            },
         }
     }
 }
