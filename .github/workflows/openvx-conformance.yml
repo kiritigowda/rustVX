@@ -88,19 +88,34 @@ jobs:
           exit 1
         fi
         
+        # Prepare include directory
+        mkdir -p include
+        if [ -d "../include" ]; then
+          echo "Copying OpenVX headers..."
+          cp -r ../include/* include/ 2>/dev/null || true
+        fi
+        
         mkdir -p build
         cd build
         
-        # Configure with verbose output
+        # Configure with verbose output and proper include paths
         echo "Running cmake..."
-        cmake .. -DCMAKE_BUILD_TYPE=Release 2>&1 || {
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+          -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so" \
+          -DOPENVX_DEFINITIONS="OPENVX_CONFORMANCE_VISION" \
+          2>&1 || {
           echo "CMAKE FAILED!"
+          echo "CMake output:"
+          cat CMakeFiles/CMakeOutput.log 2>/dev/null | tail -100 || echo "No CMakeOutput.log"
+          cat CMakeFiles/CMakeError.log 2>/dev/null | tail -100 || echo "No CMakeError.log"
           exit 1
         }
         
         # Build
         echo "Running make..."
-        make -j$(nproc) 2>&1 || {
+        make VERBOSE=1 -j$(nproc) 2>&1 || {
           echo "MAKE FAILED!"
           exit 1
         }
