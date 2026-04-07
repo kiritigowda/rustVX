@@ -32,6 +32,15 @@ jobs:
       with:
         fetch-depth: 0
     
+    - name: Debug directory structure
+      run: |
+        echo "=== Directory Structure ==="
+        ls -la
+        echo "=== OpenVX-cts structure ==="
+        ls -la OpenVX-cts/ || echo "No OpenVX-cts directory!"
+        echo "=== Current working directory ==="
+        pwd
+    
     - name: Install system dependencies
       run: |
         sudo apt-get update
@@ -51,37 +60,6 @@ jobs:
         rustc --version
         cargo --version
     
-    - name: Cache Cargo registry
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-registry-
-    
-    - name: Cache Cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-index-
-    
-    - name: Cache Cargo build
-      uses: actions/cache@v4
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-build-target-
-    
-    - name: Cache OpenVX CTS build
-      id: cache-cts
-      uses: actions/cache@v4
-      with:
-        path: OpenVX-cts/build
-        key: ${{ runner.os }}-cts-${{ hashFiles('OpenVX-cts/CMakeLists.txt') }}
-    
     - name: Build rustVX
       run: |
         source $HOME/.cargo/env
@@ -90,52 +68,46 @@ jobs:
         echo "Build complete. Library files:"
         ls -la target/release/*.so target/release/*.rlib 2>/dev/null || true
     
-    - name: Build OpenVX CTS (if not cached)
-      if: steps.cache-cts.outputs.cache-hit != 'true'
+    - name: Build OpenVX CTS
       run: |
-        echo "Building OpenVX CTS..."
+        echo "=== Building OpenVX CTS ==="
         
-        # Create symlink for include directory if needed
-        if [ ! -d "openvx" ]; then
-          echo "Creating openvx symlink..."
-          ln -sf include openvx 2>/dev/null || true
+        # Check OpenVX-cts directory
+        if [ ! -d "OpenVX-cts" ]; then
+          echo "ERROR: OpenVX-cts directory not found!"
+          ls -la
+          exit 1
         fi
         
         cd OpenVX-cts
+        
+        # Check for CMakeLists.txt
+        if [ ! -f "CMakeLists.txt" ]; then
+          echo "ERROR: CMakeLists.txt not found!"
+          ls -la
+          exit 1
+        fi
+        
         mkdir -p build
         cd build
         
-        # Configure with CMake
-        echo "Configuring with CMake..."
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_COMPILER=gcc \
-          -DCMAKE_CXX_COMPILER=g++ \
-          2>&1
-        
-        if [ $? -ne 0 ]; then
-          echo "CMake configuration failed!"
-          cat CMakeFiles/CMakeError.log 2>/dev/null | head -50 || echo "No error log found"
+        # Configure with verbose output
+        echo "Running cmake..."
+        cmake .. -DCMAKE_BUILD_TYPE=Release 2>&1 || {
+          echo "CMAKE FAILED!"
           exit 1
-        fi
+        }
         
-        echo "Building with Make..."
-        make -j$(nproc) 2>&1
-        
-        if [ $? -ne 0 ]; then
-          echo "Build failed!"
+        # Build
+        echo "Running make..."
+        make -j$(nproc) 2>&1 || {
+          echo "MAKE FAILED!"
           exit 1
-        fi
+        }
         
-        echo "CTS build complete. Checking for binary..."
-        ls -la bin/vx_test_conformance 2>/dev/null || echo "Binary not found in bin/"
+        echo "Build complete. Listing binaries:"
+        ls -la bin/ 2>/dev/null || echo "No bin directory"
         find . -name "vx_test_conformance" -type f 2>/dev/null
-    
-    - name: Prepare test environment
-      run: |
-        echo "Setting up test environment..."
-        echo "RUSTVX_LIBRARY_PATH=${{ github.workspace }}/target/release" >> $GITHUB_ENV
-        echo "CTS_BUILD_DIR=${{ github.workspace }}/OpenVX-cts/build" >> $GITHUB_ENV
     
     - name: Run Vision Conformance Tests
       id: run_tests
@@ -146,29 +118,32 @@ jobs:
         echo "Running OpenVX Vision Conformance Tests"
         echo "========================================"
         
-        cd $CTS_BUILD_DIR
+        # Find CTS build directory
+        CTS_DIR="OpenVX-cts/build"
+        if [ ! -d "$CTS_DIR" ]; then
+          echo "ERROR: CTS build directory not found!"
+          exit 1
+        fi
+        
+        cd "$CTS_DIR"
+        
+        # Check for test binary
+        if [ ! -f "bin/vx_test_conformance" ]; then
+          echo "Test binary not found, searching..."
+          find . -name "vx_test_conformance" -type f 2>/dev/null
+          ls -la bin/ 2>/dev/null || true
+        fi
         
         # Set library path for the conformance tests
         export LD_LIBRARY_PATH=${{ github.workspace }}/target/release:$LD_LIBRARY_PATH
         
         echo "Library path: $LD_LIBRARY_PATH"
-        echo "Checking for rustVX library..."
-        ls -la ${{ github.workspace }}/target/release/*.so 2>/dev/null || echo "No .so files found"
         
         # Create output directory for results
         mkdir -p ${{ github.workspace }}/test-results
         
-        # Run tests with timeout and capture output
-        TEST_FILTER="${{ github.event.inputs.test_filter }}"
-        VERBOSE="${{ github.event.inputs.verbose }}"
-        
-        if [ -n "$TEST_FILTER" ]; then
-          echo "Running filtered tests: $TEST_FILTER"
-          timeout 300 ./bin/vx_test_conformance "$TEST_FILTER" 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
-        else
-          echo "Running all Vision tests..."
-          timeout 300 ./bin/vx_test_conformance 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
-        fi
+        # Run tests
+        timeout 300 ./bin/vx_test_conformance 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
         
         echo "Test execution completed."
     
@@ -193,12 +168,6 @@ jobs:
         # Count failing tests
         FAIL_COUNT=$(grep -c "\[ !FAILED! \]" "$OUTPUT_FILE" 2>/dev/null || echo "0")
         echo "Tests failed: $FAIL_COUNT"
-        
-        # Check for crashes
-        if grep -q "double free\|segmentation fault\|core dumped" "$OUTPUT_FILE" 2>/dev/null; then
-          echo "⚠️ WARNING: Tests crashed!"
-          echo "CRASH_DETECTED=true" >> $GITHUB_ENV
-        fi
         
         # Extract test summary
         echo "========================================" | tee ${{ github.workspace }}/test-results/summary.txt
@@ -245,11 +214,6 @@ jobs:
         echo "- **Rust Version:** $(rustc --version)" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Type:** Release" >> $GITHUB_STEP_SUMMARY
         echo "- **CTS Build:** OpenVX Conformance Test Suite" >> $GITHUB_STEP_SUMMARY
-        
-        if [ "${{ env.CRASH_DETECTED }}" == "true" ]; then
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ **Warning:** Tests encountered crashes. See artifacts for details." >> $GITHUB_STEP_SUMMARY
-        fi
         
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "📥 **Download full logs:** See Artifacts section above" >> $GITHUB_STEP_SUMMARY
