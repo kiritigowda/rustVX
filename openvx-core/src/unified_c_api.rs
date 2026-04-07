@@ -527,12 +527,17 @@ fn convert_graph_state_to_vx(state: VxGraphState) -> vx_enum {
 fn is_image_reference(ref_id: u64) -> bool {
     if let Ok(types) = REFERENCE_TYPES.lock() {
         if let Some(ref_type) = types.get(&(ref_id as usize)) {
-            return *ref_type == VX_TYPE_IMAGE;
+            let result = *ref_type == VX_TYPE_IMAGE;
+            eprintln!("DEBUG is_image_reference: ref_id=0x{:x}, type=0x{:x}, is_image={}", ref_id, ref_type, result);
+            return result;
+        } else {
+            eprintln!("DEBUG is_image_reference: ref_id=0x{:x} not in REFERENCE_TYPES", ref_id);
         }
     }
     // Also check if it looks like an image pointer
     if let Ok(images) = IMAGES.lock() {
         if images.contains(&(ref_id as usize)) {
+            eprintln!("DEBUG is_image_reference: ref_id=0x{:x} found in IMAGES", ref_id);
             return true;
         }
     }
@@ -1060,12 +1065,59 @@ fn get_node_graph_id(node_id: u64) -> Result<u64, ()> {
 
 /// Helper function to resolve a graph parameter to its actual value
 fn resolve_graph_parameter(graph_id: u64, graph_param_index: usize) -> Option<u64> {
-    // Look up in GRAPH_PARAMETER_BINDINGS: (graph_id, index) -> reference
+    // First, look up the graph parameter binding to get the parameter handle
+    let graph_params = if let Ok(graphs) = GRAPHS_DATA.lock() {
+        if let Some(g) = graphs.get(&graph_id) {
+            if let Ok(params) = g.parameters.read() {
+                params.clone()
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    
+    // Get the parameter handle for this graph parameter index
+    let param_handle = if graph_param_index < graph_params.len() {
+        graph_params[graph_param_index]
+    } else {
+        return None;
+    };
+    
+    // Look up the actual value from the parameter's value field
+    // Try unified_c_api::PARAMETERS first
+    if let Ok(params) = PARAMETERS.lock() {
+        if let Some(param_data) = params.get(&param_handle) {
+            if let Ok(val) = param_data.value.lock() {
+                if let Some(v) = *val {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    
+    // Try c_api::PARAMETERS
+    if let Ok(params) = crate::c_api::PARAMETERS.lock() {
+        if let Some(param_data) = params.get(&param_handle) {
+            // For c_api parameters, we need to check if there's a stored value
+            // The value might be in the parameter's value field
+            // Return None for now since c_api::ParameterData doesn't store value directly
+            // in the same way
+            return None;
+        }
+    }
+    
+    // Fallback: look in GRAPH_PARAMETER_BINDINGS for direct bindings
+    // (used for graph inputs)
     if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
         if let Some(&ref_addr) = bindings.get(&(graph_id, graph_param_index)) {
             return Some(ref_addr as u64);
         }
     }
+    
     None
 }
 
@@ -4860,6 +4912,17 @@ pub extern "C" fn vxAddParameterToGraph(
         return VX_ERROR_INVALID_REFERENCE;
     }
     
+    // Add parameter to graph's parameter list FIRST
+    let graph_param_index: usize;
+    {
+        let mut graphs = GRAPHS_DATA.lock().unwrap();
+        let g = graphs.get_mut(&graph_id).unwrap();
+        let mut graph_params = g.parameters.write().unwrap();
+        graph_params.push(param_id);
+        graph_param_index = graph_params.len() - 1;
+        eprintln!("DEBUG vxAddParameterToGraph: added to graph_params at index {}", graph_param_index);
+    }
+    
     // Retain the parameter (increment ref count)
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         if let Some(cnt) = counts.get(&(param_id as usize)) {
@@ -4868,20 +4931,10 @@ pub extern "C" fn vxAddParameterToGraph(
         }
     }
     
-    // Add parameter to graph's parameter list
-    if let Ok(graphs) = GRAPHS_DATA.lock() {
-        if let Some(g) = graphs.get(&graph_id) {
-            if let Ok(mut graph_params) = g.parameters.write() {
-                graph_params.push(param_id);
-                eprintln!("DEBUG vxAddParameterToGraph: added to graph_params");
-            }
-        }
-    }
-    
-    // Store binding
+    // Store binding with the correct graph param index
     if let Ok(mut bindings) = NODE_PARAMETER_BINDINGS.lock() {
-        bindings.insert((node_id, param_index as usize), NodeParamBinding::GraphParam(0));
-        eprintln!("DEBUG vxAddParameterToGraph: stored binding for (node_id=0x{:x}, index={})", node_id, param_index);
+        bindings.insert((node_id, param_index as usize), NodeParamBinding::GraphParam(graph_param_index));
+        eprintln!("DEBUG vxAddParameterToGraph: stored binding for (node_id=0x{:x}, index={}) -> graph_param[{}]", node_id, param_index, graph_param_index);
     }
     
     VX_SUCCESS
@@ -7745,17 +7798,27 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
         for ((node_id, param_idx), binding) in node_bindings.iter() {
             if let NodeParamBinding::GraphParam(gp_idx) = binding {
                 if *gp_idx == index as usize {
-                    eprintln!("DEBUG vxSetGraphParameterByIndex: updating node 0x{:x} param[{}] to 0x{:x}", node_id, param_idx, param_addr);
-                    // Update the node's parameter value
-                    if let Ok(nodes) = crate::c_api::NODES.lock() {
-                        if let Some(node_data) = nodes.get(node_id) {
-                            if let Ok(mut params) = node_data.parameters.lock() {
-                                if *param_idx < params.len() {
-                                    params[*param_idx] = Some(param_addr as u64);
-                                    eprintln!("DEBUG vxSetGraphParameterByIndex: updated node parameter");
+                    // Only update INPUT parameters when binding a graph input
+                    // Graph input (index 0) connects to node inputs
+                    // Graph outputs are handled separately via vxSetParameterByReference
+                    let is_graph_input = index == 0;
+                    let should_update = is_graph_input && *param_idx == 0; // Only update node param 0 for graph inputs
+                    
+                    if should_update {
+                        eprintln!("DEBUG vxSetGraphParameterByIndex: updating node 0x{:x} param[{}] to 0x{:x}", node_id, param_idx, param_addr);
+                        // Update the node's parameter value
+                        if let Ok(nodes) = crate::c_api::NODES.lock() {
+                            if let Some(node_data) = nodes.get(node_id) {
+                                if let Ok(mut params) = node_data.parameters.lock() {
+                                    if *param_idx < params.len() {
+                                        params[*param_idx] = Some(param_addr as u64);
+                                        eprintln!("DEBUG vxSetGraphParameterByIndex: updated node parameter");
+                                    }
                                 }
                             }
                         }
+                    } else {
+                        eprintln!("DEBUG vxSetGraphParameterByIndex: SKIPPING node 0x{:x} param[{}] - not an input", node_id, param_idx);
                     }
                 }
             }
