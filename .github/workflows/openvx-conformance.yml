@@ -19,6 +19,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
   build-and-test:
@@ -27,7 +28,9 @@ jobs:
     
     steps:
     - name: Checkout rustVX
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
     
     - name: Install system dependencies
       run: |
@@ -41,28 +44,47 @@ jobs:
           python3 \
           python3-pip
     
-    - name: Setup Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        toolchain: stable
-        components: rustfmt, clippy
+    - name: Install Rust
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+        source $HOME/.cargo/env
+        rustc --version
+        cargo --version
     
-    - name: Cache Rust dependencies
-      uses: Swatinem/rust-cache@v2
+    - name: Cache Cargo registry
+      uses: actions/cache@v3
       with:
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        shared-key: "openvx-build"
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+    
+    - name: Cache Cargo index
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-index-
+    
+    - name: Cache Cargo build
+      uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-build-target-
     
     - name: Cache OpenVX CTS build
       id: cache-cts
-      uses: actions/cache@v4
+      uses: actions/cache@v3
       with:
-        path: |
-          OpenVX-cts/build
+        path: OpenVX-cts/build
         key: ${{ runner.os }}-cts-${{ hashFiles('OpenVX-cts/CMakeLists.txt') }}
     
     - name: Build rustVX
       run: |
+        source $HOME/.cargo/env
         echo "Building rustVX..."
         cargo build --release
         echo "Build complete. Library files:"
@@ -77,9 +99,8 @@ jobs:
         cd build
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
-          -DOpenVX_SOURCE_DIR=../openvx \
           -G Ninja
-        ninja -j$(nproc)
+        ninja -j$(nproc) || make -j$(nproc)
         echo "CTS build complete."
     
     - name: Prepare test environment
@@ -92,6 +113,7 @@ jobs:
       id: run_tests
       continue-on-error: true
       run: |
+        source $HOME/.cargo/env
         echo "========================================"
         echo "Running OpenVX Vision Conformance Tests"
         echo "========================================"
@@ -114,7 +136,7 @@ jobs:
         
         if [ -n "$TEST_FILTER" ]; then
           echo "Running filtered tests: $TEST_FILTER"
-          timeout 300 ./bin/vx_test_conformance "$TEST_FILTER" 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt
+          timeout 300 ./bin/vx_test_conformance "$TEST_FILTER" 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
         else
           echo "Running all Vision tests..."
           timeout 300 ./bin/vx_test_conformance 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
@@ -125,63 +147,58 @@ jobs:
     - name: Analyze test results
       id: analyze_results
       run: |
+        source $HOME/.cargo/env
         echo "========================================"
         echo "Analyzing Test Results"
         echo "========================================"
         
         OUTPUT_FILE="${{ github.workspace }}/test-results/vision_test_output.txt"
         
-        if [ -f "$OUTPUT_FILE" ]; then
-          echo "Test output found. Processing results..."
-          
-          # Count passing tests
-          PASS_COUNT=$(grep -c "\[     DONE \]" "$OUTPUT_FILE" 2>/dev/null || echo "0")
-          echo "Tests passed: $PASS_COUNT"
-          
-          # Count failing tests
-          FAIL_COUNT=$(grep -c "\[ !FAILED! \]" "$OUTPUT_FILE" 2>/dev/null || echo "0")
-          echo "Tests failed: $FAIL_COUNT"
-          
-          # Check for crashes
-          if grep -q "double free\|segmentation fault\|core dumped" "$OUTPUT_FILE"; then
-            echo "⚠️ WARNING: Tests crashed!"
-            echo "CRASH_DETECTED=true" >> $GITHUB_ENV
-          fi
-          
-          # Extract test summary
-          echo "========================================" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          echo "Vision Conformance Test Summary" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          echo "========================================" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          echo "Passed: $PASS_COUNT" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          echo "Failed: $FAIL_COUNT" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          echo "Total: $((PASS_COUNT + FAIL_COUNT))" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          
-          if [ "$FAIL_COUNT" -eq 0 ] && [ "$PASS_COUNT" -gt 0 ]; then
-            echo "Status: ✅ ALL TESTS PASSED" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          elif [ "$PASS_COUNT" -gt 0 ]; then
-            echo "Status: ⚠️ PARTIAL SUCCESS ($PASS_COUNT/$((PASS_COUNT + FAIL_COUNT)))" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          else
-            echo "Status: ❌ NO TESTS PASSED" | tee -a ${{ github.workspace }}/test-results/summary.txt
-          fi
-          
-          # Set outputs for GitHub Actions summary
-          echo "pass_count=$PASS_COUNT" >> $GITHUB_OUTPUT
-          echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
-          
-        else
-          echo "No test output file found!"
-          echo "pass_count=0" >> $GITHUB_OUTPUT
-          echo "fail_count=0" >> $GITHUB_OUTPUT
+        # Create output file if it doesn't exist
+        mkdir -p ${{ github.workspace }}/test-results
+        touch "$OUTPUT_FILE"
+        
+        # Count passing tests
+        PASS_COUNT=$(grep -c "\[     DONE \]" "$OUTPUT_FILE" 2>/dev/null || echo "0")
+        echo "Tests passed: $PASS_COUNT"
+        
+        # Count failing tests
+        FAIL_COUNT=$(grep -c "\[ !FAILED! \]" "$OUTPUT_FILE" 2>/dev/null || echo "0")
+        echo "Tests failed: $FAIL_COUNT"
+        
+        # Check for crashes
+        if grep -q "double free\|segmentation fault\|core dumped" "$OUTPUT_FILE" 2>/dev/null; then
+          echo "⚠️ WARNING: Tests crashed!"
+          echo "CRASH_DETECTED=true" >> $GITHUB_ENV
         fi
+        
+        # Extract test summary
+        echo "========================================" | tee ${{ github.workspace }}/test-results/summary.txt
+        echo "Vision Conformance Test Summary" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        echo "========================================" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        echo "Passed: $PASS_COUNT" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        echo "Failed: $FAIL_COUNT" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        echo "Total: $((PASS_COUNT + FAIL_COUNT))" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        
+        if [ "$FAIL_COUNT" -eq 0 ] && [ "$PASS_COUNT" -gt 0 ]; then
+          echo "Status: ✅ ALL TESTS PASSED" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        elif [ "$PASS_COUNT" -gt 0 ]; then
+          echo "Status: ⚠️ PARTIAL SUCCESS ($PASS_COUNT/$((PASS_COUNT + FAIL_COUNT)))" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        else
+          echo "Status: ❌ NO TESTS PASSED" | tee -a ${{ github.workspace }}/test-results/summary.txt
+        fi
+        
+        # Set outputs for GitHub Actions summary
+        echo "pass_count=$PASS_COUNT" >> $GITHUB_OUTPUT
+        echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
     
     - name: Upload test results
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       if: always()
       with:
         name: conformance-test-results
         path: |
-          ${{ github.workspace }}/test-results/
-          ${{ github.workspace }}/OpenVX-cts/build/bin/*.log 2>/dev/null || true
+          test-results/
         retention-days: 30
     
     - name: Create GitHub Actions Summary
@@ -190,12 +207,13 @@ jobs:
         echo "## 🧪 OpenVX Vision Conformance Test Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        if [ -f "${{ github.workspace }}/test-results/summary.txt" ]; then
-          cat "${{ github.workspace }}/test-results/summary.txt" >> $GITHUB_STEP_SUMMARY
+        if [ -f "test-results/summary.txt" ]; then
+          cat test-results/summary.txt >> $GITHUB_STEP_SUMMARY
         fi
         
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Build Information" >> $GITHUB_STEP_SUMMARY
+        source $HOME/.cargo/env
         echo "- **Rust Version:** $(rustc --version)" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Type:** Release" >> $GITHUB_STEP_SUMMARY
         echo "- **CTS Build:** OpenVX Conformance Test Suite" >> $GITHUB_STEP_SUMMARY
@@ -207,38 +225,3 @@ jobs:
         
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "📥 **Download full logs:** See Artifacts section above" >> $GITHUB_STEP_SUMMARY
-    
-    - name: Comment on PR
-      if: github.event_name == 'pull_request' && always()
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          const summaryFile = '${{ github.workspace }}/test-results/summary.txt';
-          
-          let summary = '## OpenVX Vision Conformance Results\n\n';
-          
-          if (fs.existsSync(summaryFile)) {
-            const content = fs.readFileSync(summaryFile, 'utf8');
-            summary += content;
-          } else {
-            summary += 'No test results available.';
-          }
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: summary
-          });
-    
-    - name: Report status
-      if: always()
-      run: |
-        echo "========================================"
-        echo "Workflow Complete"
-        echo "========================================"
-        echo "Test results available in artifacts:"
-        echo "- conformance-test-results"
-        echo ""
-        echo "View full summary in GitHub Actions tab"
