@@ -945,8 +945,14 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     };
     
     if !verified {
-        eprintln!("ERROR: vxProcessGraph: graph is not verified");
-        return VX_ERROR_INVALID_GRAPH;
+        eprintln!("DEBUG vxProcessGraph: graph not verified, auto-verifying...");
+        // Per OpenVX spec: vxProcessGraph should auto-verify if not already verified
+        let verify_status = vxVerifyGraph(graph);
+        if verify_status != VX_SUCCESS {
+            eprintln!("ERROR: vxProcessGraph: auto-verify failed with status {}", verify_status);
+            return verify_status;
+        }
+        eprintln!("DEBUG vxProcessGraph: auto-verify succeeded");
     }
     
     // Set state to running
@@ -7712,6 +7718,29 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
     if let Ok(mut bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
         bindings.insert((graph_id, index as usize), param_addr);
         eprintln!("DEBUG vxSetGraphParameterByIndex: stored binding");
+    }
+    
+    // Update the connected node parameter value via NODE_PARAMETER_BINDINGS
+    eprintln!("DEBUG vxSetGraphParameterByIndex: updating connected node parameter");
+    if let Ok(node_bindings) = NODE_PARAMETER_BINDINGS.lock() {
+        for ((node_id, param_idx), binding) in node_bindings.iter() {
+            if let NodeParamBinding::GraphParam(gp_idx) = binding {
+                if *gp_idx == index as usize {
+                    eprintln!("DEBUG vxSetGraphParameterByIndex: updating node 0x{:x} param[{}] to 0x{:x}", node_id, param_idx, param_addr);
+                    // Update the node's parameter value
+                    if let Ok(nodes) = crate::c_api::NODES.lock() {
+                        if let Some(node_data) = nodes.get(node_id) {
+                            if let Ok(mut params) = node_data.parameters.lock() {
+                                if *param_idx < params.len() {
+                                    params[*param_idx] = Some(param_addr as u64);
+                                    eprintln!("DEBUG vxSetGraphParameterByIndex: updated node parameter");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     
     eprintln!("DEBUG vxSetGraphParameterByIndex: DONE");
