@@ -3,7 +3,8 @@
 #![allow(non_camel_case_types)]
 
 use std::ffi::c_void;
-use std::sync::{RwLock, atomic::AtomicUsize, Mutex};
+use std::sync::{RwLock, Mutex, Arc};
+use std::sync::atomic::AtomicUsize;
 use std::collections::HashMap;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id, vx_int32,
@@ -15,7 +16,7 @@ use openvx_core::c_api::{
     VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
     VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
-use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS};
+use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS, ARRAYS};
 use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
 use openvx_core::c_api::vxGetContext;
 
