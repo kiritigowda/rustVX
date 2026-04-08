@@ -1193,7 +1193,8 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                 // Get the graph parameter's actual value
                 if let Ok(graph_id) = get_node_graph_id(node_id) {
                     if let Some(resolved_value) = resolve_graph_parameter(graph_id, graph_param_index) {
-                                 idx, graph_param_index, resolved_value);
+                        eprintln!("DEBUG: execute_node: Resolved graph param {} for node {} param {} -> {:?}", 
+                                 idx, node_id, graph_param_index, resolved_value);
                         params.push(resolved_value as vx_reference);
                     } else {
                         eprintln!("ERROR: execute_node: could not resolve graph parameter {} for node {} param {}", 
