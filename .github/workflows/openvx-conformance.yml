@@ -108,6 +108,7 @@ jobs:
           -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
           -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
           -DOPENVX_CONFORMANCE_VISION=ON \
+          -DOPENVX_USE_ENHANCED_VISION=ON \
           2>&1 || {
           echo "CMAKE FAILED!"
           echo "CMake output:"
