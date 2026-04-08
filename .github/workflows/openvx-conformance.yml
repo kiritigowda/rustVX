@@ -24,7 +24,7 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 360
     
     steps:
     - name: Checkout rustVX
@@ -163,7 +163,7 @@ jobs:
         mkdir -p ${{ github.workspace }}/test-results
         
         # Run tests - extended timeout for full vision conformance (~15k tests)
-        timeout 1800 ./bin/vx_test_conformance 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
+        timeout 21000 ./bin/vx_test_conformance 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
         
         echo "Test execution completed."
     
