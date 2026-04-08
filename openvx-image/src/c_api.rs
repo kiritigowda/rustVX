@@ -1,17 +1,29 @@
 //! C API for OpenVX Image
 
 use std::ffi::c_void;
+<<<<<<< HEAD
 use std::sync::{RwLock, Arc};
+=======
+use std::sync::{RwLock, Arc, atomic::AtomicUsize};
+>>>>>>> origin/master
 // FFI declarations for register/unregister image - ensure we use the same symbol
 // as defined in openvx-core's unified_c_api
 extern "C" {
     fn register_image(addr: usize);
     fn unregister_image(addr: usize);
+<<<<<<< HEAD
+=======
+    fn vxGetContext(ref_: vx_reference) -> vx_context;
+>>>>>>> origin/master
 }
 use openvx_core::unified_c_api::VxCImage;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_image, vx_status, vx_enum, vx_size, vx_uint32,
     vx_rectangle_t, vx_imagepatch_addressing_t, vx_map_id, vx_df_image, vx_int32,
+<<<<<<< HEAD
+=======
+    vx_float32, vx_reference, VxImage,
+>>>>>>> origin/master
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_DF_IMAGE_RGB, VX_DF_IMAGE_RGBA, VX_DF_IMAGE_RGBX, VX_DF_IMAGE_NV12,
@@ -20,6 +32,10 @@ use openvx_core::c_api::{
     VX_DF_IMAGE_U32, VX_DF_IMAGE_S32, VX_DF_IMAGE_VIRT,
     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
     VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE, VX_IMAGE_SPACE, VX_IMAGE_RANGE,
+<<<<<<< HEAD
+=======
+    VX_IMAGE_IS_VIRTUAL,
+>>>>>>> origin/master
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST,
 };
 use openvx_core::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES, VX_TYPE_IMAGE};
@@ -65,6 +81,11 @@ pub extern "C" fn vxCreateImage(
         data: Arc::new(RwLock::new(data)),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
         parent: None,
+<<<<<<< HEAD
+=======
+        is_external_memory: false,
+        external_ptrs: Vec::new(),
+>>>>>>> origin/master
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -94,6 +115,58 @@ pub extern "C" fn vxCreateImage(
     image_ptr
 }
 
+<<<<<<< HEAD
+=======
+/// Use unified VIRTUAL_IMAGES registry from openvx_core
+use openvx_core::unified_c_api::{VIRTUAL_IMAGES, VirtualImageInfo as VxCVirtualImageInfo};
+use openvx_core::unified_c_api as core_unified;
+
+/// Re-export virtual image functions using unified registry
+pub fn get_virtual_image_info(addr: usize) -> Option<VxCVirtualImageInfo> {
+    if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+        registry.get(&addr).cloned()
+    } else {
+        None
+    }
+}
+
+/// Update virtual image with backing image
+pub fn allocate_virtual_image_backing(addr: usize, backing_image: vx_image) -> bool {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        if let Some(info) = registry.get_mut(&addr) {
+            info.backing_image = Some(backing_image as usize);
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if an image is virtual
+pub fn is_virtual_image(addr: usize) -> bool {
+    if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+        registry.get(&addr).map(|info| info.is_virtual).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Register a virtual image in the unified registry
+fn register_virtual_image(addr: usize, info: VxCVirtualImageInfo) {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        registry.insert(addr, info);
+    }
+}
+
+/// Unregister a virtual image from the unified registry
+fn unregister_virtual_image(addr: usize) -> Option<VxCVirtualImageInfo> {
+    if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+        registry.remove(&addr)
+    } else {
+        None
+    }
+}
+
+>>>>>>> origin/master
 /// Create a virtual image (for graph intermediate results)
 #[no_mangle]
 pub extern "C" fn vxCreateVirtualImage(
@@ -105,6 +178,7 @@ pub extern "C" fn vxCreateVirtualImage(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
+<<<<<<< HEAD
     // Note: Virtual images CAN have width/height of 0 - they get dimensions
     // from connected nodes during graph verification
 
@@ -118,10 +192,58 @@ pub extern "C" fn vxCreateVirtualImage(
         data: Arc::new(RwLock::new(Vec::new())),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
         parent: None,
+=======
+
+    // Get the context from the graph
+    let context = unsafe { vxGetContext(graph as vx_reference) };
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    // Note: Virtual images CAN have width/height of 0 - they get dimensions
+    // from connected nodes during graph verification
+    // VX_DF_IMAGE_VIRT is valid for virtual images
+
+    // Virtual images don't allocate memory immediately
+    // For VX_DF_IMAGE_VIRT format, we store 0 dimensions initially
+    let (store_width, store_height, store_format) = if color == VX_DF_IMAGE_VIRT {
+        (0, 0, VX_DF_IMAGE_VIRT)
+    } else {
+        (width, height, color)
+    };
+
+    let image = Box::new(VxCImage {
+        width: store_width,
+        height: store_height,
+        format: store_format,
+        is_virtual: true,
+        context, // Store the context from the graph
+        data: Arc::new(RwLock::new(Vec::new())),
+        mapped_patches: Arc::new(RwLock::new(Vec::new())),
+        parent: None,
+        is_external_memory: false,
+        external_ptrs: Vec::new(),
+>>>>>>> origin/master
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
 
+<<<<<<< HEAD
+=======
+    // Register virtual image info
+    use openvx_core::unified_c_api::VirtualImageInfo;
+    register_virtual_image(
+        image_ptr as usize,
+        VirtualImageInfo {
+            width: store_width,
+            height: store_height,
+            format: store_format as u32,
+            is_virtual: true,
+            backing_image: None,
+        }
+    );
+
+>>>>>>> origin/master
     // Register image address in unified registry for type queries (vxQueryReference)
     unsafe {
         register_image(image_ptr as usize);
@@ -130,10 +252,33 @@ pub extern "C" fn vxCreateVirtualImage(
     // Register as valid image for double-free protection
     register_valid_image(image_ptr as usize);
 
+<<<<<<< HEAD
+=======
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(image_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+    }
+
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(image_ptr as usize, VX_TYPE_IMAGE);
+        }
+    }
+
+>>>>>>> origin/master
     image_ptr
 }
 
 /// Create an image from existing handles
+<<<<<<< HEAD
+=======
+/// 
+/// IMPORTANT: The image created does NOT own the memory - it references external memory
+/// provided by the caller. vxReleaseImage will NOT free this memory.
+>>>>>>> origin/master
 #[no_mangle]
 pub extern "C" fn vxCreateImageFromHandle(
     context: vx_context,
@@ -151,15 +296,24 @@ pub extern "C" fn vxCreateImageFromHandle(
     }
 
     unsafe {
+<<<<<<< HEAD
         let addr = &*addrs;
         let width = addr.dim_x;
         let height = addr.dim_y;
+=======
+        // For planar formats, addrs is an array with one entry per plane
+        // The first plane (usually Y) has the full image dimensions
+        let addr0 = &*addrs;
+        let width = addr0.dim_x;
+        let height = addr0.dim_y;
+>>>>>>> origin/master
 
         // Validate dimensions
         if width == 0 || height == 0 {
             return std::ptr::null_mut();
         }
 
+<<<<<<< HEAD
         // Calculate size from addressing with overflow protection
         // and sanity limits to prevent massive allocations
         const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB limit
@@ -195,10 +349,44 @@ pub extern "C" fn vxCreateImageFromHandle(
             .unwrap_or(0)
             .min(MAX_ALLOCATION_SIZE);
 
+=======
+        const MAX_DIMENSION: u32 = 65536;
+        if width > MAX_DIMENSION || height > MAX_DIMENSION {
+            return std::ptr::null_mut();
+        }
+
+        // Validate expected number of planes for the format
+        let expected_planes = VxCImage::num_planes(color) as vx_uint32;
+        if num_planes != expected_planes {
+            return std::ptr::null_mut();
+        }
+
+        // For planar formats, validate each plane's addressing info
+        let is_planar = VxCImage::is_planar_format(color);
+        if is_planar {
+            for plane_idx in 0..num_planes as usize {
+                let plane_addr = &*addrs.add(plane_idx);
+                // Each plane should have valid dimensions
+                if plane_addr.dim_x == 0 || plane_addr.dim_y == 0 {
+                    return std::ptr::null_mut();
+                }
+                // Validate stride is reasonable
+                if plane_addr.stride_y < plane_addr.dim_x as vx_int32 {
+                    // stride_y should be at least dim_x * bytes_per_pixel
+                    // For planar formats, each pixel is 1 byte
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+
+        // Calculate total size for the image
+        let total_size = VxCImage::calculate_size(width, height, color);
+>>>>>>> origin/master
         if total_size == 0 {
             return std::ptr::null_mut();
         }
 
+<<<<<<< HEAD
         // Allocate data buffer and copy from user handles
         let mut data = vec![0u8; total_size];
 
@@ -212,6 +400,22 @@ pub extern "C" fn vxCreateImageFromHandle(
             );
         }
 
+=======
+        // Validate all plane pointers
+        let mut external_ptrs: Vec<*mut u8> = Vec::with_capacity(num_planes as usize);
+        for plane_idx in 0..num_planes as usize {
+            let plane_ptr = *ptrs.add(plane_idx);
+            if plane_ptr.is_null() {
+                return std::ptr::null_mut();
+            }
+            external_ptrs.push(plane_ptr as *mut u8);
+        }
+
+        // Create an empty Vec - we won't use it for external memory
+        // The Vec will have capacity 0 and won't allocate
+        let data = Vec::with_capacity(0);
+
+>>>>>>> origin/master
         let image = Box::new(VxCImage {
             width,
             height,
@@ -221,14 +425,23 @@ pub extern "C" fn vxCreateImageFromHandle(
             data: Arc::new(RwLock::new(data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: None,
+<<<<<<< HEAD
+=======
+            is_external_memory: true,
+            external_ptrs,
+>>>>>>> origin/master
         });
 
         let image_ptr = Box::into_raw(image) as vx_image;
 
         // Register image address in unified registry for type queries (vxQueryReference)
+<<<<<<< HEAD
         unsafe {
             register_image(image_ptr as usize);
         }
+=======
+        register_image(image_ptr as usize);
+>>>>>>> origin/master
         
         // Register as valid image for double-free protection
         register_valid_image(image_ptr as usize);
@@ -369,6 +582,11 @@ pub extern "C" fn vxCreateUniformImage(
         data: Arc::new(RwLock::new(data)),
         mapped_patches: Arc::new(RwLock::new(Vec::new())),
         parent: None,
+<<<<<<< HEAD
+=======
+        is_external_memory: false,
+        external_ptrs: Vec::new(),
+>>>>>>> origin/master
     });
 
     // Convert to raw pointer
@@ -478,6 +696,11 @@ pub extern "C" fn vxCreateImageFromChannel(
             data: Arc::clone(&source_img.data),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: Some(parent_ptr),
+<<<<<<< HEAD
+=======
+            is_external_memory: false,
+            external_ptrs: Vec::new(),
+>>>>>>> origin/master
         });
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
@@ -494,25 +717,42 @@ pub extern "C" fn vxCreateImageFromChannel(
     }
 }
 
+<<<<<<< HEAD
 /// Registry to track valid (non-freed) images
 use std::sync::Mutex;
 use std::collections::HashSet;
 
 static VALID_IMAGES: std::sync::LazyLock<Mutex<HashSet<usize>>> = std::sync::LazyLock::new(|| {
     Mutex::new(HashSet::new())
+=======
+use std::collections::HashSet;
+
+/// Registry to track valid (non-freed) images
+
+static VALID_IMAGES: std::sync::LazyLock<std::sync::Mutex<HashSet<usize>>> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(HashSet::new())
+>>>>>>> origin/master
 });
 
 /// Register an image as valid
 fn register_valid_image(addr: usize) {
     if let Ok(mut images) = VALID_IMAGES.lock() {
+<<<<<<< HEAD
         let _: bool = images.insert(addr);
+=======
+        images.insert(addr);
+>>>>>>> origin/master
     }
 }
 
 /// Unregister an image (mark as freed)
 fn unregister_valid_image(addr: usize) -> bool {
     if let Ok(mut images) = VALID_IMAGES.lock() {
+<<<<<<< HEAD
         let _: bool = images.remove(&addr);
+=======
+        images.remove(&addr);
+>>>>>>> origin/master
         true
     } else {
         false
@@ -531,6 +771,7 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
         if !img.is_null() {
             let addr = img as usize;
             
+<<<<<<< HEAD
             // Check if this image was already freed
             if !unregister_valid_image(addr) {
                 // Image was already freed or never existed
@@ -551,6 +792,62 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
             // Free the image
             let _ = Box::from_raw(img as *mut VxCImage);
             *image = std::ptr::null_mut();
+=======
+            // Check reference count before freeing
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 1 {
+                        // Decrement and don't free
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        false
+                    } else {
+                        // Last reference - free it
+                        true
+                    }
+                } else {
+                    // Not in registry - free it
+                    true
+                }
+            } else {
+                false
+            };
+            
+            if should_free {
+                // Check if this image was already freed
+                if !unregister_valid_image(addr) {
+                    return VX_ERROR_INVALID_REFERENCE;
+                }
+                
+                // Unregister from unified registry
+                unregister_image(addr);
+
+                // Remove from counts
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                
+                // Don't remove from types - keep for reference queries
+
+                // Clean up virtual image info if this was a virtual image
+                unregister_virtual_image(addr);
+
+                // IMPORTANT: Access image data BEFORE freeing the Box
+                // The external_ptrs Vec will be dropped when the Box is freed
+                // For external memory images, we don't free the external data
+                // but the Vec container itself is properly cleaned up
+                let img_data = &mut *(img as *mut VxCImage);
+                
+                // Clear external_ptrs to drop the Vec properly
+                img_data.external_ptrs.clear();
+                
+                // Free the image - this drops the Box and all its fields
+                let _ = Box::from_raw(img as *mut VxCImage);
+            }
+            
+            *image = std::ptr::null_mut();
+        } else {
+>>>>>>> origin/master
         }
     }
 
@@ -640,6 +937,18 @@ pub extern "C" fn vxQueryImage(
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
+<<<<<<< HEAD
+=======
+            VX_IMAGE_IS_VIRTUAL => {
+                if size != std::mem::size_of::<vx_enum>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                // Return vx_true_e (1) if virtual, vx_false_e (0) if not
+                let is_virt = if img.is_virtual { 1 } else { 0 };
+                *(ptr as *mut vx_enum) = is_virt;
+                VX_SUCCESS
+            }
+>>>>>>> origin/master
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }
     }
@@ -696,6 +1005,7 @@ pub extern "C" fn vxMapImagePatch(
     unsafe {
         let rect_ref = &*rect;
 
+<<<<<<< HEAD
         // Calculate the mapped region
         let start_x = rect_ref.start_x as usize;
         let start_y = rect_ref.start_y as usize;
@@ -710,6 +1020,9 @@ pub extern "C" fn vxMapImagePatch(
         }
 
         // Get image data
+=======
+        // Get image data first
+>>>>>>> origin/master
         let data_guard = match img.data.read() {
             Ok(guard) => guard,
             Err(_) => return VX_ERROR_INVALID_REFERENCE,
@@ -729,6 +1042,23 @@ pub extern "C" fn vxMapImagePatch(
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
+<<<<<<< HEAD
+=======
+        // Calculate the mapped region, clamped to plane bounds
+        let start_x = (rect_ref.start_x as usize).min(plane_width);
+        let start_y = (rect_ref.start_y as usize).min(plane_height);
+        let end_x = (rect_ref.end_x as usize).min(plane_width);
+        let end_y = (rect_ref.end_y as usize).min(plane_height);
+        
+        let width = end_x.saturating_sub(start_x);
+        let height = end_y.saturating_sub(start_y);
+        
+        
+        if width == 0 || height == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+>>>>>>> origin/master
         // Calculate stride and offset based on format and plane
         let bpp = if is_planar {
             1usize // For planar formats, each plane is 1 byte per pixel (luma/chroma)
@@ -746,13 +1076,23 @@ pub extern "C" fn vxMapImagePatch(
         let offset = plane_offset + start_y * stride_y + start_x * bpp;
 
         // Create a copy of the data for the mapped patch
+<<<<<<< HEAD
         let patch_size = height * width * bpp;
+=======
+        // Use the mapped region width for stride, not the full plane width
+        let mapped_stride_y = width * bpp;
+        let patch_size = height * mapped_stride_y;
+>>>>>>> origin/master
         let mut patch_data = vec![0u8; patch_size];
         
         // Copy data row by row
         for y in 0..height {
             let src_start = offset + y * stride_y;
+<<<<<<< HEAD
             let dst_start = y * width * bpp;
+=======
+            let dst_start = y * mapped_stride_y;
+>>>>>>> origin/master
             if src_start + width * bpp <= data_guard.len() {
                 patch_data[dst_start..dst_start + width * bpp]
                     .copy_from_slice(&data_guard[src_start..src_start + width * bpp]);
@@ -760,10 +1100,18 @@ pub extern "C" fn vxMapImagePatch(
         }
         
         // Store the patch FIRST, then get pointer to the stored data
+<<<<<<< HEAD
         let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
             let id = patches.len() + 1;
             // Store patch with plane_index explicitly tracked (6-tuple now)
             patches.push((id, patch_data, usage, offset, stride_y, plane_index));
+=======
+        // Store: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
+        let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
+            let id = patches.len() + 1;
+            // Store patch with mapped_width to correctly unmap later
+            patches.push((id, patch_data, usage, offset, stride_y, plane_index, width as u32));
+>>>>>>> origin/master
             id
         } else {
             return VX_ERROR_INVALID_REFERENCE;
@@ -774,7 +1122,12 @@ pub extern "C" fn vxMapImagePatch(
         (*addr).dim_x = width as vx_uint32;
         (*addr).dim_y = height as vx_uint32;
         (*addr).stride_x = bpp as vx_int32;
+<<<<<<< HEAD
         (*addr).stride_y = stride_y as vx_int32;
+=======
+        // The stride returned should be for the mapped region (contiguous), not full plane
+        (*addr).stride_y = mapped_stride_y as vx_int32;
+>>>>>>> origin/master
         (*addr).step_x = 1;
         (*addr).step_y = 1;
         (*addr).scale_x = 1024; // VX_SCALE_UNITY
@@ -784,7 +1137,11 @@ pub extern "C" fn vxMapImagePatch(
         
         // Return pointer to the STORED patch data (not the local variable)
         if let Ok(patches) = img.mapped_patches.read() {
+<<<<<<< HEAD
             if let Some(patch) = patches.iter().find(|(id, _, _, _, _, _)| *id == map_id_val) {
+=======
+            if let Some(patch) = patches.iter().find(|(id, _, _, _, _, _, _)| *id == map_id_val) {
+>>>>>>> origin/master
                 *ptr = patch.1.as_ptr() as *mut c_void;
             }
         }
@@ -809,8 +1166,23 @@ pub extern "C" fn vxUnmapImagePatch(
     let img = unsafe { &mut *(image as *mut VxCImage) };
 
     if let Ok(mut patches) = img.mapped_patches.write() {
+<<<<<<< HEAD
         if let Some(pos) = patches.iter().position(|(id, _, _, _, _, _)| *id == map_id) {
             let (_, patch_data, usage, offset, stride_y, plane_index) = patches.remove(pos);
+=======
+        // Find the patch with matching id - handle both old 6-tuple and new 7-tuple formats
+        if let Some(pos) = patches.iter().position(|p| {
+            // Check based on tuple length - first element is always id
+            let &(id, _, _, _, _, _, ..) = p;
+            id == map_id
+        }) {
+            // Extract the stored patch data
+            let patch_tuple = patches.remove(pos);
+            
+            // Unpack the tuple - storage is 7-tuple: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
+            // Use proper destructuring instead of transmute to avoid memory corruption
+            let (_, patch_data, usage, offset, stride_y, plane_index, mapped_width) = patch_tuple;
+>>>>>>> origin/master
             
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
@@ -823,6 +1195,7 @@ pub extern "C" fn vxUnmapImagePatch(
                         VxCImage::bytes_per_pixel(img.format)
                     };
                     
+<<<<<<< HEAD
                     // Calculate width based on stride_y and bpp
                     let width = if stride_y > 0 {
                         stride_y / bpp
@@ -831,13 +1204,25 @@ pub extern "C" fn vxUnmapImagePatch(
                     };
                     let height = if stride_y > 0 && width > 0 {
                         patch_data.len() / stride_y
+=======
+                    // Use stored mapped_width for correct dimensions
+                    let width = mapped_width as usize;
+                    // Calculate height from stored patch data size and mapped region width
+                    let mapped_stride = width * bpp;
+                    let height = if mapped_stride > 0 {
+                        patch_data.len() / mapped_stride
+>>>>>>> origin/master
                     } else {
                         0
                     };
                     
                     // Copy data back row by row
                     for y in 0..height {
+<<<<<<< HEAD
                         let src_start = y * width * bpp;
+=======
+                        let src_start = y * mapped_stride;
+>>>>>>> origin/master
                         let dst_start = offset + y * stride_y;
                         if dst_start + width * bpp <= data.len() && src_start + width * bpp <= patch_data.len() {
                             data[dst_start..dst_start + width * bpp]
@@ -1194,6 +1579,11 @@ pub extern "C" fn vxCreateImageFromROI(
             data: Arc::new(RwLock::new(roi_data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: Some(img as usize), // Store parent reference
+<<<<<<< HEAD
+=======
+            is_external_memory: false,
+            external_ptrs: Vec::new(),
+>>>>>>> origin/master
         });
 
         let image_ptr = Box::into_raw(roi_image) as vx_image;
@@ -1287,6 +1677,7 @@ pub extern "C" fn vxCreateUniformImageFromHandle(
 /// This function creates a new image with the same dimensions and format as the source,
 /// then copies all pixel data from the source to the new image.
 ///
+<<<<<<< HEAD
 /// # Arguments
 /// * `context` - The OpenVX context
 /// * `source` - The source image to clone
@@ -1303,10 +1694,29 @@ pub extern "C" fn vxCloneImage(
         return std::ptr::null_mut();
     }
     if source.is_null() {
+=======
+/// If a rectangle is specified, only that region is cloned. If rect is NULL,
+/// the entire image is cloned.
+///
+/// # Arguments
+/// * `image` - The source image to clone
+/// * `rect` - Optional rectangle defining the region to clone (NULL for entire image)
+///
+/// # Returns
+/// A new vx_image handle that is a deep copy of the source (or region), or null on error
+#[no_mangle]
+pub extern "C" fn vxCloneImage(
+    image: vx_image,
+    rect: *const vx_rectangle_t,
+) -> vx_image {
+    // Validate image parameter
+    if image.is_null() {
+>>>>>>> origin/master
         return std::ptr::null_mut();
     }
 
     unsafe {
+<<<<<<< HEAD
         let source_img = &*(source as *const VxCImage);
 
         // Get source image properties
@@ -1323,6 +1733,56 @@ pub extern "C" fn vxCloneImage(
 
         // Create the destination image
         let mut dest_image = vxCreateImage(context, width, height, format);
+=======
+        let source_img = &*(image as *const VxCImage);
+
+        // Get context from the source image
+        let context = vxGetContext(image as vx_reference);
+        if context.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        // Get source image properties
+        let src_width = source_img.width;
+        let src_height = source_img.height;
+        let format = source_img.format;
+
+        // Determine clone dimensions and offset
+        let (clone_width, clone_height, offset_x, offset_y) = if rect.is_null() {
+            // Clone entire image
+            (src_width, src_height, 0, 0)
+        } else {
+            // Clone specified region
+            let rect_ref = &*rect;
+            
+            // Validate rectangle bounds
+            if rect_ref.start_x >= rect_ref.end_x || rect_ref.start_y >= rect_ref.end_y {
+                return std::ptr::null_mut();
+            }
+            if rect_ref.end_x > src_width || rect_ref.end_y > src_height {
+                return std::ptr::null_mut();
+            }
+            
+            let width = rect_ref.end_x - rect_ref.start_x;
+            let height = rect_ref.end_y - rect_ref.start_y;
+            (width, height, rect_ref.start_x, rect_ref.start_y)
+        };
+
+        // Handle zero dimensions
+        if clone_width == 0 || clone_height == 0 {
+            return std::ptr::null_mut();
+        }
+
+        // Handle virtual images - they don't have allocated data
+        // Per OpenVX spec, cloning a virtual image creates a regular image
+        if source_img.is_virtual && source_img.data.read().unwrap().is_empty() {
+            // Virtual image without data - just create regular image with clone dimensions
+            return vxCreateImage(context, clone_width, clone_height, format);
+        }
+
+        // Create the destination image
+        let mut dest_image = vxCreateImage(context, clone_width, clone_height, format);
+>>>>>>> origin/master
         if dest_image.is_null() {
             return std::ptr::null_mut();
         }
@@ -1330,6 +1790,7 @@ pub extern "C" fn vxCloneImage(
         // Get the destination image data structure
         let dest_img = &mut *(dest_image as *mut VxCImage);
 
+<<<<<<< HEAD
         // Copy all data from source to destination
         if let Ok(source_data) = source_img.data.read() {
             if let Ok(mut dest_data) = dest_img.data.write() {
@@ -1337,6 +1798,30 @@ pub extern "C" fn vxCloneImage(
                 if dest_data.len() >= source_data.len() {
                     // Perform deep copy of pixel data
                     dest_data.copy_from_slice(&source_data[..source_data.len()]);
+=======
+        // Calculate bytes per pixel for the format
+        let bpp = VxCImage::bytes_per_pixel(format);
+        let src_stride = src_width as usize * bpp;
+        let dest_stride = clone_width as usize * bpp;
+
+        // Copy data from source to destination
+        if let Ok(source_data) = source_img.data.read() {
+            if let Ok(mut dest_data) = dest_img.data.write() {
+                // Ensure destination has enough space
+                if dest_data.len() >= clone_height as usize * dest_stride {
+                    // Copy pixel data row by row
+                    for y in 0..clone_height as usize {
+                        let src_y = (offset_y as usize) + y;
+                        let src_offset = src_y * src_stride + (offset_x as usize) * bpp;
+                        let dest_offset = y * dest_stride;
+                        let row_bytes = dest_stride;
+                        
+                        if src_offset + row_bytes <= source_data.len() {
+                            dest_data[dest_offset..dest_offset + row_bytes]
+                                .copy_from_slice(&source_data[src_offset..src_offset + row_bytes]);
+                        }
+                    }
+>>>>>>> origin/master
                 } else {
                     // Shouldn't happen if vxCreateImage worked correctly, but handle it
                     vxReleaseImage(&mut dest_image);
@@ -1351,6 +1836,7 @@ pub extern "C" fn vxCloneImage(
             return std::ptr::null_mut();
         }
 
+<<<<<<< HEAD
         // Also copy mapped patches metadata if any exist
         if let Ok(source_patches) = source_img.mapped_patches.read() {
             if let Ok(mut dest_patches) = dest_img.mapped_patches.write() {
@@ -1359,6 +1845,8 @@ pub extern "C" fn vxCloneImage(
             }
         }
 
+=======
+>>>>>>> origin/master
         dest_image
     }
 }
@@ -1405,8 +1893,294 @@ pub extern "C" fn vxCloneImageWithGraph(
             // Create a virtual image with same dimensions
             vxCreateVirtualImage(graph, width, height, format)
         } else {
+<<<<<<< HEAD
             // Create a regular image with data copy
             vxCloneImage(context, source)
         }
     }
 }
+=======
+            // Create a regular image with data copy (clone entire image)
+            vxCloneImage(source, std::ptr::null())
+        }
+    }
+}
+
+// ============================================================================
+// Pyramid Operations
+// ============================================================================
+
+use openvx_core::unified_c_api::{VxCPyramid, VX_TYPE_PYRAMID, vx_pyramid};
+
+/// Create a pyramid object
+/// 
+/// Creates a pyramid with the specified number of levels, scale factor,
+/// and base image dimensions.
+/// 
+/// # Arguments
+/// * `context` - The OpenVX context
+/// * `num_levels` - The number of levels in the pyramid
+/// * `scale` - The scale factor between levels (typically VX_SCALE_PYRAMID_HALF = 0.5)
+/// * `width` - The width of the base level (level 0)
+/// * `height` - The height of the base level (level 0)
+/// * `format` - The image format for all levels
+/// 
+/// # Returns
+/// A pyramid handle on success, or NULL on failure
+#[no_mangle]
+pub extern "C" fn vxCreatePyramid(
+    context: vx_context,
+    num_levels: vx_size,
+    scale: vx_float32,
+    width: vx_uint32,
+    height: vx_uint32,
+    format: vx_df_image,
+) -> vx_pyramid {
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    if num_levels == 0 || width == 0 || height == 0 {
+        return std::ptr::null_mut();
+    }
+    
+    // Validate scale factor (must be positive and less than 1.0)
+    if scale <= 0.0 || scale >= 1.0 {
+        return std::ptr::null_mut();
+    }
+
+    let levels_usize = num_levels as usize;
+    let mut level_images: Vec<usize> = Vec::with_capacity(levels_usize);
+
+    // Create images for each level
+    for level in 0..levels_usize {
+        // Calculate dimensions for this level using scale^level
+        let level_scale = scale.powi(level as i32);
+        let level_width = (width as f32 * level_scale) as vx_uint32;
+        let level_height = (height as f32 * level_scale) as vx_uint32;
+        
+        // Ensure minimum dimensions of 1x1
+        let level_width = level_width.max(1);
+        let level_height = level_height.max(1);
+        
+        let img = vxCreateImage(context, level_width, level_height, format);
+        if img.is_null() {
+            // Failed to create image - clean up already created images
+            for existing_img in level_images.iter_mut() {
+                let mut img_ptr = *existing_img as *mut VxImage;
+                vxReleaseImage(&mut img_ptr);
+            }
+            return std::ptr::null_mut();
+        }
+        
+        level_images.push(img as usize);
+    }
+
+    // Create the pyramid structure
+    let pyramid = Box::new(VxCPyramid {
+        context: context as usize,
+        num_levels: levels_usize,
+        scale,
+        width,
+        height,
+        format,
+        levels: level_images,
+    });
+
+    let pyramid_ptr = Box::into_raw(pyramid) as vx_pyramid;
+
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(pyramid_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+    }
+
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(pyramid_ptr as usize, VX_TYPE_PYRAMID);
+        }
+    }
+
+    pyramid_ptr
+}
+
+/// Release a pyramid object
+/// 
+/// Releases the pyramid and all its level images.
+/// 
+/// # Arguments
+/// * `pyramid` - Pointer to the pyramid handle
+/// 
+/// # Returns
+/// VX_SUCCESS on success, error code on failure
+#[no_mangle]
+pub extern "C" fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status {
+    if pyramid.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let pyr = *pyramid;
+        if !pyr.is_null() {
+            let addr = pyr as usize;
+            
+            // Get the pyramid struct
+            let pyramid_data = &mut *(pyr as *mut VxCPyramid);
+            
+            // Release all level images
+            for level_img in pyramid_data.levels.iter_mut() {
+                let mut img = *level_img as vx_image;
+                vxReleaseImage(&mut img);
+            }
+
+            // Remove from reference counts and types
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                counts.remove(&addr);
+            }
+            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                types.remove(&addr);
+            }
+
+            // Free the pyramid
+            let _ = Box::from_raw(pyr as *mut VxCPyramid);
+            *pyramid = std::ptr::null_mut();
+        }
+    }
+
+    VX_SUCCESS
+}
+
+/// Get a level image from a pyramid
+/// 
+/// Returns a reference to the image at the specified level.
+/// The returned image reference must not be released - it is owned by the pyramid.
+/// 
+/// # Arguments
+/// * `pyramid` - The pyramid handle
+/// * `index` - The level index (0 to num_levels-1)
+/// 
+/// # Returns
+/// An image handle on success, or NULL on failure
+#[no_mangle]
+pub extern "C" fn vxGetPyramidLevel(pyramid: vx_pyramid, index: vx_uint32) -> vx_image {
+    if pyramid.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let pyramid_data = &*(pyramid as *const VxCPyramid);
+        
+        // Validate index
+        let idx = index as usize;
+        if idx >= pyramid_data.num_levels {
+            return std::ptr::null_mut();
+        }
+        
+        // Return the level image (not a copy, just the reference)
+        pyramid_data.levels.get(idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut())
+    }
+}
+
+/// Query pyramid attributes
+/// 
+/// Queries various attributes of a pyramid object.
+/// 
+/// # Arguments
+/// * `pyramid` - The pyramid handle
+/// * `attribute` - The attribute to query
+/// * `ptr` - Pointer to the memory to store the result
+/// * `size` - Size of the memory pointed to by ptr
+/// 
+/// # Returns
+/// VX_SUCCESS on success, error code on failure
+#[no_mangle]
+pub extern "C" fn vxQueryPyramid(
+    pyramid: vx_pyramid,
+    attribute: vx_enum,
+    ptr: *mut c_void,
+    size: vx_size,
+) -> vx_status {
+    if pyramid.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let pyr = unsafe { &*(pyramid as *const VxCPyramid) };
+
+    unsafe {
+        match attribute {
+            // VX_PYRAMID_LEVELS = 0x00
+            0x00 => {
+                if size != std::mem::size_of::<vx_size>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_size) = pyr.num_levels as vx_size;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_SCALE = 0x01
+            0x01 => {
+                if size != std::mem::size_of::<vx_float32>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_float32) = pyr.scale;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_FORMAT = 0x02
+            0x02 => {
+                if size != std::mem::size_of::<vx_df_image>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_df_image) = pyr.format;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_WIDTH = 0x03
+            0x03 => {
+                if size != std::mem::size_of::<vx_uint32>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_uint32) = pyr.width;
+                VX_SUCCESS
+            }
+            // VX_PYRAMID_HEIGHT = 0x04
+            0x04 => {
+                if size != std::mem::size_of::<vx_uint32>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_uint32) = pyr.height;
+                VX_SUCCESS
+            }
+            _ => VX_ERROR_NOT_IMPLEMENTED,
+        }
+    }
+}
+
+/// Create a virtual pyramid
+#[no_mangle]
+pub extern "C" fn vxCreateVirtualPyramid(
+    graph: vx_graph,
+    num_levels: vx_size,
+    scale: vx_float32,
+    width: vx_uint32,
+    height: vx_uint32,
+    format: vx_df_image,
+) -> vx_pyramid {
+    if graph.is_null() {
+        return std::ptr::null_mut();
+    }
+    if num_levels == 0 || width == 0 || height == 0 {
+        return std::ptr::null_mut();
+    }
+    
+    // Get context from graph
+    let context = unsafe { vxGetContext(graph as vx_reference) };
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    // Virtual pyramids are created like regular ones
+    vxCreatePyramid(context, num_levels, scale, width, height, format)
+}
+>>>>>>> origin/master

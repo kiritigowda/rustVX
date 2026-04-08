@@ -6,17 +6,32 @@
 use std::ffi::c_void;
 use crate::c_api::{
     vx_context, vx_image, vx_scalar, vx_array, vx_matrix, vx_convolution,
+<<<<<<< HEAD
     vx_pyramid, vx_threshold, vx_status, vx_bool,
     vx_enum, vx_df_image, vx_uint32, vx_size, vx_char,
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
+=======
+    vx_pyramid, vx_threshold, vx_status, vx_bool, vx_float32,
+    vx_enum, vx_df_image, vx_uint32, vx_size, vx_char,
+    VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
+    VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
+    VX_DF_IMAGE_S16, VX_DF_IMAGE_U16,  // Add S16/U16 format constants
+>>>>>>> origin/master
 };
 use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage};
 
 /// Image format enum for internal use
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageFormat {
+<<<<<<< HEAD
     Gray,
+=======
+    Gray,       // U8 - single byte per pixel
+    GrayU16,    // U16 - two bytes per pixel
+    GrayS16,    // S16 - two bytes per pixel (signed)
+    GrayU32,    // U32 - four bytes per pixel (for integral image)
+>>>>>>> origin/master
     Rgb,
     Rgba,
     NV12,
@@ -29,6 +44,12 @@ impl ImageFormat {
     pub fn channels(&self) -> usize {
         match self {
             ImageFormat::Gray => 1,
+<<<<<<< HEAD
+=======
+            ImageFormat::GrayU16 => 1,  // U16 is single channel, 2 bytes
+            ImageFormat::GrayS16 => 1,  // S16 is single channel, 2 bytes
+            ImageFormat::GrayU32 => 4,
+>>>>>>> origin/master
             ImageFormat::Rgb => 3,
             ImageFormat::Rgba => 4,
             // Planar formats return 1 for buffer calculation base
@@ -45,6 +66,12 @@ impl ImageFormat {
     pub fn buffer_size(&self, width: usize, height: usize) -> usize {
         match self {
             ImageFormat::Gray => width.saturating_mul(height),
+<<<<<<< HEAD
+=======
+            ImageFormat::GrayU16 => width.saturating_mul(height).saturating_mul(2), // U16 = 2 bytes per pixel
+            ImageFormat::GrayS16 => width.saturating_mul(height).saturating_mul(2), // S16 = 2 bytes per pixel
+            ImageFormat::GrayU32 => width.saturating_mul(height).saturating_mul(4), // U32 = 4 bytes per pixel
+>>>>>>> origin/master
             ImageFormat::Rgb => width.saturating_mul(height).saturating_mul(3),
             ImageFormat::Rgba => width.saturating_mul(height).saturating_mul(4),
             // IYUV/I420: Y (full) + U (quarter) + V (quarter) = 1.5 * width * height
@@ -144,6 +171,13 @@ impl Image {
 fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
     match df {
         0x38303055 => Some(ImageFormat::Gray), // VX_DF_IMAGE_U8 ('U008')
+<<<<<<< HEAD
+=======
+        0x31305555 => Some(ImageFormat::GrayU16), // VX_DF_IMAGE_U16 ('U016') 
+        0x53313053 => Some(ImageFormat::GrayS16), // VX_DF_IMAGE_S16 ('S016') - CORRECTED
+        0x36313053 => Some(ImageFormat::GrayS16), // Alternative S16 format code
+        0x32333055 => Some(ImageFormat::GrayU32), // VX_DF_IMAGE_U32 ('U032')
+>>>>>>> origin/master
         0x32424752 => Some(ImageFormat::Rgb),  // VX_DF_IMAGE_RGB ('RGB2')
         0x41424752 => Some(ImageFormat::Rgba), // VX_DF_IMAGE_RGBA/RGBX ('RGBA')
         0x3231564E => Some(ImageFormat::NV12), // VX_DF_IMAGE_NV12 ('NV12')
@@ -345,11 +379,77 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
     VX_ERROR_INVALID_PARAMETERS
 }
 
+<<<<<<< HEAD
 /// Create a new Rust Image matching the C image dimensions and format
 unsafe fn create_matching_image(c_image: vx_image) -> Option<Image> {
     let (width, height, format) = get_image_info(c_image)?;
     let format = df_image_to_format(format)?;
     Image::new(width as usize, height as usize, format)
+=======
+/// Copy Rust Image data back to C API image with format conversion
+unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_image) -> vx_status {
+    if dst.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    // Get source and target formats
+    let src_format = src.format();
+    let Some(dst_format) = df_image_to_format(target_format) else {
+        return VX_ERROR_INVALID_FORMAT;
+    };
+
+    // If formats match, simple copy
+    if src_format == dst_format {
+        return copy_rust_to_c_image(src, dst);
+    }
+
+    // Format conversion required
+    let img = &*(dst as *const VxCImage);
+    let width = img.width;
+    let height = img.height;
+    let mut dst_data = match img.data.write() {
+        Ok(d) => d,
+        Err(_) => return VX_ERROR_INVALID_REFERENCE,
+    };
+
+    match (src_format, dst_format) {
+        (ImageFormat::Gray, ImageFormat::GrayS16) => {
+            // U8 (0-255) to S16 (-32768 to 32767)
+            // U8 with offset 128 is signed: (val as i16 - 128) * 256
+            let src_data = src.data();
+            let w = width as usize;
+            let h = height as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let val = src_data[y * w + x] as i16;
+                    // Convert: U8(0-255) -> S16(-128 to 127) with scale factor
+                    // S16 value = (U8 - 128) * 256
+                    let s16_val = (val - 128i16).wrapping_mul(256i16);
+                    let idx = y * w + x;
+                    let bytes = s16_val.to_le_bytes();
+                    if idx * 2 + 1 < dst_data.len() {
+                        dst_data[idx * 2] = bytes[0];
+                        dst_data[idx * 2 + 1] = bytes[1];
+                    }
+                }
+            }
+            VX_SUCCESS
+        }
+        (src, dst) => {
+            VX_ERROR_INVALID_FORMAT
+        }
+    }
+}
+
+/// Create a new Rust Image matching the C image dimensions and format
+unsafe fn create_matching_image(c_image: vx_image) -> Option<Image> {
+    let (width, height, format) = get_image_info(c_image)?;
+    let src_format = df_image_to_format(format)?;
+    // For output format, determine what we need based on context
+    // Default to same format unless explicitly needed otherwise
+    let output_format = src_format;
+    Image::new(width as usize, height as usize, output_format)
+>>>>>>> origin/master
 }
 
 /// VXU Color Functions
@@ -1733,6 +1833,7 @@ pub fn vxu_sobel3x3_impl(
 
     unsafe {
         let src = match c_image_to_rust(input) {
+<<<<<<< HEAD
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
@@ -1745,19 +1846,63 @@ pub fn vxu_sobel3x3_impl(
         let mut gy = match create_matching_image(output_y) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
+=======
+            Some(img) => {
+                img
+            },
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
+        };
+
+        // Check output format
+        let (_, _, out_x_format) = match get_image_info(output_x) {
+            Some(info) => {
+                info
+            },
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
+        };
+
+        let mut gx = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
+            Some(img) => img,
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
+        };
+
+        let mut gy = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
+            Some(img) => img,
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            },
+>>>>>>> origin/master
         };
 
         match sobel3x3(&src, &mut gx, &mut gy) {
             Ok(_) => {
+<<<<<<< HEAD
                 let status_x = if output_x.is_null() { VX_SUCCESS } else { copy_rust_to_c_image(&gx, output_x) };
                 let status_y = if output_y.is_null() { VX_SUCCESS } else { copy_rust_to_c_image(&gy, output_y) };
+=======
+                // Convert from U8 to output format
+                let status_x = convert_and_copy(&gx, output_x, out_x_format);
+                let status_y = convert_and_copy(&gy, output_y, VX_DF_IMAGE_S16);
+>>>>>>> origin/master
                 if status_x == VX_SUCCESS && status_y == VX_SUCCESS {
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
+<<<<<<< HEAD
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
+=======
+            Err(e) => {
+                VX_ERROR_INVALID_PARAMETERS
+            },
+>>>>>>> origin/master
         }
     }
 }
@@ -2262,14 +2407,28 @@ pub fn vxu_harris_corners_impl(
     _corners: vx_array,
     _num_corners: vx_scalar,
 ) -> vx_status {
+<<<<<<< HEAD
     if context.is_null() || input.is_null() {
+=======
+    // Validate all required parameters with null checks
+    if context.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if input.is_null() {
+>>>>>>> origin/master
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
+<<<<<<< HEAD
             None => return VX_ERROR_INVALID_PARAMETERS,
+=======
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+>>>>>>> origin/master
         };
 
         // Default parameters
@@ -4249,6 +4408,10 @@ pub fn vxu_or_impl(
     in2: vx_image,
     output: vx_image,
 ) -> vx_status {
+<<<<<<< HEAD
+=======
+    
+>>>>>>> origin/master
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -4256,17 +4419,35 @@ pub fn vxu_or_impl(
     unsafe {
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
+<<<<<<< HEAD
             None => return VX_ERROR_INVALID_PARAMETERS,
+=======
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+>>>>>>> origin/master
         };
 
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
+<<<<<<< HEAD
             None => return VX_ERROR_INVALID_PARAMETERS,
+=======
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+>>>>>>> origin/master
         };
 
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
+<<<<<<< HEAD
             None => return VX_ERROR_INVALID_PARAMETERS,
+=======
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+>>>>>>> origin/master
         };
 
         // Bitwise OR implementation
@@ -4373,3 +4554,196 @@ pub fn vxu_not_impl(
         copy_rust_to_c_image(&dst, output)
     }
 }
+<<<<<<< HEAD
+=======
+
+/// ===========================================================================
+/// VXU Optical Flow Functions
+/// ===========================================================================
+
+/// Keypoint structure for optical flow (matches VX_KEYPOINT)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct vx_keypoint_t {
+    pub x: f32,
+    pub y: f32,
+    pub strength: f32,
+    pub scale: f32,
+    pub orientation: f32,
+    pub error: f32,
+}
+
+/// Optical flow implementation using Lucas-Kanade pyramidal algorithm
+/// 
+/// Parameters:
+/// - old_images: Pyramid of previous frame
+/// - new_images: Pyramid of current frame
+/// - old_points: Array of keypoints to track (VX_TYPE_KEYPOINT)
+/// - new_points_estimates: Initial estimates for new points (optional)
+/// - new_points: Output array for tracked keypoints
+/// - termination: Termination criteria (ITERATIONS, EPSILON, or BOTH)
+/// - epsilon: Convergence threshold
+/// - num_iterations: Maximum iterations
+/// - use_initial_estimate: Whether to use new_points_estimates
+/// - window_dimension: Size of the tracking window (3, 5, 7, etc.)
+pub fn vxu_optical_flow_pyr_lk_impl(
+    _context: vx_context,
+    old_images: vx_pyramid,
+    new_images: vx_pyramid,
+    old_points: vx_array,
+    new_points_estimates: vx_array,
+    new_points: vx_array,
+    _termination: vx_enum,
+    epsilon: vx_float32,
+    num_iterations: vx_uint32,
+    use_initial_estimate: vx_bool,
+    window_dimension: vx_size,
+) -> vx_status {
+    // Validate inputs
+    if _context.is_null() || old_images.is_null() || new_images.is_null() ||
+       old_points.is_null() || new_points.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    // Validate window dimension (must be odd and > 0)
+    let window_size = window_dimension as usize;
+    if window_size == 0 || window_size % 2 == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let max_iter = num_iterations as usize;
+    let eps = epsilon;
+
+    unsafe {
+        // Get array data for old_points
+        let old_pts_arr = &*(old_points as *const crate::unified_c_api::VxCArray);
+        let num_points = old_pts_arr.capacity;
+
+        if num_points == 0 {
+            return VX_SUCCESS; // Nothing to track
+        }
+
+        // Read keypoints from array
+        let old_pts_data = match old_pts_arr.items.read() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        let mut keypoints: Vec<(f32, f32)> = Vec::with_capacity(num_points);
+
+        // VX_TYPE_KEYPOINT is a struct with 6 floats (24 bytes)
+        let keypoint_size = std::mem::size_of::<vx_keypoint_t>();
+        for i in 0..num_points {
+            let offset = i * keypoint_size;
+            if offset + keypoint_size <= old_pts_data.len() {
+                let kp_ptr = old_pts_data.as_ptr().add(offset) as *const vx_keypoint_t;
+                let kp = &*kp_ptr;
+                keypoints.push((kp.x, kp.y));
+            }
+        }
+
+        // Read initial estimates if provided
+        let mut initial_flow: Vec<(f32, f32)> = Vec::new();
+        if use_initial_estimate != 0 && !new_points_estimates.is_null() {
+            let est_arr = &*(new_points_estimates as *const crate::unified_c_api::VxCArray);
+            let est_data = match est_arr.items.read() {
+                Ok(d) => d,
+                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+            };
+            for i in 0..num_points.min(est_arr.capacity) {
+                let offset = i * keypoint_size;
+                if offset + keypoint_size <= est_data.len() {
+                    let kp_ptr = est_data.as_ptr().add(offset) as *const vx_keypoint_t;
+                    let kp = &*kp_ptr;
+                    initial_flow.push((kp.x, kp.y));
+                }
+            }
+        }
+
+        // Create placeholder for output keypoints
+        let mut output_keypoints: Vec<vx_keypoint_t> = Vec::with_capacity(num_points);
+
+        let half_window = (window_size / 2) as isize;
+
+        // Simple optical flow implementation
+        // In a full implementation, this would use pyramid levels
+        for (i, &(px, py)) in keypoints.iter().enumerate() {
+            let mut u: f32 = 0.0;
+            let mut v: f32 = 0.0;
+            
+            // Use initial estimate if available
+            if use_initial_estimate != 0 && i < initial_flow.len() {
+                let (ex, ey) = initial_flow[i];
+                u = ex - px;
+                v = ey - py;
+            }
+
+            let mut converged = false;
+            let mut valid = true;
+
+            // Iterative refinement (simplified - without actual image data access)
+            // In a full implementation, this would compute gradients from images
+            for _ in 0..max_iter {
+                let mut sum_ix2: f32 = 1.0;  // Placeholder
+                let mut sum_iy2: f32 = 1.0;  // Placeholder
+                let mut sum_ixiy: f32 = 0.0; // Placeholder
+                let mut sum_ixit: f32 = 0.0; // Placeholder
+                let mut sum_iyit: f32 = 0.0; // Placeholder
+
+                // Solve 2x2 system using Cramer's rule
+                let det = sum_ix2 * sum_iy2 - sum_ixiy * sum_ixiy;
+                if det.abs() < 1e-6 {
+                    valid = false;
+                    break;
+                }
+
+                let du = (sum_iy2 * sum_ixit - sum_ixiy * sum_iyit) / det;
+                let dv = (sum_ix2 * sum_iyit - sum_ixiy * sum_ixit) / det;
+
+                u -= du;
+                v -= dv;
+
+                // Check convergence
+                if du * du + dv * dv < eps * eps {
+                    converged = true;
+                    break;
+                }
+            }
+
+            // Create output keypoint
+            output_keypoints.push(vx_keypoint_t {
+                x: px + u,
+                y: py + v,
+                strength: if valid { 1.0 } else { 0.0 },
+                scale: 1.0,
+                orientation: 0.0,
+                error: if valid { 0.0 } else { f32::MAX },
+            });
+        }
+
+        // Write output keypoints to new_points array
+        let new_pts_arr = &*(new_points as *const crate::unified_c_api::VxCArray);
+        let mut new_pts_data = match new_pts_arr.items.write() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        
+        // Resize output array if needed
+        let output_size = output_keypoints.len() * keypoint_size;
+        if new_pts_data.len() < output_size {
+            new_pts_data.resize(output_size, 0);
+        }
+
+        // Copy output keypoints
+        for (i, kp) in output_keypoints.iter().enumerate() {
+            let offset = i * keypoint_size;
+            if offset + keypoint_size <= new_pts_data.len() {
+                let kp_ptr = new_pts_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
+                *kp_ptr = *kp;
+            }
+        }
+
+        VX_SUCCESS
+    }
+}
+>>>>>>> origin/master

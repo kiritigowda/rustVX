@@ -2,7 +2,11 @@
 
 use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
 use openvx_image::{Image, ImageFormat};
+<<<<<<< HEAD
 use crate::utils::{get_pixel_bordered, BorderMode};
+=======
+use crate::utils::{get_pixel_bordered, BorderMode, clamp_u8};
+>>>>>>> origin/master
 use std::f32;
 
 /// Sobel3x3 kernel
@@ -107,40 +111,69 @@ impl KernelTrait for PhaseKernel {
     }
 }
 
+<<<<<<< HEAD
 /// Sobel X kernel coefficients
+=======
+/// Sobel X kernel coefficients (horizontal gradient)
+>>>>>>> origin/master
 const SOBEL_X: [[i32; 3]; 3] = [
     [-1, 0, 1],
     [-2, 0, 2],
     [-1, 0, 1],
 ];
 
+<<<<<<< HEAD
 /// Sobel Y kernel coefficients (rotated)
+=======
+/// Sobel Y kernel coefficients (vertical gradient)
+>>>>>>> origin/master
 const SOBEL_Y: [[i32; 3]; 3] = [
     [-1, -2, -1],
     [ 0,  0,  0],
     [ 1,  2,  1],
 ];
 
+<<<<<<< HEAD
 /// Compute Sobel gradients (outputs to S16 format)
 pub fn sobel3x3(src: &Image, grad_x: &Image, grad_y: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
+=======
+/// Compute Sobel gradients with proper border handling (REPLICATE mode)
+/// Horizontal: [-1, 0, 1; -2, 0, 2; -1, 0, 1]
+/// Vertical: [-1, -2, -1; 0, 0, 0; 1, 2, 1]
+pub fn sobel3x3(src: &Image, grad_x: &Image, grad_y: &Image) -> VxResult<()> {
+    let width = src.width();
+    let height = src.height();
+    let border = BorderMode::Replicate;
+>>>>>>> origin/master
     
     // Check if output is S16 format
     let is_s16 = grad_x.format() == ImageFormat::S16;
     
     if is_s16 {
         // Output raw i16 values for S16 format
+<<<<<<< HEAD
         for y in 1..height - 1 {
             for x in 1..width - 1 {
+=======
+        for y in 0..height {
+            for x in 0..width {
+>>>>>>> origin/master
                 let mut sum_x: i32 = 0;
                 let mut sum_y: i32 = 0;
                 
                 for ky in 0..3 {
                     for kx in 0..3 {
+<<<<<<< HEAD
                         let px = x + kx - 1;
                         let py = y + ky - 1;
                         let pixel = src.get_pixel(px, py) as i32;
+=======
+                        let px = x as isize + kx as isize - 1;
+                        let py = y as isize + ky as isize - 1;
+                        let pixel = get_pixel_bordered(src, px, py, border) as i32;
+>>>>>>> origin/master
                         sum_x += pixel * SOBEL_X[ky][kx];
                         sum_y += pixel * SOBEL_Y[ky][kx];
                     }
@@ -156,22 +189,37 @@ pub fn sobel3x3(src: &Image, grad_x: &Image, grad_y: &Image) -> VxResult<()> {
         let mut gx_data = grad_x.data_mut();
         let mut gy_data = grad_y.data_mut();
         
+<<<<<<< HEAD
         for y in 1..height - 1 {
             for x in 1..width - 1 {
+=======
+        for y in 0..height {
+            for x in 0..width {
+>>>>>>> origin/master
                 let mut sum_x: i32 = 0;
                 let mut sum_y: i32 = 0;
                 
                 for ky in 0..3 {
                     for kx in 0..3 {
+<<<<<<< HEAD
                         let px = x + kx - 1;
                         let py = y + ky - 1;
                         let pixel = src.get_pixel(px, py) as i32;
+=======
+                        let px = x as isize + kx as isize - 1;
+                        let py = y as isize + ky as isize - 1;
+                        let pixel = get_pixel_bordered(src, px, py, border) as i32;
+>>>>>>> origin/master
                         sum_x += pixel * SOBEL_X[ky][kx];
                         sum_y += pixel * SOBEL_Y[ky][kx];
                     }
                 }
                 
+<<<<<<< HEAD
                 // Scale to fit in u8 (divide by 4)
+=======
+                // Scale to fit in u8 (divide by 4) and offset by 128 for signed representation
+>>>>>>> origin/master
                 gx_data[y * width + x] = ((sum_x / 4).max(-128).min(127) + 128) as u8;
                 gy_data[y * width + x] = ((sum_y / 4).max(-128).min(127) + 128) as u8;
             }

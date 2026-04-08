@@ -1,0 +1,3 @@
+[submodule "OpenVX-cts"]
+	path = OpenVX-cts
+	url = https://github.com/KhronosGroup/OpenVX-cts.git

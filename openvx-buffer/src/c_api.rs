@@ -1,19 +1,35 @@
 //! C API for OpenVX Buffer and Array
 
 use std::ffi::c_void;
+<<<<<<< HEAD
 use std::sync::RwLock;
 use std::collections::HashMap;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id, vx_int32,
+=======
+use std::sync::{RwLock, atomic::AtomicUsize, Mutex};
+use std::collections::HashMap;
+use openvx_core::c_api::{
+    vx_context, vx_graph, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id, vx_int32,
+    vx_reference,
+>>>>>>> origin/master
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_TYPE_UINT8, VX_TYPE_INT8, VX_TYPE_UINT16, VX_TYPE_INT16,
     VX_TYPE_UINT32, VX_TYPE_INT32, VX_TYPE_FLOAT32, VX_TYPE_FLOAT64,
     VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
+<<<<<<< HEAD
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
 use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS};
 use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
+=======
+    VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
+};
+use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS};
+use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
+use openvx_core::c_api::vxGetContext;
+>>>>>>> origin/master
 
 /// Array struct for C API
 pub struct VxCArray {
@@ -24,6 +40,10 @@ pub struct VxCArray {
     data: RwLock<Vec<u8>>,
     context: vx_context,
     mapped_ranges: RwLock<HashMap<vx_map_id, (vx_size, vx_size, Vec<u8>)>>,
+<<<<<<< HEAD
+=======
+    is_virtual: bool,
+>>>>>>> origin/master
 }
 
 impl VxCArray {
@@ -51,8 +71,12 @@ impl VxCArray {
 }
 
 // Internal storage for arrays
+<<<<<<< HEAD
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+=======
+use std::sync::atomic::{Ordering};
+>>>>>>> origin/master
 static ARRAY_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Create an array
@@ -86,6 +110,10 @@ pub extern "C" fn vxCreateArray(
         data: RwLock::new(vec![0u8; total_size]),
         context,
         mapped_ranges: RwLock::new(HashMap::new()),
+<<<<<<< HEAD
+=======
+        is_virtual: false,
+>>>>>>> origin/master
     });
 
     let array_ptr = Box::into_raw(array) as vx_array;
@@ -246,10 +274,63 @@ pub extern "C" fn vxCreateVirtualArray(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
+<<<<<<< HEAD
     // Virtual arrays are created like regular ones but associated with graph
     // In a full implementation, memory would be allocated during graph execution
     // A capacity of 0 means unspecified capacity
     vxCreateArray(graph as vx_context, item_type, if capacity == 0 { 1024 } else { capacity })
+=======
+    
+    // Get the context from the graph
+    let context = vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    // Virtual arrays can have capacity 0 (unspecified), so default to something reasonable
+    let actual_capacity = if capacity == 0 { 1024 } else { capacity };
+    if actual_capacity == 0 {
+        return std::ptr::null_mut();
+    }
+
+    let item_size = VxCArray::type_to_size(item_type);
+    let total_size = actual_capacity
+        .checked_mul(item_size)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or(0);
+    if total_size == 0 && actual_capacity > 0 {
+        return std::ptr::null_mut();
+    }
+
+    let array = Box::new(VxCArray {
+        item_type,
+        item_size,
+        capacity: actual_capacity,
+        num_items: RwLock::new(0),
+        data: RwLock::new(vec![0u8; total_size]),
+        context,
+        mapped_ranges: RwLock::new(HashMap::new()),
+        is_virtual: true,
+    });
+
+    let array_ptr = Box::into_raw(array) as vx_array;
+    
+    // Register in reference counting
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(array_ptr as usize, AtomicUsize::new(1));
+        }
+    }
+    
+    // Register in REFERENCE_TYPES for type detection
+    unsafe {
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(array_ptr as usize, VX_TYPE_ARRAY);
+        }
+    }
+    
+    array_ptr
+>>>>>>> origin/master
 }
 
 /// Create a virtual distribution (for graph intermediate results)
@@ -278,6 +359,7 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
         if !(*arr).is_null() {
             let addr = *arr as usize;
             
+<<<<<<< HEAD
             // Remove from reference counts and types
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
@@ -288,6 +370,39 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
             
             let _ = Box::from_raw(*arr as *mut VxCArray);
             *arr = std::ptr::null_mut();
+=======
+            // Check reference count before freeing
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 1 {
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+            
+            if should_free {
+                // Remove from reference counts and types
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&addr);
+                }
+                
+                let _ = Box::from_raw(*arr as *mut VxCArray);
+            }
+            
+            *arr = std::ptr::null_mut();
+        } else {
+>>>>>>> origin/master
         }
     }
 

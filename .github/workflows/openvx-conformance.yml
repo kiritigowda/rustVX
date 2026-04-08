@@ -50,9 +50,13 @@ jobs:
           cmake \
           ninja-build \
           libgtest-dev \
+<<<<<<< HEAD
           libjpeg-dev \
           libpng-dev \
           libtiff-dev \
+=======
+          libopencv-dev \
+>>>>>>> origin/master
           python3 \
           python3-pip
     
@@ -63,6 +67,7 @@ jobs:
         rustc --version
         cargo --version
     
+<<<<<<< HEAD
     - name: Cache Cargo registry
       uses: actions/cache@v4
       with:
@@ -97,6 +102,8 @@ jobs:
           ${{ runner.os }}-cts-build-${{ hashFiles('OpenVX-cts/CMakeLists.txt') }}-
           ${{ runner.os }}-cts-build-
     
+=======
+>>>>>>> origin/master
     - name: Build rustVX
       run: |
         source $HOME/.cargo/env
@@ -132,6 +139,7 @@ jobs:
           cp -r ../include/* include/ 2>/dev/null || true
         fi
         
+<<<<<<< HEAD
         # Ensure clean build directory if CMake configuration changed
         if [ -f "build/CMakeCache.txt" ]; then
           echo "Using cached CTS build"
@@ -141,6 +149,9 @@ jobs:
           mkdir -p build
         fi
         
+=======
+        mkdir -p build
+>>>>>>> origin/master
         cd build
         
         # Configure with verbose output and proper include paths
@@ -152,8 +163,11 @@ jobs:
           -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
           -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
           -DOPENVX_CONFORMANCE_VISION=ON \
+<<<<<<< HEAD
           -DOPENVX_CONFORMANCE_NEURAL_NETWORKS=OFF \
           -DOPENVX_CONFORMANCE_OTHER=OFF \
+=======
+>>>>>>> origin/master
           2>&1 || {
           echo "CMAKE FAILED!"
           echo "CMake output:"
@@ -208,8 +222,13 @@ jobs:
         # Create output directory for results
         mkdir -p ${{ github.workspace }}/test-results
         
+<<<<<<< HEAD
         # Run full vision conformance tests
         timeout 600 ./bin/vx_test_conformance 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
+=======
+        # Run tests
+        timeout 300 ./bin/vx_test_conformance 2>&1 | tee ${{ github.workspace }}/test-results/vision_test_output.txt || true
+>>>>>>> origin/master
         
         echo "Test execution completed."
     
@@ -235,18 +254,25 @@ jobs:
         FAIL_COUNT=$(grep -c "\[ !FAILED! \]" "$OUTPUT_FILE" 2>/dev/null || echo "0")
         echo "Tests failed: $FAIL_COUNT"
         
+<<<<<<< HEAD
         # Count skipped tests
         SKIP_COUNT=$(grep -c "\[  SKIP  \]" "$OUTPUT_FILE" 2>/dev/null || echo "0")
         echo "Tests skipped: $SKIP_COUNT"
         
+=======
+>>>>>>> origin/master
         # Extract test summary
         echo "========================================" | tee ${{ github.workspace }}/test-results/summary.txt
         echo "Vision Conformance Test Summary" | tee -a ${{ github.workspace }}/test-results/summary.txt
         echo "========================================" | tee -a ${{ github.workspace }}/test-results/summary.txt
         echo "Passed: $PASS_COUNT" | tee -a ${{ github.workspace }}/test-results/summary.txt
         echo "Failed: $FAIL_COUNT" | tee -a ${{ github.workspace }}/test-results/summary.txt
+<<<<<<< HEAD
         echo "Skipped: $SKIP_COUNT" | tee -a ${{ github.workspace }}/test-results/summary.txt
         echo "Total: $((PASS_COUNT + FAIL_COUNT + SKIP_COUNT))" | tee -a ${{ github.workspace }}/test-results/summary.txt
+=======
+        echo "Total: $((PASS_COUNT + FAIL_COUNT))" | tee -a ${{ github.workspace }}/test-results/summary.txt
+>>>>>>> origin/master
         
         if [ "$FAIL_COUNT" -eq 0 ] && [ "$PASS_COUNT" -gt 0 ]; then
           echo "Status: ✅ ALL TESTS PASSED" | tee -a ${{ github.workspace }}/test-results/summary.txt
@@ -259,7 +285,10 @@ jobs:
         # Set outputs for GitHub Actions summary
         echo "pass_count=$PASS_COUNT" >> $GITHUB_OUTPUT
         echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
+<<<<<<< HEAD
         echo "skip_count=$SKIP_COUNT" >> $GITHUB_OUTPUT
+=======
+>>>>>>> origin/master
     
     - name: Upload test results
       uses: actions/upload-artifact@v4
@@ -285,8 +314,15 @@ jobs:
         source $HOME/.cargo/env
         echo "- **Rust Version:** $(rustc --version)" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Type:** Release" >> $GITHUB_STEP_SUMMARY
+<<<<<<< HEAD
         echo "- **CTS Build:** OpenVX Conformance Test Suite (Vision Only)" >> $GITHUB_STEP_SUMMARY
         echo "- **Test Suite:** Full Vision Conformance (~6000 tests)" >> $GITHUB_STEP_SUMMARY
         
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "📥 **Download full logs:** See Artifacts section above" >> $GITHUB_STEP_SUMMARY
+=======
+        echo "- **CTS Build:** OpenVX Conformance Test Suite" >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📥 **Download full logs:** See Artifacts section above" >> $GITHUB_STEP_SUMMARY
+>>>>>>> origin/master

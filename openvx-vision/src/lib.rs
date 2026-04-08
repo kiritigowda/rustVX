@@ -25,6 +25,13 @@ pub mod statistics;
 pub mod object_detection;
 pub mod utils;
 
+<<<<<<< HEAD
+=======
+// Kernel enum constants and registration
+pub mod kernel_enums;
+pub mod register;
+
+>>>>>>> origin/master
 // SIMD optimized modules (conditionally compiled)
 pub mod simd_utils;
 
@@ -54,6 +61,13 @@ pub trait Kernel: Send + Sync {
 
 /// Register all vision kernels with the context
 pub fn register_all_kernels(context: &Context) -> VxResult<()> {
+<<<<<<< HEAD
+=======
+    // First, register vision kernels in the global KERNELS registry
+    // This ensures they are accessible via vxGetKernelByName/vxQueryKernel
+    register::register_vision_kernels_in_global_registry();
+    
+>>>>>>> origin/master
     // Color conversions
     context.register_kernel(Box::new(color::ColorConvertKernel))?;
     context.register_kernel(Box::new(color::ChannelExtractKernel))?;
@@ -109,7 +123,11 @@ pub fn register_all_kernels(context: &Context) -> VxResult<()> {
     // Object detection
     context.register_kernel(Box::new(object_detection::CannyEdgeDetectorKernel))?;
     context.register_kernel(Box::new(object_detection::HoughLinesPKernel))?;
+<<<<<<< HEAD
     context.register_kernel(Box::new(object_detection::ThresholdKernel))?;
+=======
+    context.register_kernel(Box::new(object_detection::ThresholdKernel::new()))?;
+>>>>>>> origin/master
     
     Ok(())
 }
@@ -123,7 +141,11 @@ pub use statistics::{MinMaxLocKernel, MeanStdDevKernel, HistogramKernel, Equaliz
 pub use geometric::{ScaleImageKernel, WarpAffineKernel, WarpPerspectiveKernel};
 pub use optical_flow::OpticalFlowPyrLKKernel;
 pub use features::{HarrisCornersKernel, FASTCornersKernel};
+<<<<<<< HEAD
 pub use object_detection::{CannyEdgeDetectorKernel, HoughLinesPKernel, ThresholdKernel};
+=======
+pub use object_detection::{CannyEdgeDetectorKernel, HoughLinesPKernel, ThresholdKernel, ThresholdType, threshold_binary, threshold_range};
+>>>>>>> origin/master
 
 // Export utility functions
 pub use utils::*;

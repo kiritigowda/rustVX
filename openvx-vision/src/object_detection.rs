@@ -76,10 +76,49 @@ impl KernelTrait for HoughLinesPKernel {
 }
 
 /// Threshold kernel - apply threshold to image
+<<<<<<< HEAD
 pub struct ThresholdKernel;
 
 impl ThresholdKernel {
     pub fn new() -> Self { ThresholdKernel }
+=======
+/// Supports BINARY: dst = (src > thresh) ? maxval : 0
+/// Supports RANGE: dst = (src >= lower && src <= upper) ? maxval : 0
+pub struct ThresholdKernel {
+    pub thresh_type: ThresholdType,
+    pub lower: u8,
+    pub upper: u8,
+    pub maxval: u8,
+}
+
+impl ThresholdKernel {
+    pub fn new() -> Self {
+        ThresholdKernel {
+            thresh_type: ThresholdType::Binary,
+            lower: 128,
+            upper: 255,
+            maxval: 255,
+        }
+    }
+
+    pub fn with_binary(thresh: u8, maxval: u8) -> Self {
+        ThresholdKernel {
+            thresh_type: ThresholdType::Binary,
+            lower: thresh,
+            upper: 255,
+            maxval,
+        }
+    }
+
+    pub fn with_range(lower: u8, upper: u8, maxval: u8) -> Self {
+        ThresholdKernel {
+            thresh_type: ThresholdType::Range,
+            lower,
+            upper,
+            maxval,
+        }
+    }
+>>>>>>> origin/master
 }
 
 impl KernelTrait for ThresholdKernel {
@@ -100,12 +139,24 @@ impl KernelTrait for ThresholdKernel {
         let dst = params.get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+<<<<<<< HEAD
         
         // Default threshold value
         let thresh = 128u8;
         let maxval = 255u8;
         
         threshold(src, dst, thresh, maxval)?;
+=======
+
+        match self.thresh_type {
+            ThresholdType::Binary => {
+                threshold_binary(src, dst, self.lower, self.maxval)?;
+            }
+            ThresholdType::Range => {
+                threshold_range(src, dst, self.lower, self.upper, self.maxval)?;
+            }
+        }
+>>>>>>> origin/master
         Ok(())
     }
 }
@@ -434,19 +485,62 @@ pub fn hough_lines_p(
     Ok(lines)
 }
 
+<<<<<<< HEAD
 /// Apply threshold to image
 pub fn threshold(src: &Image, dst: &Image, thresh: u8, maxval: u8) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
     let mut dst_data = dst.data_mut();
     
+=======
+/// Threshold types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThresholdType {
+    Binary,
+    Range,
+}
+
+/// Apply threshold to image
+/// For BINARY: dst = (src > thresh) ? maxval : 0
+/// For RANGE: dst = (src >= lower && src <= upper) ? maxval : 0
+pub fn threshold(src: &Image, dst: &Image, thresh: u8, maxval: u8) -> VxResult<()> {
+    threshold_binary(src, dst, thresh, maxval)
+}
+
+/// Binary threshold: dst = (src > thresh) ? maxval : 0
+pub fn threshold_binary(src: &Image, dst: &Image, thresh: u8, maxval: u8) -> VxResult<()> {
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+
+>>>>>>> origin/master
     for y in 0..height {
         for x in 0..width {
             let val = src.get_pixel(x, y);
             dst_data[y * width + x] = if val > thresh { maxval } else { 0 };
         }
     }
+<<<<<<< HEAD
     
+=======
+
+    Ok(())
+}
+
+/// Range threshold: dst = (src >= lower && src <= upper) ? maxval : 0
+pub fn threshold_range(src: &Image, dst: &Image, lower: u8, upper: u8, maxval: u8) -> VxResult<()> {
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+
+    for y in 0..height {
+        for x in 0..width {
+            let val = src.get_pixel(x, y);
+            dst_data[y * width + x] = if val >= lower && val <= upper { maxval } else { 0 };
+        }
+    }
+
+>>>>>>> origin/master
     Ok(())
 }
 

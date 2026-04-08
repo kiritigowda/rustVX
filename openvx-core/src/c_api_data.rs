@@ -173,6 +173,7 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
         if !(*scalar).is_null() {
             let addr = *scalar as usize;
             
+<<<<<<< HEAD
             // Remove from reference counts and types
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
@@ -182,6 +183,40 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
             }
             
             let _ = Box::from_raw(*scalar as *mut VxCScalarData);
+=======
+            // Check reference count before freeing
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 1 {
+                        // Decrement and don't free
+                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        false
+                    } else {
+                        // Last reference - free it
+                        true
+                    }
+                } else {
+                    // Not in registry - just free
+                    true
+                }
+            } else {
+                false
+            };
+            
+            if should_free {
+                // Remove from reference counts and types
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&addr);
+                }
+                
+                let _ = Box::from_raw(*scalar as *mut VxCScalarData);
+            }
+            
+>>>>>>> origin/master
             *scalar = std::ptr::null_mut();
         }
     }
@@ -1097,6 +1132,7 @@ pub extern "C" fn vxCopyThreshold(
     VX_SUCCESS
 }
 
+<<<<<<< HEAD
 // ============================================================================
 // Pyramid Implementation
 // ============================================================================
@@ -1261,3 +1297,7 @@ pub extern "C" fn vxReleasePyramid(pyr: *mut vx_pyramid) -> vx_status {
 
     VX_SUCCESS
 }
+=======
+// Pyramid functions (vxCreatePyramid, vxGetPyramidLevel, vxReleasePyramid, vxCreateVirtualPyramid)
+// are implemented in the openvx-image crate
+>>>>>>> origin/master
