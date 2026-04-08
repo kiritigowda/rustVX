@@ -3,8 +3,7 @@
 #![allow(non_camel_case_types)]
 
 use std::ffi::c_void;
-use std::sync::{RwLock, Mutex, Arc};
-use std::sync::atomic::AtomicUsize;
+use std::sync::{RwLock, atomic::AtomicUsize};
 use std::collections::HashMap;
 use openvx_core::c_api::{
     vx_context, vx_graph, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id, vx_int32,
@@ -16,7 +15,7 @@ use openvx_core::c_api::{
     VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
     VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
 };
-use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS, ARRAYS};
+use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS};
 use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
 use openvx_core::c_api::vxGetContext;
 
@@ -95,18 +94,6 @@ pub extern "C" fn vxCreateArray(
     });
 
     let array_ptr = Box::into_raw(array) as vx_array;
-    
-    // Register in unified ARRAYS registry for vxQueryReference
-    {
-        if let Ok(mut arrays) = ARRAYS.lock() {
-            // We need to create an Arc to the array for the registry
-            // But we already used Box::into_raw, so we need to reconstruct
-            let arc_array = unsafe { Arc::from_raw(array_ptr) };
-            arrays.insert(array_ptr as usize, arc_array.clone());
-            // Keep the Arc alive by not dropping it
-            let _ = Arc::into_raw(arc_array);
-        }
-    }
     
     // Register in reference counting
     unsafe {
@@ -299,15 +286,6 @@ pub extern "C" fn vxCreateVirtualArray(
 
     let array_ptr = Box::into_raw(array) as vx_array;
     
-    // Register in unified ARRAYS registry for vxQueryReference
-    {
-        if let Ok(mut arrays) = ARRAYS.lock() {
-            let arc_array = unsafe { Arc::from_raw(array_ptr) };
-            arrays.insert(array_ptr as usize, arc_array.clone());
-            let _ = Arc::into_raw(arc_array);
-        }
-    }
-    
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -369,11 +347,6 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
             };
             
             if should_free {
-                // Remove from unified ARRAYS registry
-                if let Ok(mut arrays) = ARRAYS.lock() {
-                    arrays.remove(&addr);
-                }
-                
                 // Remove from reference counts and types
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                     counts.remove(&addr);
