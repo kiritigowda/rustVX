@@ -818,6 +818,19 @@ pub extern "C" fn vxQueryNode(
                             return VX_SUCCESS;
                         }
                     }
+                    VX_NODE_PERFORMANCE => {
+                        if size >= std::mem::size_of::<crate::unified_c_api::vx_perf_t>() {
+                            let ptr_u8 = ptr as *mut u8;
+                            // Return zeroed performance data (not implemented yet)
+                            let perf = crate::unified_c_api::vx_perf_t::default();
+                            std::ptr::copy_nonoverlapping(
+                                &perf as *const crate::unified_c_api::vx_perf_t as *const u8,
+                                ptr_u8,
+                                std::mem::size_of::<crate::unified_c_api::vx_perf_t>(),
+                            );
+                            return VX_SUCCESS;
+                        }
+                    }
                     _ => {}
                 }
             }

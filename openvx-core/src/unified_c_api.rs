@@ -3177,51 +3177,42 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
             }
         }
         
-        // Also decrement internal ref_count based on object type
-        // Try kernel
-        if let Ok(kernels) = crate::c_api::KERNELS.lock() {
-            if let Some(k) = kernels.get(&addr_u64) {
-                k.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                drop(kernels);
-            }
-        }
-        // Try parameter
-        if let Ok(params) = crate::c_api::PARAMETERS.lock() {
-            if let Some(p) = params.get(&addr_u64) {
-                p.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                drop(params);
-            }
-        }
-        // Try node
-        if let Ok(nodes) = crate::c_api::NODES.lock() {
-            if let Some(n) = nodes.get(&addr_u64) {
-                n.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                drop(nodes);
-            }
-        }
-        // Try graph
-        if let Ok(graphs) = crate::c_api::GRAPHS.lock() {
-            if let Some(g) = graphs.get(&addr_u64) {
-                g.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                drop(graphs);
-            }
-        }
+        // DO NOT decrement internal ref_count here - that's handled by type-specific
+        // release functions (vxReleaseGraph, vxReleaseNode, etc.)
+        // This prevents double-decrement when both vxReleaseReference and
+        // type-specific release are called.
         
         // Clean up unified registry if count reached zero
         if should_remove || ref_count_was == 0 {
-            // Remove from GRAPHS_DATA if it's a graph
-            if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
-                graphs_data.remove(&addr_u64);
+            // Try to find and release the object by type
+            // First check if it's a graph
+            let mut found_and_released = false;
+            
+            if let Ok(graphs) = crate::c_api::GRAPHS.lock() {
+                if graphs.contains_key(&addr_u64) {
+                    // It's a graph - call vxReleaseGraph
+                    drop(graphs);
+                    let mut graph = addr_u64 as vx_graph;
+                    crate::c_api::vxReleaseGraph(&mut graph);
+                    found_and_released = true;
+                }
             }
             
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            if let Ok(mut names) = REFERENCE_NAMES.lock() {
-                names.remove(&addr);
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
+            if !found_and_released {
+                // Remove from unified registries
+                if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
+                    graphs_data.remove(&addr_u64);
+                }
+                
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                if let Ok(mut names) = REFERENCE_NAMES.lock() {
+                    names.remove(&addr);
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&addr);
+                }
             }
         }
         

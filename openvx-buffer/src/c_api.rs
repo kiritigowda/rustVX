@@ -95,6 +95,18 @@ pub extern "C" fn vxCreateArray(
 
     let array_ptr = Box::into_raw(array) as vx_array;
     
+    // Register in unified ARRAYS registry for vxQueryReference
+    {
+        if let Ok(mut arrays) = ARRAYS.lock() {
+            // We need to create an Arc to the array for the registry
+            // But we already used Box::into_raw, so we need to reconstruct
+            let arc_array = unsafe { Arc::from_raw(array_ptr) };
+            arrays.insert(array_ptr as usize, arc_array.clone());
+            // Keep the Arc alive by not dropping it
+            let _ = Arc::into_raw(arc_array);
+        }
+    }
+    
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -286,6 +298,15 @@ pub extern "C" fn vxCreateVirtualArray(
 
     let array_ptr = Box::into_raw(array) as vx_array;
     
+    // Register in unified ARRAYS registry for vxQueryReference
+    {
+        if let Ok(mut arrays) = ARRAYS.lock() {
+            let arc_array = unsafe { Arc::from_raw(array_ptr) };
+            arrays.insert(array_ptr as usize, arc_array.clone());
+            let _ = Arc::into_raw(arc_array);
+        }
+    }
+    
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -347,6 +368,11 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
             };
             
             if should_free {
+                // Remove from unified ARRAYS registry
+                if let Ok(mut arrays) = ARRAYS.lock() {
+                    arrays.remove(&addr);
+                }
+                
                 // Remove from reference counts and types
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                     counts.remove(&addr);
