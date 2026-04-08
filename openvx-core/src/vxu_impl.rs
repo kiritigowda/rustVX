@@ -385,7 +385,6 @@ unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_imag
         Err(_) => return VX_ERROR_INVALID_REFERENCE,
     };
 
-    eprintln!("DEBUG convert_and_copy: src_format={:?}, dst_format={:?}", src_format, dst_format);
     match (src_format, dst_format) {
         (ImageFormat::Gray, ImageFormat::GrayS16) => {
             // U8 (0-255) to S16 (-32768 to 32767)
@@ -393,7 +392,6 @@ unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_imag
             let src_data = src.data();
             let w = width as usize;
             let h = height as usize;
-            eprintln!("DEBUG convert_and_copy: converting Gray to GrayS16, {}x{}", w, h);
             for y in 0..h {
                 for x in 0..w {
                     let val = src_data[y * w + x] as i16;
@@ -411,7 +409,6 @@ unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_imag
             VX_SUCCESS
         }
         (src, dst) => {
-            eprintln!("DEBUG convert_and_copy: unsupported conversion {:?} -> {:?}", src, dst);
             VX_ERROR_INVALID_FORMAT
         }
     }
@@ -421,7 +418,6 @@ unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_imag
 unsafe fn create_matching_image(c_image: vx_image) -> Option<Image> {
     let (width, height, format) = get_image_info(c_image)?;
     let src_format = df_image_to_format(format)?;
-    eprintln!("DEBUG create_matching_image: src format={:?}", src_format);
     // For output format, determine what we need based on context
     // Default to same format unless explicitly needed otherwise
     let output_format = src_format;
@@ -1803,20 +1799,16 @@ pub fn vxu_sobel3x3_impl(
     output_x: vx_image,
     output_y: vx_image,
 ) -> vx_status {
-    eprintln!("DEBUG vxu_sobel3x3_impl: START");
     if context.is_null() || input.is_null() {
-        eprintln!("DEBUG vxu_sobel3x3_impl: null context or input");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: src format={:?}, size={}x{}", img.format(), img.width(), img.height());
                 img
             },
             None => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: failed to convert input");
                 return VX_ERROR_INVALID_PARAMETERS;
             },
         };
@@ -1824,20 +1816,16 @@ pub fn vxu_sobel3x3_impl(
         // Check output format
         let (_, _, out_x_format) = match get_image_info(output_x) {
             Some(info) => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: output_x format={:#010x}", info.2);
                 info
             },
             None => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: failed to get output_x info");
                 return VX_ERROR_INVALID_PARAMETERS;
             },
         };
 
-        eprintln!("DEBUG vxu_sobel3x3_impl: creating temp U8 buffers");
         let mut gx = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
             Some(img) => img,
             None => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: failed to create gx buffer");
                 return VX_ERROR_INVALID_PARAMETERS;
             },
         };
@@ -1845,29 +1833,22 @@ pub fn vxu_sobel3x3_impl(
         let mut gy = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
             Some(img) => img,
             None => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: failed to create gy buffer");
                 return VX_ERROR_INVALID_PARAMETERS;
             },
         };
 
-        eprintln!("DEBUG vxu_sobel3x3_impl: calling sobel3x3 kernel");
         match sobel3x3(&src, &mut gx, &mut gy) {
             Ok(_) => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: kernel succeeded, converting output");
                 // Convert from U8 to output format
                 let status_x = convert_and_copy(&gx, output_x, out_x_format);
                 let status_y = convert_and_copy(&gy, output_y, VX_DF_IMAGE_S16);
-                eprintln!("DEBUG vxu_sobel3x3_impl: status_x={}, status_y={}", status_x, status_y);
                 if status_x == VX_SUCCESS && status_y == VX_SUCCESS {
-                    eprintln!("DEBUG vxu_sobel3x3_impl: SUCCESS");
                     VX_SUCCESS
                 } else {
-                    eprintln!("DEBUG vxu_sobel3x3_impl: conversion failed");
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
             Err(e) => {
-                eprintln!("DEBUG vxu_sobel3x3_impl: kernel failed: {:?}", e);
                 VX_ERROR_INVALID_PARAMETERS
             },
         }
@@ -2376,11 +2357,9 @@ pub fn vxu_harris_corners_impl(
 ) -> vx_status {
     // Validate all required parameters with null checks
     if context.is_null() {
-        eprintln!("DEBUG vxu_harris_corners_impl: context is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     if input.is_null() {
-        eprintln!("DEBUG vxu_harris_corners_impl: input is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
@@ -2388,7 +2367,6 @@ pub fn vxu_harris_corners_impl(
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => {
-                eprintln!("DEBUG vxu_harris_corners_impl: c_image_to_rust failed");
                 return VX_ERROR_INVALID_PARAMETERS;
             }
         };
@@ -4370,10 +4348,8 @@ pub fn vxu_or_impl(
     in2: vx_image,
     output: vx_image,
 ) -> vx_status {
-    eprintln!("DEBUG vxu_or_impl: START in1={:?}, in2={:?}, out={:?}", in1, in2, output);
     
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
-        eprintln!("DEBUG vxu_or_impl: NULL check failed");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
@@ -4381,29 +4357,23 @@ pub fn vxu_or_impl(
         let src1 = match c_image_to_rust(in1) {
             Some(img) => img,
             None => {
-                eprintln!("DEBUG vxu_or_impl: c_image_to_rust(in1) failed");
                 return VX_ERROR_INVALID_PARAMETERS;
             }
         };
-        eprintln!("DEBUG vxu_or_impl: src1 OK, {}x{}", src1.width(), src1.height());
 
         let src2 = match c_image_to_rust(in2) {
             Some(img) => img,
             None => {
-                eprintln!("DEBUG vxu_or_impl: c_image_to_rust(in2) failed");
                 return VX_ERROR_INVALID_PARAMETERS;
             }
         };
-        eprintln!("DEBUG vxu_or_impl: src2 OK, {}x{}", src2.width(), src2.height());
 
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
             None => {
-                eprintln!("DEBUG vxu_or_impl: create_matching_image(output) failed");
                 return VX_ERROR_INVALID_PARAMETERS;
             }
         };
-        eprintln!("DEBUG vxu_or_impl: dst OK, {}x{}", dst.width(), dst.height());
 
         // Bitwise OR implementation
         let width = dst.width();

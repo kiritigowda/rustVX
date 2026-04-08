@@ -528,16 +528,13 @@ fn is_image_reference(ref_id: u64) -> bool {
     if let Ok(types) = REFERENCE_TYPES.lock() {
         if let Some(ref_type) = types.get(&(ref_id as usize)) {
             let result = *ref_type == VX_TYPE_IMAGE;
-            eprintln!("DEBUG is_image_reference: ref_id=0x{:x}, type=0x{:x}, is_image={}", ref_id, ref_type, result);
             return result;
         } else {
-            eprintln!("DEBUG is_image_reference: ref_id=0x{:x} not in REFERENCE_TYPES", ref_id);
         }
     }
     // Also check if it looks like an image pointer
     if let Ok(images) = IMAGES.lock() {
         if images.contains(&(ref_id as usize)) {
-            eprintln!("DEBUG is_image_reference: ref_id=0x{:x} found in IMAGES", ref_id);
             return true;
         }
     }
@@ -715,7 +712,6 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     if let Some(node_data) = nodes_data.get(node_id) {
                         if let Ok(params) = node_data.parameters.lock() {
                             let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
-                            eprintln!("DEBUG vxVerifyGraph: node_id=0x{:x}, params={:?}", node_id, param_refs.len());
                             for (i, p) in param_refs.iter().enumerate() {
                                 if let Some(v) = p {
                                     eprintln!("  param[{}] = 0x{:x}", i, v);
@@ -734,19 +730,16 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 // Check if parameter 0 (required) is set
                 if params.len() > 0 {
                     if params[0].is_none() {
-                        eprintln!("DEBUG vxVerifyGraph: node 0x{:x} param[0] is None - FAIL", node_id);
                         return VX_ERROR_INVALID_PARAMETERS;
                     }
                 }
             }
             
-            eprintln!("DEBUG vxVerifyGraph: all required parameters set");
             
             // Build connection graph to detect cycles and validate structure
             let mut param_to_producer: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
             let mut param_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
             
-            eprintln!("DEBUG vxVerifyGraph: building connection graph...");
             
             for (node_id, params) in &node_params {
                 for (idx, param_opt) in params.iter().enumerate() {
@@ -816,7 +809,6 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 rec_stack: &mut std::collections::HashSet<u64>,
             ) -> bool {
                 if rec_stack.contains(&node_id) {
-                    eprintln!("DEBUG has_cycle: node 0x{:x} already in recursion stack - CYCLE DETECTED", node_id);
                     return true; // Cycle detected
                 }
                 if visited.contains(&node_id) {
@@ -828,13 +820,9 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 
                 // Follow outputs of this node to consuming nodes
                 if let Some(outputs) = node_to_outputs.get(&node_id) {
-                    eprintln!("DEBUG has_cycle: node 0x{:x} has {} outputs", node_id, outputs.len());
                     for output_img in outputs {
-                        eprintln!("DEBUG has_cycle: checking output 0x{:x}", output_img);
                         if let Some(consumers) = image_to_consumers.get(output_img) {
-                            eprintln!("DEBUG has_cycle: output 0x{:x} has {} consumers", output_img, consumers.len());
                             for consumer_id in consumers {
-                                eprintln!("DEBUG has_cycle: following to consumer 0x{:x}", consumer_id);
                                 if has_cycle(*consumer_id, node_to_outputs, image_to_consumers, visited, rec_stack) {
                                     return true;
                                 }
@@ -853,12 +841,10 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             for (node_id, _) in &node_params {
                 if !visited.contains(node_id) {
                     if has_cycle(*node_id, &node_to_outputs, &image_to_consumers, &mut visited, &mut rec_stack) {
-                        eprintln!("DEBUG vxVerifyGraph: cycle detected - FAIL");
                         return VX_ERROR_INVALID_GRAPH;
                     }
                 }
             }
-            eprintln!("DEBUG vxVerifyGraph: no cycles detected");
             
             // Allocate backing storage for virtual images
             for (node_id, params) in &node_params {
@@ -871,7 +857,6 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                 dim
                             } else {
                                 // Cannot determine dimensions
-                                eprintln!("DEBUG vxVerifyGraph: cannot determine dimensions for virtual image 0x{:x}", param_ref);
                                 return VX_ERROR_INVALID_GRAPH;
                             };
                             
@@ -892,7 +877,6 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 *state = VxGraphState::VxGraphStateVerified;
             }
             
-            eprintln!("DEBUG vxVerifyGraph: SUCCESS - graph verified");
             return VX_SUCCESS;
         } else {
             eprintln!("ERROR: vxVerifyGraph: graph not found in GRAPHS_DATA");
@@ -908,7 +892,6 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 /// Process graph - execute nodes in topological order
 #[no_mangle]
 pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
-    eprintln!("DEBUG vxProcessGraph: START graph={:?}", graph);
     
     // Null check for graph pointer
     if graph.is_null() {
@@ -917,7 +900,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     }
 
     let graph_id = graph as u64;
-    eprintln!("DEBUG vxProcessGraph: graph_id=0x{:x}", graph_id);
     
     // Validate graph_id is valid
     if graph_id == 0 {
@@ -929,7 +911,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     let graph_data = {
         match GRAPHS_DATA.lock() {
             Ok(graphs) => {
-                eprintln!("DEBUG vxProcessGraph: got GRAPHS_DATA lock, {} graphs", graphs.len());
                 match graphs.get(&graph_id) {
                     Some(g) => {
                         // Clone necessary data to avoid holding lock during execution
@@ -959,7 +940,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     // Check if verified
     let verified = match g.verified.lock() {
         Ok(v) => {
-            eprintln!("DEBUG vxProcessGraph: verified={}", *v);
             *v
         }
         Err(_) => {
@@ -969,14 +949,12 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     };
     
     if !verified {
-        eprintln!("DEBUG vxProcessGraph: graph not verified, auto-verifying...");
         // Per OpenVX spec: vxProcessGraph should auto-verify if not already verified
         let verify_status = vxVerifyGraph(graph);
         if verify_status != VX_SUCCESS {
             eprintln!("ERROR: vxProcessGraph: auto-verify failed with status {}", verify_status);
             return verify_status;
         }
-        eprintln!("DEBUG vxProcessGraph: auto-verify succeeded");
     }
     
     // Set state to running
@@ -987,7 +965,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     // Get nodes and execute them
     let nodes = match g.nodes.read() {
         Ok(n) => {
-            eprintln!("DEBUG vxProcessGraph: {} nodes in graph", n.len());
             n
         }
         Err(_) => {
@@ -998,7 +975,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     
     // Check if there are any nodes to execute
     if nodes.is_empty() {
-        eprintln!("DEBUG vxProcessGraph: graph has no nodes to execute");
         // Mark as completed (empty graph is valid)
         if let Ok(mut state) = g.state.lock() {
             *state = VxGraphState::VxGraphStateCompleted;
@@ -1008,7 +984,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     
     // Execute each node in order with null checks
     for (i, node_id) in nodes.iter().enumerate() {
-        eprintln!("DEBUG vxProcessGraph: executing node {} with node_id=0x{:x}", i, node_id);
         
         // Validate node_id
         if *node_id == 0 {
@@ -1021,7 +996,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
         
         match execute_node(*node_id) {
             Some(status) => {
-                eprintln!("DEBUG vxProcessGraph: execute_node returned {}", status);
                 if status != VX_SUCCESS {
                     // Mark as abandoned on failure
                     eprintln!("ERROR: vxProcessGraph: node {} failed with status {}", node_id, status);
@@ -1123,16 +1097,13 @@ fn resolve_graph_parameter(graph_id: u64, graph_param_index: usize) -> Option<u6
 
 /// Execute a single node by looking up its kernel and parameters
 fn execute_node(node_id: u64) -> Option<vx_status> {
-    eprintln!("DEBUG execute_node: START node_id=0x{:x}", node_id);
     
     // Get node data including border mode
     let (kernel_id, param_ids, node_border) = {
         if let Ok(nodes) = crate::c_api::NODES.lock() {
-            eprintln!("DEBUG execute_node: got NODES lock, {} nodes", nodes.len());
             if let Some(node_data) = nodes.get(&node_id) {
                 let params = node_data.parameters.lock().ok()?;
                 let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
-                eprintln!("DEBUG execute_node: node_id=0x{:x}, kernel_id=0x{:x}, num_params={}", node_id, node_data.kernel_id, param_refs.len());
                 for (i, p) in param_refs.iter().enumerate() {
                     if let Some(v) = p {
                         eprintln!("  param[{}] = 0x{:x}", i, v);
@@ -1158,18 +1129,15 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     }
     
     // Get kernel name
-    eprintln!("DEBUG execute_node: looking up kernel_id=0x{:x}", kernel_id);
     let kernel_name = {
         if let Ok(kernels) = crate::c_api::KERNELS.lock() {
             if let Some(kernel) = kernels.get(&kernel_id) {
-                eprintln!("DEBUG execute_node: found kernel name in c_api KERNELS: {}", kernel.name);
                 kernel.name.clone()
             } else {
                 // Check unified kernels
                 drop(kernels);
                 if let Ok(unified_kernels) = KERNELS.lock() {
                     if let Some(kernel) = unified_kernels.get(&kernel_id) {
-                        eprintln!("DEBUG execute_node: found kernel name in unified KERNELS: {}", kernel.name);
                         kernel.name.clone()
                     } else {
                         eprintln!("ERROR: execute_node: kernel {} not found for node {}", kernel_id, node_id);
@@ -1203,7 +1171,6 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     
     for (idx, param_id_opt) in param_ids.iter().enumerate() {
         if let Some(param_id) = param_id_opt {
-            eprintln!("DEBUG execute_node: param[{}] = 0x{:x}", idx, param_id);
             // Validate parameter is not null pointer
             if *param_id == 0 {
                 eprintln!("ERROR: execute_node: parameter {} is null pointer (0) for node {}", idx, node_id);
@@ -1212,7 +1179,6 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
             params.push(*param_id as vx_reference);
         } else {
             // Parameter not directly set - check if it has a graph binding
-            eprintln!("DEBUG execute_node: param[{}] = null, checking graph binding", idx);
             
             // Check NODE_PARAMETER_BINDINGS for (node_id, param_index) -> graph binding
             let binding_key = (node_id, idx);
@@ -1227,7 +1193,6 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                 // Get the graph parameter's actual value
                 if let Ok(graph_id) = get_node_graph_id(node_id) {
                     if let Some(resolved_value) = resolve_graph_parameter(graph_id, graph_param_index) {
-                        eprintln!("DEBUG execute_node: resolved param[{}] from graph param {} to 0x{:x}", 
                                  idx, graph_param_index, resolved_value);
                         params.push(resolved_value as vx_reference);
                     } else {
@@ -1246,10 +1211,8 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
         }
     }
     
-    eprintln!("DEBUG execute_node: dispatching to kernel '{}' with {} params", kernel_name, params.len());
     // Dispatch to appropriate VXU implementation based on kernel name
     let result = dispatch_kernel_with_border(&kernel_name, &params, Some(node_border));
-    eprintln!("DEBUG execute_node: dispatch_kernel_with_border returned {}", result);
     Some(result)
 }
 
@@ -1898,7 +1861,6 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 7 {
                 // Input (param 0) is REQUIRED
                 if params[0].is_null() {
-                    eprintln!("DEBUG: harris_corners - input (param 0) is null");
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 let input = params[0] as vx_image;
@@ -1912,7 +1874,6 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 
                 // Validate required parameter (input)
                 if input.is_null() {
-                    eprintln!("DEBUG: harris_corners - input is null");
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 
@@ -1921,7 +1882,6 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 // Validate image before processing
                 let status = validate_image(input);
                 if status != VX_SUCCESS { 
-                    eprintln!("DEBUG: harris_corners - input image validation failed");
                     return status; 
                 }
                 
@@ -1931,11 +1891,9 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let sensitivity = if params.len() > 3 && !params[3].is_null() { params[3] as vx_scalar } else { std::ptr::null_mut() };
                 // Validate gradient_size and block_size parameters
                 if params.len() <= 4 {
-                    eprintln!("DEBUG: harris_corners - params too short for gradient_size");
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 if params.len() <= 5 {
-                    eprintln!("DEBUG: harris_corners - params too short for block_size");
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 let gradient_size = if !params[4].is_null() { params[4] as vx_enum } else { 3 };
@@ -4878,7 +4836,6 @@ pub extern "C" fn vxAddParameterToGraph(
     let graph_id = graph as u64;
     let param_id = parameter as u64;
     
-    eprintln!("DEBUG vxAddParameterToGraph: graph=0x{:x}, param=0x{:x}", graph_id, param_id);
     
     // Find the parameter in unified registry to get its node_id and index
     let mut node_id = 0u64;
@@ -4890,7 +4847,6 @@ pub extern "C" fn vxAddParameterToGraph(
             node_id = param.node_id;
             param_index = param.index;
             found = true;
-            eprintln!("DEBUG vxAddParameterToGraph: found in PARAMETERS, node_id=0x{:x}, index={}", node_id, param_index);
         }
     }
     
@@ -4902,13 +4858,11 @@ pub extern "C" fn vxAddParameterToGraph(
                 node_id = 0; // Will determine from the parameter ID
                 param_index = param.index;
                 found = true;
-                eprintln!("DEBUG vxAddParameterToGraph: found in c_api PARAMETERS, index={}", param_index);
             }
         }
     }
     
     if !found {
-        eprintln!("DEBUG vxAddParameterToGraph: param 0x{:x} NOT FOUND in any registry!", param_id);
         return VX_ERROR_INVALID_REFERENCE;
     }
     
@@ -4920,21 +4874,18 @@ pub extern "C" fn vxAddParameterToGraph(
         let mut graph_params = g.parameters.write().unwrap();
         graph_params.push(param_id);
         graph_param_index = graph_params.len() - 1;
-        eprintln!("DEBUG vxAddParameterToGraph: added to graph_params at index {}", graph_param_index);
     }
     
     // Retain the parameter (increment ref count)
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         if let Some(cnt) = counts.get(&(param_id as usize)) {
             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            eprintln!("DEBUG vxAddParameterToGraph: incremented ref_count for param 0x{:x}", param_id);
         }
     }
     
     // Store binding with the correct graph param index
     if let Ok(mut bindings) = NODE_PARAMETER_BINDINGS.lock() {
         bindings.insert((node_id, param_index as usize), NodeParamBinding::GraphParam(graph_param_index));
-        eprintln!("DEBUG vxAddParameterToGraph: stored binding for (node_id=0x{:x}, index={}) -> graph_param[{}]", node_id, param_index, graph_param_index);
     }
     
     VX_SUCCESS
@@ -7744,13 +7695,10 @@ pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, patter
 /// Binds a reference to a graph parameter, which then binds to connected node parameters
 #[no_mangle]
 pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, param: vx_reference) -> vx_status {
-    eprintln!("DEBUG vxSetGraphParameterByIndex: START graph=0x{:x}, index={}, param=0x{:x}", graph as u64, index, param as usize);
     if graph.is_null() {
-        eprintln!("DEBUG vxSetGraphParameterByIndex: graph is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     if param.is_null() {
-        eprintln!("DEBUG vxSetGraphParameterByIndex: param is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     
@@ -7760,7 +7708,6 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
     // Check if there's an existing binding and release it first
     if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
         if let Some(&old_addr) = bindings.get(&(graph_id, index as usize)) {
-            eprintln!("DEBUG vxSetGraphParameterByIndex: releasing old binding 0x{:x}", old_addr);
             // Decrement ref count of old binding
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&(old_addr)) {
@@ -7776,24 +7723,19 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
     }
     
     // Increment ref count of the new parameter being bound
-    eprintln!("DEBUG vxSetGraphParameterByIndex: incrementing ref_count for 0x{:x}", param_addr);
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         if let Some(cnt) = counts.get(&(param_addr)) {
             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            eprintln!("DEBUG vxSetGraphParameterByIndex: incremented ref_count");
         } else {
-            eprintln!("DEBUG vxSetGraphParameterByIndex: WARNING - param not in REFERENCE_COUNTS!");
         }
     }
     
     // Store the binding in GRAPH_PARAMETERS
     if let Ok(mut bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
         bindings.insert((graph_id, index as usize), param_addr);
-        eprintln!("DEBUG vxSetGraphParameterByIndex: stored binding");
     }
     
     // Update the connected node parameter value via NODE_PARAMETER_BINDINGS
-    eprintln!("DEBUG vxSetGraphParameterByIndex: updating connected node parameter");
     if let Ok(node_bindings) = NODE_PARAMETER_BINDINGS.lock() {
         for ((node_id, param_idx), binding) in node_bindings.iter() {
             if let NodeParamBinding::GraphParam(gp_idx) = binding {
@@ -7805,27 +7747,23 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
                     let should_update = is_graph_input && *param_idx == 0; // Only update node param 0 for graph inputs
                     
                     if should_update {
-                        eprintln!("DEBUG vxSetGraphParameterByIndex: updating node 0x{:x} param[{}] to 0x{:x}", node_id, param_idx, param_addr);
                         // Update the node's parameter value
                         if let Ok(nodes) = crate::c_api::NODES.lock() {
                             if let Some(node_data) = nodes.get(node_id) {
                                 if let Ok(mut params) = node_data.parameters.lock() {
                                     if *param_idx < params.len() {
                                         params[*param_idx] = Some(param_addr as u64);
-                                        eprintln!("DEBUG vxSetGraphParameterByIndex: updated node parameter");
                                     }
                                 }
                             }
                         }
                     } else {
-                        eprintln!("DEBUG vxSetGraphParameterByIndex: SKIPPING node 0x{:x} param[{}] - not an input", node_id, param_idx);
                     }
                 }
             }
         }
     }
     
-    eprintln!("DEBUG vxSetGraphParameterByIndex: DONE");
     VX_SUCCESS
 }
 
@@ -7833,7 +7771,6 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
 /// Returns a parameter object that can be used with vxSetParameterByReference
 #[no_mangle]
 pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) -> vx_parameter {
-    eprintln!("DEBUG vxGetGraphParameterByIndex: START graph=0x{:x}, index={}", graph as u64, index);
     if graph.is_null() {
         return std::ptr::null_mut();
     }
@@ -7846,42 +7783,33 @@ pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) 
             if let Ok(graph_params) = g.parameters.read() {
                 if (index as usize) < graph_params.len() {
                     let pid = graph_params[index as usize];
-                    eprintln!("DEBUG vxGetGraphParameterByIndex: found param_id=0x{:x} in graph_params[{}]", pid, index);
                     // Increment ref count for the existing parameter
                     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                         if let Some(cnt) = counts.get(&(pid as usize)) {
                             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            eprintln!("DEBUG vxGetGraphParameterByIndex: incremented ref_count for param 0x{:x}", pid);
                         }
                     }
                     return pid as vx_parameter;
                 } else {
-                    eprintln!("DEBUG vxGetGraphParameterByIndex: index {} out of bounds (len={})", index, graph_params.len());
                 }
             } else {
-                eprintln!("DEBUG vxGetGraphParameterByIndex: failed to read graph params");
             }
         } else {
-            eprintln!("DEBUG vxGetGraphParameterByIndex: graph 0x{:x} not found", graph_id);
         }
     } else {
-        eprintln!("DEBUG vxGetGraphParameterByIndex: failed to lock GRAPHS_DATA");
     }
     
     // If not found in graph's parameter list, try GRAPH_PARAMETER_BINDINGS
     // This is for parameters set via vxSetGraphParameterByIndex
     if let Ok(bindings) = GRAPH_PARAMETER_BINDINGS.lock() {
         if let Some(&ref_addr) = bindings.get(&(graph_id, index as usize)) {
-            eprintln!("DEBUG vxGetGraphParameterByIndex: found binding ref_addr=0x{:x} in GRAPH_PARAMETER_BINDINGS", ref_addr);
             // For now, return the ref_addr directly (this is an image/array, not a parameter)
             // The caller should use this as the actual object, not as a parameter handle
             // This is a temporary workaround
-            eprintln!("DEBUG vxGetGraphParameterByIndex: WARNING - returning raw reference address");
             return ref_addr as vx_parameter;
         }
     }
     
-    eprintln!("DEBUG vxGetGraphParameterByIndex: parameter not found, returning null");
     std::ptr::null_mut()
 }
 

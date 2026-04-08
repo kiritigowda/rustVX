@@ -319,7 +319,6 @@ pub extern "C" fn vxCreateVirtualDistribution(
 /// Release array
 #[no_mangle]
 pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
-    eprintln!("DEBUG vxReleaseArray: START");
     if arr.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -327,23 +326,18 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
     unsafe {
         if !(*arr).is_null() {
             let addr = *arr as usize;
-            eprintln!("DEBUG vxReleaseArray: addr=0x{:x}", addr);
             
             // Check reference count before freeing
             let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&addr) {
                     let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
-                    eprintln!("DEBUG vxReleaseArray: ref_count={}", current);
                     if current > 1 {
                         cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                        eprintln!("DEBUG vxReleaseArray: decremented, not freeing");
                         false
                     } else {
-                        eprintln!("DEBUG vxReleaseArray: last reference, will free");
                         true
                     }
                 } else {
-                    eprintln!("DEBUG vxReleaseArray: not in registry, will free");
                     true
                 }
             } else {
@@ -359,17 +353,13 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
                     types.remove(&addr);
                 }
                 
-                eprintln!("DEBUG vxReleaseArray: freeing the Box");
                 let _ = Box::from_raw(*arr as *mut VxCArray);
             }
             
-            eprintln!("DEBUG vxReleaseArray: nulling pointer");
             *arr = std::ptr::null_mut();
         } else {
-            eprintln!("DEBUG vxReleaseArray: *arr is null");
         }
     }
-    eprintln!("DEBUG vxReleaseArray: DONE");
 
     VX_SUCCESS
 }

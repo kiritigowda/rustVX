@@ -660,45 +660,35 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
 
 #[no_mangle]
 pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
-    eprintln!("DEBUG vxReleaseGraph: START");
     if graph.is_null() {
-        eprintln!("DEBUG vxReleaseGraph: graph pointer is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     unsafe {
         let g = *graph;
         if g.is_null() {
-            eprintln!("DEBUG vxReleaseGraph: *graph is null");
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = g as u64;
         let addr = g as usize;
         
-        eprintln!("DEBUG vxReleaseGraph: graph_id=0x{:x}", id);
         
         // Decrement reference count first
         let mut should_remove = false;
         if let Ok(counts) = REFERENCE_COUNTS.lock() {
             if let Some(count) = counts.get(&addr) {
                 let current = count.load(std::sync::atomic::Ordering::SeqCst);
-                eprintln!("DEBUG vxReleaseGraph: ref_count={}", current);
                 if current > 1 {
                     count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                    eprintln!("DEBUG vxReleaseGraph: decremented ref_count");
                 } else {
                     should_remove = true;
-                    eprintln!("DEBUG vxReleaseGraph: ref_count is 1, will remove");
                 }
             } else {
-                eprintln!("DEBUG vxReleaseGraph: graph not in REFERENCE_COUNTS");
             }
         }
         
         if should_remove {
-            eprintln!("DEBUG vxReleaseGraph: removing graph");
             
             // Release the graph's parameters
-            eprintln!("DEBUG vxReleaseGraph: releasing graph parameters");
             if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 if let Some(g) = graphs_data.get(&id) {
                     let graph_params: Vec<u64> = {
@@ -709,10 +699,8 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                         }
                     };
                     
-                    eprintln!("DEBUG vxReleaseGraph: graph has {} parameters to release", graph_params.len());
                     for param_id in graph_params {
                         let param_addr = param_id as usize;
-                        eprintln!("DEBUG vxReleaseGraph: releasing parameter 0x{:x}", param_id);
                         
                         // Decrement ref count
                         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -720,7 +708,6 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                 let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                 if current > 1 {
                                     cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                                    eprintln!("DEBUG vxReleaseGraph: decremented ref_count to {} for param 0x{:x}", current - 1, param_id);
                                 } else {
                                     // Last reference - remove the parameter
                                     counts.remove(&param_addr);
@@ -730,7 +717,6 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                     if let Ok(mut params) = crate::unified_c_api::PARAMETERS.lock() {
                                         params.remove(&param_id);
                                     }
-                                    eprintln!("DEBUG vxReleaseGraph: removed param 0x{:x}", param_id);
                                 }
                             }
                         }
@@ -739,7 +725,6 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             }
             
             // Free the graph's nodes
-            eprintln!("DEBUG vxReleaseGraph: freeing graph nodes");
             if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 if let Some(g) = graphs_data.get(&id) {
                     let graph_nodes: Vec<u64> = {
@@ -750,9 +735,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                         }
                     };
                     
-                    eprintln!("DEBUG vxReleaseGraph: graph has {} nodes to free", graph_nodes.len());
                     for node_id in graph_nodes {
-                        eprintln!("DEBUG vxReleaseGraph: freeing node 0x{:x}", node_id);
                         // Remove node from registries
                         if let Ok(mut nodes_mut) = NODES.lock() {
                             nodes_mut.remove(&node_id);
@@ -763,44 +746,35 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                         if let Ok(mut types) = REFERENCE_TYPES.lock() {
                             types.remove(&(node_id as usize));
                         }
-                        eprintln!("DEBUG vxReleaseGraph: freed node 0x{:x}", node_id);
                     }
                 }
             }
             
             // Remove from all registries when count reaches 0
-            eprintln!("DEBUG vxReleaseGraph: removing from GRAPHS");
             if let Ok(mut graphs) = GRAPHS.lock() {
                 graphs.remove(&id);
             }
-            eprintln!("DEBUG vxReleaseGraph: removing from GRAPHS_DATA");
             if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 graphs_data.remove(&id);
             }
-            eprintln!("DEBUG vxReleaseGraph: removing from REFERENCE_COUNTS");
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
             }
-            eprintln!("DEBUG vxReleaseGraph: removing from REFERENCE_TYPES");
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
-            eprintln!("DEBUG vxReleaseGraph: removing from REFERENCE_NAMES");
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
             }
         } else {
-            eprintln!("DEBUG vxReleaseGraph: decrementing ref count only");
             // Just remove from GRAPHS but keep in unified registries
             if let Ok(mut graphs) = GRAPHS.lock() {
                 graphs.remove(&id);
             }
         }
         
-        eprintln!("DEBUG vxReleaseGraph: setting *graph to null");
         *graph = std::ptr::null_mut();
     }
-    eprintln!("DEBUG vxReleaseGraph: DONE");
     VX_SUCCESS
 }
 
@@ -898,7 +872,6 @@ pub extern "C" fn vxSetNodeAttribute(
 
 #[no_mangle]
 pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
-    eprintln!("DEBUG vxReleaseNode: START");
     if node.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -912,7 +885,6 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         let num_params: usize;
         let graph_id: u64;
         
-        eprintln!("DEBUG vxReleaseNode: node_id=0x{:x}", id);
         
         // Get node data and parameters
         if let Ok(nodes) = NODES.lock() {
@@ -935,7 +907,6 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
         }
         
         if count <= 1 {
-            eprintln!("DEBUG vxReleaseNode: count <= 1, checking if node can be freed");
             
             // Check if the graph still exists and owns this node
             let graph_still_exists = if let Ok(graphs_data) = GRAPHS_DATA.lock() {
@@ -955,14 +926,12 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
             if graph_still_exists {
                 // Node is still owned by graph - just decrement unified ref count
                 // Don't free the node, the graph will free it when released
-                eprintln!("DEBUG vxReleaseNode: node still in graph, not freeing");
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                     if let Some(cnt) = counts.get_mut(&(id as usize)) {
                         cnt.store(count - 1, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
             } else {
-                eprintln!("DEBUG vxReleaseNode: graph doesn't own node, freeing");
                 // Graph doesn't exist or doesn't own this node - safe to free
                 
                 // Note: Node does NOT release parameter values - application owns them
@@ -1163,7 +1132,6 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
         if let Some(cnt) = counts.get(&(ptr as usize)) {
             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            eprintln!("DEBUG vxCreateGenericNode: incremented ref_count to 2 for graph ownership");
         }
     }
     
@@ -1330,7 +1298,6 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
 
 #[no_mangle]
 pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> vx_kernel {
-    eprintln!("DEBUG vxGetKernelByEnum: context={:?}, kernel_e=0x{:x}={}", context, kernel_e, kernel_e);
     if context.is_null() {
         return std::ptr::null_mut();
     }
@@ -1338,9 +1305,7 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
     
     // Look up kernel by enum
     if let Ok(kernels) = KERNELS.lock() {
-        eprintln!("DEBUG vxGetKernelByEnum: {} kernels in registry", kernels.len());
         for (id, kernel) in kernels.iter() {
-            eprintln!("DEBUG vxGetKernelByEnum: checking kernel 0x{:x} (enum=0x{:x}, ctx={})", id, kernel.kernel_enum, kernel.context_id);
             if kernel.kernel_enum == kernel_e && kernel.context_id == context_id {
                 kernel.ref_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 // Also increment reference count in unified registry
@@ -1349,11 +1314,9 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
                         count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
-                eprintln!("DEBUG vxGetKernelByEnum: found kernel, returning id=0x{:x}", id);
                 return *id as *mut VxKernel;
             }
         }
-        eprintln!("DEBUG vxGetKernelByEnum: kernel not found, will create new one");
     }
     
     // Kernel not found - create it
@@ -1403,21 +1366,15 @@ pub extern "C" fn vxQueryKernel(
     ptr: *mut c_void,
     size: vx_size,
 ) -> vx_status {
-    eprintln!("DEBUG vxQueryKernel: kernel={:?}, attribute=0x{:x}={}", kernel, attribute, attribute);
     if kernel.is_null() || ptr.is_null() {
-        eprintln!("DEBUG vxQueryKernel: null kernel or ptr");
         return VX_ERROR_INVALID_REFERENCE;
     }
     unsafe {
         let id = kernel as u64;
-        eprintln!("DEBUG vxQueryKernel: id={}, VX_KERNEL_PARAMETERS=0x{:x}={}", id, VX_KERNEL_PARAMETERS, VX_KERNEL_PARAMETERS);
         if let Ok(kernels) = KERNELS.lock() {
-            eprintln!("DEBUG vxQueryKernel: {} kernels registered", kernels.len());
             if let Some(kernel_data) = kernels.get(&id) {
-                eprintln!("DEBUG vxQueryKernel: found kernel_data: num_params={}, name={}, enum=0x{:x}", kernel_data.num_params, kernel_data.name, kernel_data.kernel_enum);
                 match attribute {
                     VX_KERNEL_PARAMETERS => { // VX_KERNEL_PARAMETERS
-                        eprintln!("DEBUG vxQueryKernel: handling VX_KERNEL_PARAMETERS, size={}", size);
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1584,13 +1541,10 @@ pub extern "C" fn vxQueryParameter(
     }
     unsafe {
         let id = param as u64;
-        eprintln!("DEBUG vxQueryParameter: param_id=0x{:x}, attribute=0x{:x}", id, attribute);
         
         // First check local c_api PARAMETERS (where vxGetKernelParameterByIndex stores params)
         if let Ok(params) = PARAMETERS.lock() {
-            eprintln!("DEBUG vxQueryParameter: {} params in c_api::PARAMETERS", params.len());
             if let Some(param_data) = params.get(&id) {
-                eprintln!("DEBUG vxQueryParameter: found in c_api::PARAMETERS");
                 match attribute {
                     VX_PARAMETER_INDEX => { // VX_PARAMETER_INDEX
                         if size >= 4 {
@@ -1647,9 +1601,7 @@ pub extern "C" fn vxQueryParameter(
         
         // Also check unified_c_api's PARAMETERS
         if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
-            eprintln!("DEBUG vxQueryParameter: {} params in unified_c_api::PARAMETERS", params.len());
             if let Some(param_data) = params.get(&id) {
-                eprintln!("DEBUG vxQueryParameter: found in unified_c_api::PARAMETERS");
                 match attribute {
                     VX_PARAMETER_INDEX => { // VX_PARAMETER_INDEX
                         if size >= 4 {
@@ -1704,12 +1656,10 @@ pub extern "C" fn vxQueryParameter(
             }
         }
         
-        eprintln!("DEBUG vxQueryParameter: parameter not found, trying helper functions");
         
         // Also check unified_c_api's PARAMETERS via helper function
         if attribute == VX_PARAMETER_REF {
             if let Some(ref_value) = crate::unified_c_api::get_parameter_value(id) {
-                eprintln!("DEBUG vxQueryParameter: found via get_parameter_value");
                 if size >= std::mem::size_of::<vx_reference>() {
                     let ref_ptr = ref_value as vx_reference;
                     let ptr_u8 = ptr as *mut u8;
@@ -1723,7 +1673,6 @@ pub extern "C" fn vxQueryParameter(
             }
             // If we reach here, check if parameter exists in unified registry
             if crate::unified_c_api::parameter_exists(id) {
-                eprintln!("DEBUG vxQueryParameter: parameter exists but no value, returning NULL");
                 // Parameter exists but has no value, return NULL reference
                 let ref_ptr: vx_reference = std::ptr::null_mut();
                 let ptr_u8 = ptr as *mut u8;
@@ -1735,7 +1684,6 @@ pub extern "C" fn vxQueryParameter(
                 return VX_SUCCESS;
             }
         }
-        eprintln!("DEBUG vxQueryParameter: returning NOT_IMPLEMENTED");
     }
     VX_ERROR_NOT_IMPLEMENTED
 }
@@ -1746,9 +1694,7 @@ pub extern "C" fn vxSetParameterByIndex(
     index: vx_uint32,
     value: vx_reference,
 ) -> vx_status {
-    eprintln!("DEBUG vxSetParameterByIndex: START node={:?}, index={}", node, index);
     if node.is_null() {
-        eprintln!("DEBUG vxSetParameterByIndex: NULL node!");
         return VX_ERROR_INVALID_REFERENCE;
     }
     // Check if trying to set NULL for required parameters
@@ -1757,12 +1703,9 @@ pub extern "C" fn vxSetParameterByIndex(
     
     // Store node data before dropping the lock
     let (context_id, kernel_id) = if let Ok(nodes) = NODES.lock() {
-        eprintln!("DEBUG vxSetParameterByIndex: got NODES lock, {} nodes", nodes.len());
         if let Some(node_data) = nodes.get(&id) {
-            eprintln!("DEBUG vxSetParameterByIndex: found node_data");
             let cid = node_data.context_id;
             let kid = node_data.kernel_id;
-            eprintln!("DEBUG vxSetParameterByIndex: cid={}, kid={}", cid, kid);
             if let Ok(kernels) = KERNELS.lock() {
                 if let Some(kernel_data) = kernels.get(&kid) {
                     // Check if trying to set NULL to a required parameter
@@ -1785,27 +1728,22 @@ pub extern "C" fn vxSetParameterByIndex(
                     // Retain the new value before storing it (if not null)
                     if !value.is_null() {
                         let value_addr = value as usize;
-                        eprintln!("DEBUG vxSetParameterByIndex: retaining value 0x{:x}", value_addr);
                         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                             if let Some(cnt) = counts.get(&value_addr) {
                                 let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                 cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                eprintln!("DEBUG vxSetParameterByIndex: incremented ref_count from {} to {}", current, current + 1);
                             } else {
-                                eprintln!("DEBUG vxSetParameterByIndex: WARNING - value not in REFERENCE_COUNTS!");
                             }
                         }
                     }
                     // Release old value if exists
                     if let Some(old_value) = params[index as usize] {
                         if old_value != 0 {
-                            eprintln!("DEBUG vxSetParameterByIndex: releasing old value 0x{:x}", old_value);
                             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                                 if let Some(cnt) = counts.get(&(old_value as usize)) {
                                     let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                     if current > 1 {
                                         cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                                        eprintln!("DEBUG vxSetParameterByIndex: decremented old value ref_count to {}", current - 1);
                                     }
                                 }
                             }
@@ -1829,7 +1767,6 @@ pub extern "C" fn vxSetParameterByIndex(
     
     // Also create/update parameter entry in unified_c_api for vxQueryParameter
     let param_id = (id << 32) | (index as u64);
-    eprintln!("DEBUG vxSetParameterByIndex: node_id=0x{:x}, index={}, param_id=0x{:x}, value=0x{:x}", id, index, param_id, value as u64);
     crate::unified_c_api::create_or_update_parameter(
         param_id,
         index,
@@ -1846,55 +1783,44 @@ pub extern "C" fn vxSetParameterByReference(
     param: vx_parameter,
     value: vx_reference,
 ) -> vx_status {
-    eprintln!("DEBUG vxSetParameterByReference: START param={:p}, value={:p}", param, value);
     if param.is_null() {
-        eprintln!("DEBUG vxSetParameterByReference: param is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
     if value.is_null() {
-        eprintln!("DEBUG vxSetParameterByReference: value is null");
         return VX_ERROR_INVALID_PARAMETERS;
     }
     let id = param as u64;
-    eprintln!("DEBUG vxSetParameterByReference: param_id=0x{:x}", id);
     
     // Extract node_id and index from param_id
     // param_id = (node_id << 32) | index
     let node_id = id >> 32;
     let index = (id & 0xFFFFFFFF) as u32;
-    eprintln!("DEBUG vxSetParameterByReference: node_id=0x{:x}, index={}", node_id, index);
     
     // Try unified_c_api::PARAMETERS first
     if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
-            eprintln!("DEBUG vxSetParameterByReference: found in unified PARAMETERS");
             if let Ok(mut val) = param_data.value.lock() {
                 *val = Some(value as u64);
-                eprintln!("DEBUG vxSetParameterByReference: set value successfully");
             }
         }
     }
     
     // Also update the node's parameter reference
-    eprintln!("DEBUG vxSetParameterByReference: updating node 0x{:x} param[{}]", node_id, index);
     if let Ok(nodes) = NODES.lock() {
         if let Some(node_data) = nodes.get(&node_id) {
             if let Ok(mut params) = node_data.parameters.lock() {
                 if (index as usize) < params.len() {
                     params[index as usize] = Some(value as u64);
-                    eprintln!("DEBUG vxSetParameterByReference: updated node parameter");
                 }
             }
         }
     }
     
-    eprintln!("DEBUG vxSetParameterByReference: DONE");
     VX_SUCCESS
 }
 
 #[no_mangle]
 pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
-    eprintln!("DEBUG vxReleaseParameter: START");
     if param.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -1906,11 +1832,9 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         let id = p as u64;
         let addr = id as usize;
         
-        eprintln!("DEBUG vxReleaseParameter: param_id=0x{:x}", id);
         
         // Validate that this is a reasonable parameter ID
         if id == 0 || id > 0xFFFFFFFFFFFFFFFF {
-            eprintln!("DEBUG vxReleaseParameter: ERROR - invalid param_id!");
             return VX_ERROR_INVALID_REFERENCE;
         }
         
@@ -1921,7 +1845,6 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
                 if let Ok(graph_params) = g.parameters.read() {
                     if graph_params.contains(&id) {
                         in_graph = true;
-                        eprintln!("DEBUG vxReleaseParameter: param 0x{:x} is in graph 0x{:x}", id, graph_id);
                         break;
                     }
                 }
@@ -1935,13 +1858,10 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&addr) {
                     let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
-                    eprintln!("DEBUG vxReleaseParameter: in graph, ref_count={}", current);
                     if current > 1 {
                         cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                        eprintln!("DEBUG vxReleaseParameter: decremented to {}", current - 1);
                     } else {
                         // Last reference but still in graph - keep it alive
-                        eprintln!("DEBUG vxReleaseParameter: last ref but in graph, keeping alive");
                     }
                 }
             }
@@ -1953,16 +1873,12 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
             if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(count) = counts.get(&addr) {
                     let current = count.load(std::sync::atomic::Ordering::SeqCst);
-                    eprintln!("DEBUG vxReleaseParameter: ref_count={}", current);
                     if current > 1 {
                         count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                        eprintln!("DEBUG vxReleaseParameter: decremented");
                     } else {
                         should_remove = true;
-                        eprintln!("DEBUG vxReleaseParameter: will remove");
                     }
                 } else {
-                    eprintln!("DEBUG vxReleaseParameter: not in REFERENCE_COUNTS!");
                 }
             }
             
@@ -1973,12 +1889,10 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         }
     }
     
-    eprintln!("DEBUG vxReleaseParameter: setting *param to null");
     unsafe {
         *param = std::ptr::null_mut();
     }
     
-    eprintln!("DEBUG vxReleaseParameter: DONE - returning VX_SUCCESS");
     
     VX_SUCCESS
 }

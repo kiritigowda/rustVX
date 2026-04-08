@@ -626,9 +626,7 @@ fn unregister_valid_image(addr: usize) -> bool {
 /// Release an image
 #[no_mangle]
 pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
-    eprintln!("DEBUG vxReleaseImage: START");
     if image.is_null() {
-        eprintln!("DEBUG vxReleaseImage: image pointer is null");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
@@ -636,26 +634,21 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
         let img = *image;
         if !img.is_null() {
             let addr = img as usize;
-            eprintln!("DEBUG vxReleaseImage: addr=0x{:x}", addr);
             
             // Check reference count before freeing
             let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&addr) {
                     let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
-                    eprintln!("DEBUG vxReleaseImage: ref_count={}", current);
                     if current > 1 {
                         // Decrement and don't free
                         cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                        eprintln!("DEBUG vxReleaseImage: decremented, not freeing");
                         false
                     } else {
                         // Last reference - free it
-                        eprintln!("DEBUG vxReleaseImage: last reference, will free");
                         true
                     }
                 } else {
                     // Not in registry - free it
-                    eprintln!("DEBUG vxReleaseImage: not in registry, will free");
                     true
                 }
             } else {
@@ -663,18 +656,14 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
             };
             
             if should_free {
-                eprintln!("DEBUG vxReleaseImage: calling unregister_valid_image");
                 // Check if this image was already freed
                 if !unregister_valid_image(addr) {
-                    eprintln!("DEBUG vxReleaseImage: image was already freed!");
                     return VX_ERROR_INVALID_REFERENCE;
                 }
                 
-                eprintln!("DEBUG vxReleaseImage: calling unregister_image");
                 // Unregister from unified registry
                 unregister_image(addr);
 
-                eprintln!("DEBUG vxReleaseImage: removing from REFERENCE_COUNTS");
                 // Remove from counts
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                     counts.remove(&addr);
@@ -682,33 +671,26 @@ pub extern "C" fn vxReleaseImage(image: *mut vx_image) -> vx_status {
                 
                 // Don't remove from types - keep for reference queries
 
-                eprintln!("DEBUG vxReleaseImage: calling unregister_virtual_image");
                 // Clean up virtual image info if this was a virtual image
                 unregister_virtual_image(addr);
 
-                eprintln!("DEBUG vxReleaseImage: accessing image data");
                 // IMPORTANT: Access image data BEFORE freeing the Box
                 // The external_ptrs Vec will be dropped when the Box is freed
                 // For external memory images, we don't free the external data
                 // but the Vec container itself is properly cleaned up
                 let img_data = &mut *(img as *mut VxCImage);
                 
-                eprintln!("DEBUG vxReleaseImage: clearing external_ptrs");
                 // Clear external_ptrs to drop the Vec properly
                 img_data.external_ptrs.clear();
                 
-                eprintln!("DEBUG vxReleaseImage: freeing the Box");
                 // Free the image - this drops the Box and all its fields
                 let _ = Box::from_raw(img as *mut VxCImage);
             }
             
-            eprintln!("DEBUG vxReleaseImage: nulling image pointer");
             *image = std::ptr::null_mut();
         } else {
-            eprintln!("DEBUG vxReleaseImage: *image is null");
         }
     }
-    eprintln!("DEBUG vxReleaseImage: DONE");
 
     VX_SUCCESS
 }
@@ -849,13 +831,10 @@ pub extern "C" fn vxMapImagePatch(
     mem_type: vx_enum,
     _flags: vx_uint32,
 ) -> vx_status {
-    eprintln!("DEBUG vxMapImagePatch: START image={:p}, plane={}, usage=0x{:x}", image, plane_index, usage);
     if image.is_null() || rect.is_null() || map_id.is_null() || addr.is_null() || ptr.is_null() {
-        eprintln!("DEBUG vxMapImagePatch: ERROR - null pointer");
         return VX_ERROR_INVALID_PARAMETERS;
     }
     if mem_type != VX_MEMORY_TYPE_HOST {
-        eprintln!("DEBUG vxMapImagePatch: ERROR - invalid mem_type");
         return VX_ERROR_NOT_IMPLEMENTED;
     }
 
@@ -874,7 +853,6 @@ pub extern "C" fn vxMapImagePatch(
         let is_planar = VxCImage::is_planar_format(img.format);
         let (plane_width, plane_height) = if is_planar {
             let (pw, ph) = VxCImage::plane_dimensions(img.width, img.height, img.format, plane_index as usize);
-            eprintln!("DEBUG vxMapImagePatch: format=0x{:x}, is_planar={}, plane_dims=({}, {})", img.format, is_planar, pw, ph);
             (pw as usize, ph as usize)
         } else {
             (img.width as usize, img.height as usize)
@@ -882,7 +860,6 @@ pub extern "C" fn vxMapImagePatch(
 
         // Validate the plane_index
         if is_planar && plane_index as usize >= VxCImage::num_planes(img.format) {
-            eprintln!("DEBUG vxMapImagePatch: ERROR - plane_index {} >= num_planes {}", plane_index, VxCImage::num_planes(img.format));
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
@@ -895,10 +872,8 @@ pub extern "C" fn vxMapImagePatch(
         let width = end_x.saturating_sub(start_x);
         let height = end_y.saturating_sub(start_y);
         
-        eprintln!("DEBUG vxMapImagePatch: width={}, height={}, plane_width={}, plane_height={}", width, height, plane_width, plane_height);
         
         if width == 0 || height == 0 {
-            eprintln!("DEBUG vxMapImagePatch: ERROR - zero width or height");
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
