@@ -2145,7 +2145,7 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
 
 /// Performance structure for vx_perf_t
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct vx_perf_t {
     pub tmp: u64,
     pub beg: u64,
@@ -7371,8 +7371,6 @@ pub extern "C" fn vxuThreshold(
 // Additional Missing Functions for Vision CTS
 // ============================================================================
 
-/// Get parameter by index from a node
-#[no_mangle]
 /// Get parameter by index from a node
 #[no_mangle]
 pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_parameter {
