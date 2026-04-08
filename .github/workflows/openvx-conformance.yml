@@ -107,7 +107,7 @@ jobs:
           -DCMAKE_EXE_LINKER_FLAGS="-lm" \
           -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
           -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so" \
-          -DOPENVX_DEFINITIONS="OPENVX_CONFORMANCE_VISION" \
+          -DOPENVX_CONFORMANCE_VISION=ON \
           2>&1 || {
           echo "CMAKE FAILED!"
           echo "CMake output:"
