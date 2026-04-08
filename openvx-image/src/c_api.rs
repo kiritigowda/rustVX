@@ -1,5 +1,7 @@
 //! C API for OpenVX Image
 
+#![allow(non_camel_case_types)]
+
 use std::ffi::c_void;
 use std::sync::{RwLock, Arc, atomic::AtomicUsize};
 // FFI declarations for register/unregister image - ensure we use the same symbol

@@ -3,6 +3,8 @@
 //! This module implements the CT_Image framework used by the OpenVX Conformance Test Suite.
 //! CT_Image provides a convenient way to allocate, manipulate, and convert images for testing.
 
+#![allow(non_camel_case_types)]
+
 use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::c_void;
 use std::sync::Arc;

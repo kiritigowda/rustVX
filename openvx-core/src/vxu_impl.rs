@@ -3,6 +3,8 @@
 //! This module provides actual implementations for VXU functions that bridge
 //! the C API types to the Rust vision kernel implementations.
 
+#![allow(non_camel_case_types)]
+
 use std::ffi::c_void;
 use crate::c_api::{
     vx_context, vx_image, vx_scalar, vx_array, vx_matrix, vx_convolution,

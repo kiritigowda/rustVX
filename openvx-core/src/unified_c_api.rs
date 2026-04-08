@@ -3,6 +3,8 @@
 //! This module re-exports all C API functions from all crates to ensure
 //! they are visible in the shared library.
 
+#![allow(non_camel_case_types)]
+
 // Re-export all functions from the core c_api
 pub use crate::c_api::*;
 pub use crate::c_api_data::*;

@@ -1,5 +1,7 @@
 //! C API for OpenVX Data Objects (Scalar, Convolution, Matrix, LUT, Threshold, Pyramid)
 
+#![allow(non_camel_case_types)]
+
 use std::ffi::c_void;
 use std::sync::RwLock;
 pub use crate::c_api::*;

@@ -2,6 +2,8 @@
 //!
 //! This module provides FFI bindings for the OpenVX API
 
+#![allow(non_camel_case_types)]
+
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicUsize;
