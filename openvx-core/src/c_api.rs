@@ -766,11 +766,6 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
             }
-        } else {
-            // Just remove from GRAPHS but keep in unified registries
-            if let Ok(mut graphs) = GRAPHS.lock() {
-                graphs.remove(&id);
-            }
         }
         
         *graph = std::ptr::null_mut();
