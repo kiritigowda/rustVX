@@ -7907,13 +7907,40 @@ pub extern "C" fn vxuEqualizeHist(context: vx_context, input: vx_image, output: 
 
 /// Fast corners node
 #[no_mangle]
-pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_thresh: vx_float32, nonmax_suppression: vx_bool, num_corners: vx_array, corners: vx_array) -> vx_node {
+pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_thresh: vx_scalar, nonmax_suppression: vx_bool, corners: vx_array, num_corners: vx_scalar) -> vx_node {
     if graph.is_null() || input.is_null() {
         return std::ptr::null_mut();
     }
+    
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    let mut kernel = unsafe { crate::c_api::vxGetKernelByName(context, b"org.khronos.openvx.fast_corners\0".as_ptr() as *const i8) };
+    if kernel.is_null() {
+        return std::ptr::null_mut();
+    }
+    
     unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
+        let node = vxCreateGenericNode(graph, kernel);
+        if node.is_null() {
+            crate::c_api::vxReleaseKernel(&mut kernel);
+            return std::ptr::null_mut();
+        }
+        
         vxSetParameterByIndex(node, 0, input as vx_reference);
+        if !strength_thresh.is_null() {
+            vxSetParameterByIndex(node, 1, strength_thresh as vx_reference);
+        }
+        if !corners.is_null() {
+            vxSetParameterByIndex(node, 4, corners as vx_reference);
+        }
+        if !num_corners.is_null() {
+            vxSetParameterByIndex(node, 5, num_corners as vx_reference);
+        }
+        
+        crate::c_api::vxReleaseKernel(&mut kernel);
         node
     }
 }
