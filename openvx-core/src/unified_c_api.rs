@@ -6244,17 +6244,15 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
         return std::ptr::null_mut();
     }
     
-    // Build parameter list
+    // Build parameter list - only include first 7 required params
     let mut params: Vec<vx_reference> = vec![
         old_images as vx_reference,
         new_images as vx_reference,
         old_points as vx_reference,
     ];
     
-    // new_points_estimates is optional
-    if !new_points_estimates.is_null() {
-        params.push(new_points_estimates as vx_reference);
-    }
+    // new_points_estimates is optional (can be same as old_points for in-place)
+    params.push(new_points_estimates as vx_reference);
     
     params.push(new_points as vx_reference);
     
@@ -6263,25 +6261,22 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
         return std::ptr::null_mut();
     }
     
-    // Create scalar for termination
+    // Create scalar for termination (required param 6)
     let mut termination_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_termination as *const _ as *const c_void);
     if termination_scalar.is_null() {
         return std::ptr::null_mut();
     }
     params.push(termination_scalar as vx_reference);
     
-    // Add epsilon, num_iterations, use_initial_estimate, window_dimension if provided
+    // Add epsilon as param 7 (required)
     if !_epsilon.is_null() {
         params.push(_epsilon as vx_reference);
-    }
-    if !_num_iterations.is_null() {
-        params.push(_num_iterations as vx_reference);
-    }
-    if !_use_initial_estimate.is_null() {
-        params.push(_use_initial_estimate as vx_reference);
-    }
-    if !_window_dimension.is_null() {
-        params.push(_window_dimension as vx_reference);
+    } else {
+        // epsilon is required, create default
+        let default_epsilon: vx_float32 = 0.001;
+        let mut eps_scalar = vxCreateScalar(context, VX_TYPE_FLOAT32, &default_epsilon as *const _ as *const c_void);
+        params.push(eps_scalar as vx_reference);
+        // Note: we're leaking this scalar but it will be released when node is released
     }
     
     let node = create_node_with_params(
@@ -7898,13 +7893,40 @@ pub extern "C" fn vxuEqualizeHist(context: vx_context, input: vx_image, output: 
 
 /// Fast corners node
 #[no_mangle]
-pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_thresh: vx_float32, nonmax_suppression: vx_bool, num_corners: vx_array, corners: vx_array) -> vx_node {
+pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_thresh: vx_scalar, nonmax_suppression: vx_bool, corners: vx_array, num_corners: vx_scalar) -> vx_node {
     if graph.is_null() || input.is_null() {
         return std::ptr::null_mut();
     }
+    
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    let mut kernel = unsafe { crate::c_api::vxGetKernelByName(context, b"org.khronos.openvx.fast_corners\0".as_ptr() as *const i8) };
+    if kernel.is_null() {
+        return std::ptr::null_mut();
+    }
+    
     unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
+        let node = vxCreateGenericNode(graph, kernel);
+        if node.is_null() {
+            crate::c_api::vxReleaseKernel(&mut kernel);
+            return std::ptr::null_mut();
+        }
+        
         vxSetParameterByIndex(node, 0, input as vx_reference);
+        if !strength_thresh.is_null() {
+            vxSetParameterByIndex(node, 1, strength_thresh as vx_reference);
+        }
+        if !corners.is_null() {
+            vxSetParameterByIndex(node, 4, corners as vx_reference);
+        }
+        if !num_corners.is_null() {
+            vxSetParameterByIndex(node, 5, num_corners as vx_reference);
+        }
+        
+        crate::c_api::vxReleaseKernel(&mut kernel);
         node
     }
 }
