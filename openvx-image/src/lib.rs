@@ -41,6 +41,8 @@ pub enum ImageFormat {
     NV21,
     IYUV,
     YUV4,
+    YUYV, // Packed YUV 4:2:2 - Y0 U0 Y1 V0
+    UYVY, // Packed YUV 4:2:2 - U0 Y0 V0 Y1
 }
 
 impl ImageFormat {
@@ -53,6 +55,8 @@ impl ImageFormat {
             // These need special handling - using 1 here as default for buffer calculation
             // Planar formats should use format.buffer_size(width, height) instead
             ImageFormat::NV12 | ImageFormat::NV21 | ImageFormat::IYUV | ImageFormat::YUV4 => 1,
+            // Packed YUV formats: 2 bytes per 2 pixels (effectively 1 byte per pixel average)
+            ImageFormat::YUYV | ImageFormat::UYVY => 1,
         }
     }
     
@@ -82,6 +86,8 @@ impl ImageFormat {
             }
             // YUV4: Three full-size planes = 3 * width * height
             ImageFormat::YUV4 => width.saturating_mul(height).saturating_mul(3),
+            // Packed YUV: 2 bytes per pixel (4:2:2 sampling)
+            ImageFormat::YUYV | ImageFormat::UYVY => width.saturating_mul(height).saturating_mul(2),
         }
     }
 }

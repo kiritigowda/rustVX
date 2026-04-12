@@ -29,6 +29,8 @@ pub enum ImageFormat {
     NV21,
     IYUV,
     YUV4,
+    YUYV,       // Packed YUV 4:2:2 - Y0 U0 Y1 V0
+    UYVY,       // Packed YUV 4:2:2 - U0 Y0 V0 Y1
 }
 
 impl ImageFormat {
@@ -46,6 +48,9 @@ impl ImageFormat {
             ImageFormat::NV21 => 1,
             ImageFormat::IYUV => 1,
             ImageFormat::YUV4 => 1,
+            // Packed YUV formats: 2 bytes per pixel
+            ImageFormat::YUYV => 1,
+            ImageFormat::UYVY => 1,
         }
     }
     
@@ -76,6 +81,8 @@ impl ImageFormat {
             }
             // YUV4: Three full-size planes = 3 * width * height
             ImageFormat::YUV4 => width.saturating_mul(height).saturating_mul(3),
+            // Packed YUV: 2 bytes per pixel (4:2:2 sampling)
+            ImageFormat::YUYV | ImageFormat::UYVY => width.saturating_mul(height).saturating_mul(2),
         }
     }
 }
@@ -140,6 +147,30 @@ impl Image {
         }
     }
 
+    /// Get pixel as i16 (for S16 format)
+    pub fn get_pixel_s16(&self, x: usize, y: usize) -> i16 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        let idx = (y * self.width + x) * 2; // 2 bytes per i16
+        if idx + 1 >= self.data.len() {
+            return 0;
+        }
+        i16::from_le_bytes([self.data[idx], self.data[idx + 1]])
+    }
+
+    /// Set pixel as i16 (for S16 format)
+    pub fn set_pixel_s16(&mut self, x: usize, y: usize, value: i16) {
+        if x < self.width && y < self.height {
+            let idx = (y * self.width + x) * 2; // 2 bytes per i16
+            let bytes = value.to_le_bytes();
+            if idx + 1 < self.data.len() {
+                self.data[idx] = bytes[0];
+                self.data[idx + 1] = bytes[1];
+            }
+        }
+    }
+
     pub fn set_rgb(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
         if x < self.width && y < self.height {
             let idx = y.saturating_mul(self.width).saturating_add(x).saturating_mul(3);
@@ -167,6 +198,8 @@ fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
         0x56555949 => Some(ImageFormat::IYUV), // VX_DF_IMAGE_IYUV ('IYUV')
         0x34555659 => Some(ImageFormat::YUV4), // VX_DF_IMAGE_YUV4 ('YUV4')
         0x34565559 => Some(ImageFormat::YUV4), // Alternative YUV4 format code
+        0x56595559 => Some(ImageFormat::YUYV), // VX_DF_IMAGE_YUYV ('YUYV')
+        0x59565955 => Some(ImageFormat::UYVY), // VX_DF_IMAGE_UYVY ('UYVY')
         _ => Some(ImageFormat::Gray), // Default to gray
     }
 }
@@ -419,11 +452,8 @@ unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_imag
 /// Create a new Rust Image matching the C image dimensions and format
 unsafe fn create_matching_image(c_image: vx_image) -> Option<Image> {
     let (width, height, format) = get_image_info(c_image)?;
-    let src_format = df_image_to_format(format)?;
-    // For output format, determine what we need based on context
-    // Default to same format unless explicitly needed otherwise
-    let output_format = src_format;
-    Image::new(width as usize, height as usize, output_format)
+    let format = df_image_to_format(format)?;
+    Image::new(width as usize, height as usize, format)
 }
 
 /// VXU Color Functions
@@ -1365,6 +1395,15 @@ pub fn vxu_color_convert_impl(
 
 
 
+// OpenVX channel enum values (from vx_types.h)
+const VX_CHANNEL_R: vx_enum = 0x00009010;  // R channel for RGB/RGBX
+const VX_CHANNEL_G: vx_enum = 0x00009011;  // G channel for RGB/RGBX
+const VX_CHANNEL_B: vx_enum = 0x00009012;  // B channel for RGB/RGBX
+const VX_CHANNEL_A: vx_enum = 0x00009013;  // A channel for RGBX
+const VX_CHANNEL_Y: vx_enum = 0x00009014;  // Y channel for YUV
+const VX_CHANNEL_U: vx_enum = 0x00009015;  // U channel for YUV
+const VX_CHANNEL_V: vx_enum = 0x00009016;  // V channel for YUV
+
 pub fn vxu_channel_extract_impl(
     context: vx_context,
     input: vx_image,
@@ -1386,32 +1425,100 @@ pub fn vxu_channel_extract_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Simple channel extraction based on channel index
         let width = src.width();
         let height = src.height();
         let mut dst_data = dst.data_mut();
+        let src_data = src.data();
 
         for y in 0..height {
             for x in 0..width {
-                let val = match src.format() {
+                let val: u8 = match src.format() {
                     ImageFormat::Rgb => {
                         let (r, g, b) = src.get_rgb(x, y);
                         match channel {
-                            0 => r,
-                            1 => g,
-                            2 => b,
+                            VX_CHANNEL_R => r,
+                            VX_CHANNEL_G => g,
+                            VX_CHANNEL_B => b,
                             _ => r,
                         }
                     }
                     ImageFormat::Rgba => {
                         let idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
-                        let data = src.data();
                         match channel {
-                            0 => *data.get(idx).unwrap_or(&0),
-                            1 => *data.get(idx.saturating_add(1)).unwrap_or(&0),
-                            2 => *data.get(idx.saturating_add(2)).unwrap_or(&0),
-                            3 => *data.get(idx.saturating_add(3)).unwrap_or(&0),
-                            _ => *data.get(idx).unwrap_or(&0),
+                            VX_CHANNEL_R => *src_data.get(idx).unwrap_or(&0),
+                            VX_CHANNEL_G => *src_data.get(idx.saturating_add(1)).unwrap_or(&0),
+                            VX_CHANNEL_B => *src_data.get(idx.saturating_add(2)).unwrap_or(&0),
+                            VX_CHANNEL_A => *src_data.get(idx.saturating_add(3)).unwrap_or(&0),
+                            _ => *src_data.get(idx).unwrap_or(&0),
+                        }
+                    }
+                    ImageFormat::NV12 => {
+                        // NV12: Y plane (full size), UV plane (half size, interleaved)
+                        let y_size = width * height;
+                        match channel {
+                            VX_CHANNEL_Y => src_data[y * width + x],
+                            VX_CHANNEL_U => {
+                                let uv_x = (x / 2) * 2;
+                                let uv_y = y / 2;
+                                let uv_idx = y_size + uv_y * width + uv_x;
+                                *src_data.get(uv_idx).unwrap_or(&128)
+                            }
+                            VX_CHANNEL_V => {
+                                let uv_x = (x / 2) * 2;
+                                let uv_y = y / 2;
+                                let uv_idx = y_size + uv_y * width + uv_x + 1;
+                                *src_data.get(uv_idx).unwrap_or(&128)
+                            }
+                            _ => 0,
+                        }
+                    }
+                    ImageFormat::NV21 => {
+                        // NV21: Y plane (full size), VU plane (half size, interleaved V first)
+                        let y_size = width * height;
+                        match channel {
+                            VX_CHANNEL_Y => src_data[y * width + x],
+                            VX_CHANNEL_V => {
+                                let vu_x = (x / 2) * 2;
+                                let vu_y = y / 2;
+                                let vu_idx = y_size + vu_y * width + vu_x;
+                                *src_data.get(vu_idx).unwrap_or(&128)
+                            }
+                            VX_CHANNEL_U => {
+                                let vu_x = (x / 2) * 2;
+                                let vu_y = y / 2;
+                                let vu_idx = y_size + vu_y * width + vu_x + 1;
+                                *src_data.get(vu_idx).unwrap_or(&128)
+                            }
+                            _ => 0,
+                        }
+                    }
+                    ImageFormat::IYUV => {
+                        // IYUV: Y plane (full), U plane (quarter), V plane (quarter)
+                        let y_size = width * height;
+                        let half_w = (width + 1) / 2;
+                        let half_h = (height + 1) / 2;
+                        let u_size = half_w * half_h;
+                        match channel {
+                            VX_CHANNEL_Y => src_data[y * width + x],
+                            VX_CHANNEL_U => {
+                                let u_idx = y_size + (y / 2) * half_w + (x / 2);
+                                *src_data.get(u_idx).unwrap_or(&128)
+                            }
+                            VX_CHANNEL_V => {
+                                let v_idx = y_size + u_size + (y / 2) * half_w + (x / 2);
+                                *src_data.get(v_idx).unwrap_or(&128)
+                            }
+                            _ => 0,
+                        }
+                    }
+                    ImageFormat::YUV4 => {
+                        // YUV4: Three full-size planes
+                        let y_size = width * height;
+                        match channel {
+                            VX_CHANNEL_Y => src_data[y * width + x],
+                            VX_CHANNEL_U => src_data[y_size + y * width + x],
+                            VX_CHANNEL_V => src_data[2 * y_size + y * width + x],
+                            _ => 0,
                         }
                     }
                     _ => src.get_pixel(x, y),
@@ -1440,43 +1547,213 @@ pub fn vxu_channel_combine_impl(
     }
 
     unsafe {
-        let mut dst = match create_matching_image(output) {
-            Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+        // Get output image info
+        let img = &*(output as *const VxCImage);
+        let width = img.width as usize;
+        let height = img.height as usize;
+        let format = img.format as vx_df_image;
+        
+        // Get source plane images
+        let y_img = if plane0.is_null() { None } else { c_image_to_rust(plane0) };
+        let u_img = if plane1.is_null() { None } else { c_image_to_rust(plane1) };
+        let v_img = if plane2.is_null() { None } else { c_image_to_rust(plane2) };
+        let a_img = if plane3.is_null() { None } else { c_image_to_rust(plane3) };
+        
+        let mut dst_data = match img.data.write() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
         };
 
-        let width = dst.width();
-        let height = dst.height();
-        let mut dst_data = dst.data_mut();
-
-        // Load source planes
-        let r_img = if plane0.is_null() { None } else { c_image_to_rust(plane0) };
-        let g_img = if plane1.is_null() { None } else { c_image_to_rust(plane1) };
-        let b_img = if plane2.is_null() { None } else { c_image_to_rust(plane2) };
-        let a_img = if plane3.is_null() { None } else { c_image_to_rust(plane3) };
-
-        for y in 0..height {
-            for x in 0..width {
-                let r = r_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                let g = g_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                let b = b_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                let a = a_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(255);
-
-                let idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
-                if idx.saturating_add(3) < dst_data.len() {
-                    dst_data[idx] = r;
-                    dst_data[idx + 1] = g;
-                    dst_data[idx + 2] = b;
-                    dst_data[idx + 3] = a;
-                } else if idx.saturating_add(2) < dst_data.len() {
-                    dst_data[idx] = r;
-                    dst_data[idx + 1] = g;
-                    dst_data[idx + 2] = b;
+        match format as u32 {
+            0x21000300 => { // VX_DF_IMAGE_RGB
+                // Interleaved RGB: R, G, B per pixel
+                for y in 0..height {
+                    for x in 0..width {
+                        let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let idx = y * width * 3 + x * 3;
+                        if idx + 2 < dst_data.len() {
+                            dst_data[idx] = r;
+                            dst_data[idx + 1] = g;
+                            dst_data[idx + 2] = b;
+                        }
+                    }
                 }
+            }
+            0x21010400 => { // VX_DF_IMAGE_RGBX
+                // Interleaved RGBX: R, G, B, X per pixel
+                for y in 0..height {
+                    for x in 0..width {
+                        let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let a = a_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(255);
+                        let idx = y * width * 4 + x * 4;
+                        if idx + 3 < dst_data.len() {
+                            dst_data[idx] = r;
+                            dst_data[idx + 1] = g;
+                            dst_data[idx + 2] = b;
+                            dst_data[idx + 3] = a;
+                        }
+                    }
+                }
+            }
+            0x3231564E => { // VX_DF_IMAGE_NV12
+                // Planar: Y (full), UV interleaved (half size)
+                let y_size = width * height;
+                // Y plane
+                for y in 0..height {
+                    for x in 0..width {
+                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        dst_data[y * width + x] = y_val;
+                    }
+                }
+                // UV plane (subsampled)
+                let half_w = (width + 1) / 2;
+                let half_h = (height + 1) / 2;
+                for y in 0..half_h {
+                    for x in 0..half_w {
+                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        let uv_idx = y_size + y * width + x * 2;
+                        if uv_idx + 1 < dst_data.len() {
+                            dst_data[uv_idx] = u_val;
+                            dst_data[uv_idx + 1] = v_val;
+                        }
+                    }
+                }
+            }
+            0x3132564E => { // VX_DF_IMAGE_NV21
+                // Planar: Y (full), VU interleaved (half size, V first)
+                let y_size = width * height;
+                // Y plane
+                for y in 0..height {
+                    for x in 0..width {
+                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        dst_data[y * width + x] = y_val;
+                    }
+                }
+                // VU plane (subsampled)
+                let half_w = (width + 1) / 2;
+                let half_h = (height + 1) / 2;
+                for y in 0..half_h {
+                    for x in 0..half_w {
+                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        let vu_idx = y_size + y * width + x * 2;
+                        if vu_idx + 1 < dst_data.len() {
+                            dst_data[vu_idx] = v_val;
+                            dst_data[vu_idx + 1] = u_val;
+                        }
+                    }
+                }
+            }
+            0x56555949 => { // VX_DF_IMAGE_IYUV
+                // Planar: Y (full), U (quarter), V (quarter)
+                let y_size = width * height;
+                let half_w = (width + 1) / 2;
+                let half_h = (height + 1) / 2;
+                let u_size = half_w * half_h;
+                // Y plane
+                for y in 0..height {
+                    for x in 0..width {
+                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        dst_data[y * width + x] = y_val;
+                    }
+                }
+                // U plane
+                for y in 0..half_h {
+                    for x in 0..half_w {
+                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        let u_idx = y_size + y * half_w + x;
+                        if u_idx < dst_data.len() {
+                            dst_data[u_idx] = u_val;
+                        }
+                    }
+                }
+                // V plane
+                for y in 0..half_h {
+                    for x in 0..half_w {
+                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        let v_idx = y_size + u_size + y * half_w + x;
+                        if v_idx < dst_data.len() {
+                            dst_data[v_idx] = v_val;
+                        }
+                    }
+                }
+            }
+            0x34555659 => { // VX_DF_IMAGE_YUV4
+                // Planar: Three full-size planes
+                let y_size = width * height;
+                // Y plane
+                for y in 0..height {
+                    for x in 0..width {
+                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        dst_data[y * width + x] = y_val;
+                    }
+                }
+                // U plane
+                for y in 0..height {
+                    for x in 0..width {
+                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        dst_data[y_size + y * width + x] = u_val;
+                    }
+                }
+                // V plane
+                for y in 0..height {
+                    for x in 0..width {
+                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
+                        dst_data[2 * y_size + y * width + x] = v_val;
+                    }
+                }
+            }
+            0x59565955 => { // VX_DF_IMAGE_UYVY
+                // Interleaved: U, Y0, V, Y1 (4:2:2, UYVY order)
+                for y in 0..height {
+                    for x in (0..width).step_by(2) {
+                        let y0 = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let y1 = y_img.as_ref().map(|img| {
+                            if x + 1 < width { img.get_pixel(x + 1, y) } else { y0 }
+                        }).unwrap_or(y0);
+                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
+                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
+                        let idx = y * width * 2 + x * 2;
+                        if idx + 3 < dst_data.len() {
+                            dst_data[idx] = u_val;
+                            dst_data[idx + 1] = y0;
+                            dst_data[idx + 2] = v_val;
+                            dst_data[idx + 3] = y1;
+                        }
+                    }
+                }
+            }
+            0x56595559 => { // VX_DF_IMAGE_YUYV
+                // Interleaved: Y0, U, Y1, V (4:2:2, YUYV order)
+                for y in 0..height {
+                    for x in (0..width).step_by(2) {
+                        let y0 = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                        let y1 = y_img.as_ref().map(|img| {
+                            if x + 1 < width { img.get_pixel(x + 1, y) } else { y0 }
+                        }).unwrap_or(y0);
+                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
+                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
+                        let idx = y * width * 2 + x * 2;
+                        if idx + 3 < dst_data.len() {
+                            dst_data[idx] = y0;
+                            dst_data[idx + 1] = u_val;
+                            dst_data[idx + 2] = y1;
+                            dst_data[idx + 3] = v_val;
+                        }
+                    }
+                }
+            }
+            _ => {
+                return VX_ERROR_INVALID_FORMAT;
             }
         }
 
-        copy_rust_to_c_image(&dst, output)
+        VX_SUCCESS
     }
 }
 
@@ -1954,7 +2231,7 @@ pub fn vxu_add_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match add(&src1, &src2, &mut dst) {
+        match add(&src1, &src2, &mut dst, _policy) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -1988,7 +2265,7 @@ pub fn vxu_subtract_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match subtract(&src1, &src2, &mut dst) {
+        match subtract(&src1, &src2, &mut dst, _policy) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -2024,7 +2301,7 @@ pub fn vxu_multiply_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match multiply(&src1, &src2, &mut dst, 1.0) {
+        match multiply(&src1, &src2, &mut dst, 1.0, _overflow_policy, _rounding_policy) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -3057,23 +3334,68 @@ fn phase_op(grad_x: &Image, grad_y: &Image, phase: &mut Image) -> VxResult<()> {
 // Arithmetic Operations
 // ============================================================================
 
-fn add(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
+/// Pixel-wise addition with overflow policy support
+/// policy: 0 = WRAP, 1 = SATURATE (VX_CONVERT_POLICY_WRAP/SATURATE)
+fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
 
     let width = src1.width;
     let height = src1.height;
-    let dst_data = dst.data_mut();
+    let saturate = policy == 1; // VX_CONVERT_POLICY_SATURATE = 1
 
-    for y in 0..height {
-        for x in 0..width {
-            let a = src1.get_pixel(x, y) as u16;
-            let b = src2.get_pixel(x, y) as u16;
-            let sum = a + b;
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = sum.min(255) as u8;
+    // Check output format
+    let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
+    let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
+    let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    if dst_is_s16 {
+        // S16 output - compute with 32-bit intermediate to avoid overflow
+        for y in 0..height {
+            for x in 0..width {
+                let a = if src1_is_s16 { 
+                    src1.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src1.get_pixel(x, y) as i32 
+                };
+                let b = if src2_is_s16 { 
+                    src2.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src2.get_pixel(x, y) as i32 
+                };
+                let sum = a + b;
+                // For S16 output, wrap to i16 range
+                let wrapped = sum as i16;
+                dst.set_pixel_s16(x, y, wrapped);
+            }
+        }
+    } else {
+        // U8 output
+        let dst_data = dst.data_mut();
+        for y in 0..height {
+            for x in 0..width {
+                let a = if src1_is_s16 { 
+                    src1.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src1.get_pixel(x, y) as i32 
+                };
+                let b = if src2_is_s16 { 
+                    src2.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src2.get_pixel(x, y) as i32 
+                };
+                let sum = a + b;
+                // Apply saturation or wrap policy
+                let result = if saturate {
+                    sum.clamp(0, 255) as u8
+                } else {
+                    sum as u8  // Truncation to u8 acts as wrap
+                };
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = result;
+                }
             }
         }
     }
@@ -3081,23 +3403,68 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
     Ok(())
 }
 
-fn subtract(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
+/// Pixel-wise subtraction with overflow policy support
+/// policy: 0 = WRAP, 1 = SATURATE (VX_CONVERT_POLICY_WRAP/SATURATE)
+fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
 
     let width = src1.width;
     let height = src1.height;
-    let dst_data = dst.data_mut();
+    let saturate = policy == 1; // VX_CONVERT_POLICY_SATURATE = 1
 
-    for y in 0..height {
-        for x in 0..width {
-            let a = src1.get_pixel(x, y) as i16;
-            let b = src2.get_pixel(x, y) as i16;
-            let diff = a - b;
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = diff.max(0).min(255) as u8;
+    // Check output format
+    let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
+    let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
+    let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    if dst_is_s16 {
+        // S16 output
+        for y in 0..height {
+            for x in 0..width {
+                let a = if src1_is_s16 { 
+                    src1.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src1.get_pixel(x, y) as i32 
+                };
+                let b = if src2_is_s16 { 
+                    src2.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src2.get_pixel(x, y) as i32 
+                };
+                let diff = a - b;
+                // For S16 output, wrap to i16 range
+                let wrapped = diff as i16;
+                dst.set_pixel_s16(x, y, wrapped);
+            }
+        }
+    } else {
+        // U8 output
+        let dst_data = dst.data_mut();
+        for y in 0..height {
+            for x in 0..width {
+                let a = if src1_is_s16 { 
+                    src1.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src1.get_pixel(x, y) as i32 
+                };
+                let b = if src2_is_s16 { 
+                    src2.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src2.get_pixel(x, y) as i32 
+                };
+                let diff = a - b;
+                // Apply saturation or wrap policy
+                let result = if saturate {
+                    diff.clamp(0, 255) as u8
+                } else {
+                    diff as u8  // Truncation to u8 acts as wrap
+                };
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = result;
+                }
             }
         }
     }
@@ -3105,23 +3472,88 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
     Ok(())
 }
 
-fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32) -> VxResult<()> {
+/// Pixel-wise multiplication with scale, overflow and rounding policies
+/// overflow_policy: 0 = WRAP, 1 = SATURATE
+/// rounding_policy: 1 = TO_ZERO, 2 = TO_NEAREST_EVEN
+fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_policy: vx_enum, rounding_policy: vx_enum) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
 
     let width = src1.width;
     let height = src1.height;
-    let dst_data = dst.data_mut();
+    let saturate = overflow_policy == 1; // VX_CONVERT_POLICY_SATURATE = 1
+    let round_to_nearest = rounding_policy == 2; // VX_ROUND_POLICY_TO_NEAREST_EVEN = 2
 
-    for y in 0..height {
-        for x in 0..width {
-            let a = src1.get_pixel(x, y) as f32;
-            let b = src2.get_pixel(x, y) as f32;
-            let product = a * b * scale / 255.0;
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = product.max(0.0).min(255.0) as u8;
+    // Check output format
+    let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
+    let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
+    let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    // Parse scale from scalar value - scale is typically a float representing 1/2^n
+    // OpenVX multiply: result = (src1 * src2 * scale) / 256.0
+    let scale_factor = scale * 256.0 / 255.0; // Normalize for byte range
+
+    if dst_is_s16 {
+        // S16 output - use 32-bit intermediate
+        for y in 0..height {
+            for x in 0..width {
+                let a = if src1_is_s16 { 
+                    src1.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src1.get_pixel(x, y) as i32 
+                };
+                let b = if src2_is_s16 { 
+                    src2.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src2.get_pixel(x, y) as i32 
+                };
+                
+                let product = (a * b) as f64 * scale as f64;
+                let rounded = if round_to_nearest {
+                    product.round() as i32
+                } else {
+                    product as i32 // truncate toward zero
+                };
+                
+                // Wrap to i16 range for S16 output
+                let wrapped = rounded as i16;
+                dst.set_pixel_s16(x, y, wrapped);
+            }
+        }
+    } else {
+        // U8 output
+        let dst_data = dst.data_mut();
+        for y in 0..height {
+            for x in 0..width {
+                let a = if src1_is_s16 { 
+                    src1.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src1.get_pixel(x, y) as i32 
+                };
+                let b = if src2_is_s16 { 
+                    src2.get_pixel_s16(x, y) as i32 
+                } else { 
+                    src2.get_pixel(x, y) as i32 
+                };
+                
+                let product = (a * b) as f64 * scale as f64;
+                let rounded = if round_to_nearest {
+                    product.round() as i32
+                } else {
+                    product as i32 // truncate toward zero
+                };
+                
+                let result = if saturate {
+                    rounded.clamp(0, 255) as u8
+                } else {
+                    rounded as u8 // wrap
+                };
+                
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = result;
+                }
             }
         }
     }
