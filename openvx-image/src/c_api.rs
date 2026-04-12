@@ -1878,7 +1878,7 @@ pub extern "C" fn vxCreateVirtualPyramid(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
-    if num_levels == 0 || width == 0 || height == 0 {
+    if num_levels == 0 {
         return std::ptr::null_mut();
     }
     
@@ -1888,6 +1888,12 @@ pub extern "C" fn vxCreateVirtualPyramid(
         return std::ptr::null_mut();
     }
     
-    // Virtual pyramids are created like regular ones
-    vxCreatePyramid(context, num_levels, scale, width, height, format)
+    // Virtual pyramids can have 0 width/height/format - they're resolved during graph verification
+    // when connected to output-producing nodes
+    let actual_width = if width == 0 { 1 } else { width };
+    let actual_height = if height == 0 { 1 } else { height };
+    let actual_format = if format == VX_DF_IMAGE_VIRT { VX_DF_IMAGE_U8 } else { format };
+    
+    // Virtual pyramids are created like regular ones with placeholder dimensions
+    vxCreatePyramid(context, num_levels, scale, actual_width, actual_height, actual_format)
 }
