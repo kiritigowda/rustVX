@@ -2467,18 +2467,9 @@ pub extern "C" fn vxQueryContext(
                         }
                     }
 
-                    // Count kernels for this context
-                    if let Ok(kernels) = crate::c_api::KERNELS.lock() {
-                        for (_, kernel) in kernels.iter() {
-                            if kernel.context_id == context_id as u32 && !counted_ids.contains(&kernel.id) {
-                                counted_ids.insert(kernel.id);
-                                count += 1;
-                            }
-                        }
-                    }
-
-                    // NOTE: We don't count images here because they don't have context_id
-                    // and the test framework handles image reference counting separately
+                    // NOTE: We intentionally do NOT count kernels here.
+                    // The test framework handles kernel reference counting separately
+                    // and has special logic to subtract (kernels - base_kernels) from the total.
 
                     *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS

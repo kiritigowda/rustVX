@@ -209,6 +209,47 @@ jobs:
         echo "pass_count=$PASS_COUNT" >> $GITHUB_OUTPUT
         echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
     
+    - name: Check baseline test regressions
+      run: |
+        echo "========================================"
+        echo "Checking Baseline Test Regressions"
+        echo "========================================"
+        
+        OUTPUT_FILE="${{ github.workspace }}/test-results/vision_test_output.txt"
+        
+        # Baseline test categories that must all pass
+        BASELINE_CATEGORIES=("GraphBase" "SmokeTestBase" "TargetBase" "Logging")
+        REGRESSION_FOUND=0
+        
+        for category in "${BASELINE_CATEGORIES[@]}"; do
+          # Count passed and failed tests in this category
+          PASSED=$(grep -c "\[     DONE \] ${category}" "$OUTPUT_FILE" 2>/dev/null || echo "0")
+          FAILED=$(grep -c "\[ !FAILED! \] ${category}" "$OUTPUT_FILE" 2>/dev/null || echo "0")
+          
+          echo "${category}: ${PASSED} passed, ${FAILED} failed"
+          
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ REGRESSION: ${category} has ${FAILED} failing tests"
+            REGRESSION_FOUND=1
+            # Show which tests failed
+            grep "\[ !FAILED! \] ${category}" "$OUTPUT_FILE" 2>/dev/null | head -10
+          fi
+        done
+        
+        echo "========================================"
+        if [ "$REGRESSION_FOUND" -eq 1 ]; then
+          echo "❌ FAILURE: Baseline test regressions detected!"
+          echo "The following categories must have 0 failures:"
+          echo "  - GraphBase (14 tests)"
+          echo "  - SmokeTestBase (7 tests)"
+          echo "  - TargetBase (3 tests)"
+          echo "  - Logging (1 test)"
+          exit 1
+        else
+          echo "✅ All baseline tests passing (GraphBase, SmokeTestBase, TargetBase, Logging)"
+        fi
+        echo "========================================"
+
     - name: Upload test results
       uses: actions/upload-artifact@v4
       if: always()
