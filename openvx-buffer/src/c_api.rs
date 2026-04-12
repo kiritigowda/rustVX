@@ -422,21 +422,22 @@ pub extern "C" fn vxMapArrayRange(
 
     let id = ARRAY_ID_COUNTER.fetch_add(1, Ordering::SeqCst) as vx_map_id;
 
+    // Get pointer BEFORE moving data into HashMap
+    let data_ptr = mapped_data.as_mut_ptr();
+
     {
         let mut mapped = array.mapped_ranges.write().unwrap();
-        mapped.insert(id, (start, end, mapped_data.clone()));
+        // Store data in HashMap - ownership transferred
+        mapped.insert(id, (start, end, mapped_data));
     }
 
     unsafe {
         *map_id = id;
-        *ptr = mapped_data.as_ptr() as *mut c_void;
+        *ptr = data_ptr as *mut c_void;
         if !stride.is_null() {
             *stride = array.item_size;
         }
     }
-
-    // Keep the data alive by storing it in the mapped ranges
-    std::mem::forget(mapped_data);
 
     VX_SUCCESS
 }
@@ -466,10 +467,7 @@ pub extern "C" fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_stat
                 range_size,
             );
         }
-        
-        // Reconstruct the vec to properly drop it
-        let _ = unsafe { Vec::from_raw_parts(data.as_ptr() as *mut u8, data.len(), data.len()) };
-        std::mem::forget(data); // Prevent double free
+        // data Vec is automatically dropped when it goes out of scope
     }
 
     VX_SUCCESS
