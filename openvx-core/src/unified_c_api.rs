@@ -716,9 +716,9 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                             let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
                             for (i, p) in param_refs.iter().enumerate() {
                                 if let Some(v) = p {
-                                    eprintln!("  param[{}] = 0x{:x}", i, v);
+                                    
                                 } else {
-                                    eprintln!("  param[{}] = None", i);
+                                    
                                 }
                             }
                             node_params.push((*node_id, param_refs));
@@ -1108,15 +1108,15 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                 let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
                 for (i, p) in param_refs.iter().enumerate() {
                     if let Some(v) = p {
-                        eprintln!("  param[{}] = 0x{:x}", i, v);
+                        
                     } else {
-                        eprintln!("  param[{}] = None", i);
+                        
                     }
                 }
                 let border = node_data.border_mode.lock().ok()?;
                 (node_data.kernel_id, param_refs, *border)
             } else {
-                eprintln!("ERROR: execute_node: node {} not found", node_id);
+                
                 return Some(VX_ERROR_INVALID_NODE);
             }
         } else {
@@ -1126,7 +1126,7 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     
     // Validate kernel_id
     if kernel_id == 0 {
-        eprintln!("ERROR: execute_node: kernel_id is 0 for node {}", node_id);
+        
         return Some(VX_ERROR_INVALID_KERNEL);
     }
     
@@ -1142,7 +1142,7 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                     if let Some(kernel) = unified_kernels.get(&kernel_id) {
                         kernel.name.clone()
                     } else {
-                        eprintln!("ERROR: execute_node: kernel {} not found for node {}", kernel_id, node_id);
+                        
                         return Some(VX_ERROR_INVALID_KERNEL);
                     }
                 } else {
@@ -1156,7 +1156,7 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     
     // Validate kernel_name is not empty
     if kernel_name.is_empty() {
-        eprintln!("ERROR: execute_node: kernel name is empty for node {}", node_id);
+        
         return Some(VX_ERROR_INVALID_KERNEL);
     }
     
@@ -1167,7 +1167,7 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     // We'll validate required parameters in the dispatch function
     // For now, just check that required param 0 is set
     if param_ids.is_empty() || param_ids[0].is_none() {
-        eprintln!("ERROR: execute_node: parameter 0 (required) not set for node {}", node_id);
+        
         return Some(VX_ERROR_INVALID_PARAMETERS);
     }
     
@@ -1175,7 +1175,7 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
         if let Some(param_id) = param_id_opt {
             // Validate parameter is not null pointer
             if *param_id == 0 {
-                eprintln!("ERROR: execute_node: parameter {} is null pointer (0) for node {}", idx, node_id);
+                
                 return Some(VX_ERROR_INVALID_PARAMETERS);
             }
             params.push(*param_id as vx_reference);
@@ -1204,11 +1204,11 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                         return Some(VX_ERROR_INVALID_PARAMETERS);
                     }
                 } else {
-                    eprintln!("ERROR: execute_node: could not get graph ID for node {}", node_id);
+                    
                     return Some(VX_ERROR_INVALID_PARAMETERS);
                 }
             } else {
-                eprintln!("ERROR: execute_node: param[{}] = null and no graph binding for node {}", idx, node_id);
+                
                 params.push(std::ptr::null_mut());
             }
         }
@@ -3481,7 +3481,19 @@ pub extern "C" fn vxAddUserKernel(
         }
 
         // Return a unique pointer based on enumeration
-        enumeration as usize as vx_kernel
+        let kernel_ptr = enumeration as usize as vx_kernel;
+        
+        // Register in REFERENCE_TYPES for type detection
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(kernel_ptr as usize, VX_TYPE_KERNEL);
+        }
+        
+        // Initialize reference count
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(kernel_ptr as usize, AtomicUsize::new(1));
+        }
+        
+        kernel_ptr
     }
 }
 
