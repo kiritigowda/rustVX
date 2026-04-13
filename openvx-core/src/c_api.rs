@@ -1063,12 +1063,21 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
     let graph_id = graph as u64;
     let kernel_id = kernel as u64;
     
-    // Get kernel num_params
+    // Get kernel num_params - check both KERNELS and USER_KERNELS
     let num_params = if let Ok(kernels) = KERNELS.lock() {
         if let Some(k) = kernels.get(&kernel_id) {
             k.num_params
         } else {
-            4 // Default
+            // Check user kernels
+            if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
+                if let Some(uk) = user_kernels.get(&(kernel_id as i32)) {
+                    uk.num_params
+                } else {
+                    4 // Default
+                }
+            } else {
+                4 // Default
+            }
         }
     } else {
         4 // Default

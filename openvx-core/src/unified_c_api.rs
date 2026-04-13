@@ -3411,19 +3411,21 @@ pub extern "C" fn vxFormatImagePatchAddress2d(
 pub type VxKernelValidateF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32, vx_reference) -> vx_status>;
 pub type VxKernelInitializeF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
 pub type VxKernelDeinitializeF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
+pub type VxKernelExecuteF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
 
 /// User kernel data
 pub struct VxCUserKernel {
-    name: String,
-    enumeration: vx_enum,
-    validate: VxKernelValidateF,
-    init: VxKernelInitializeF,
-    deinit: VxKernelDeinitializeF,
-    num_params: vx_uint32,
-    context_id: u64,
+    pub name: String,
+    pub enumeration: vx_enum,
+    pub kernel: VxKernelExecuteF,
+    pub validate: VxKernelValidateF,
+    pub init: VxKernelInitializeF,
+    pub deinit: VxKernelDeinitializeF,
+    pub num_params: vx_uint32,
+    pub context_id: u64,
 }
 
-static USER_KERNELS: Lazy<Mutex<HashMap<vx_enum, Arc<VxCUserKernel>>>> = Lazy::new(|| {
+pub static USER_KERNELS: Lazy<Mutex<HashMap<vx_enum, Arc<VxCUserKernel>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -3443,8 +3445,9 @@ pub extern "C" fn vxAddUserKernel(
     context: vx_context,
     name: *const vx_char,
     enumeration: vx_enum,
-    validate: VxKernelValidateF,
+    kernel_func: VxKernelExecuteF,
     num_params: vx_uint32,
+    validate: VxKernelValidateF,
     init: VxKernelInitializeF,
     deinit: VxKernelDeinitializeF,
 ) -> vx_kernel {
@@ -3461,6 +3464,7 @@ pub extern "C" fn vxAddUserKernel(
         let kernel = Arc::new(VxCUserKernel {
             name: name_str,
             enumeration,
+            kernel: kernel_func,
             validate,
             init,
             deinit,
@@ -3483,6 +3487,11 @@ pub extern "C" fn vxAddUserKernel(
         // Initialize reference count
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
             counts.insert(kernel_ptr as usize, AtomicUsize::new(1));
+        }
+        
+        // Register in REFERENCE_NAMES
+        if let Ok(mut names) = REFERENCE_NAMES.lock() {
+            names.insert(kernel_ptr as usize, CString::new("").unwrap());
         }
         
         kernel_ptr
