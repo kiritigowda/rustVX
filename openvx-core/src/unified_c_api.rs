@@ -5439,7 +5439,75 @@ pub extern "C" fn vxCreateMatrixFromPattern(
     if context.is_null() || columns == 0 || rows == 0 {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+    
+    // Pattern matrices are VX_TYPE_UINT8 with 0 or 255 values
+    const VX_TYPE_UINT8: i32 = 0x003;
+    let matrix = crate::c_api_data::vxCreateMatrix(context, VX_TYPE_UINT8, columns, rows);
+    if matrix.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    // Pattern enum values: VX_PATTERN_BOX=0x17000, VX_PATTERN_CROSS=0x17001, VX_PATTERN_DISK=0x17002
+    let mut data = vec![0u8; columns * rows];
+    let center_x = columns / 2;
+    let center_y = rows / 2;
+    
+    match pattern {
+        // VX_PATTERN_BOX - all ones
+        0x17000 | 0x0 => {
+            for val in data.iter_mut() { *val = 255; }
+        }
+        // VX_PATTERN_CROSS - cross pattern
+        0x17001 | 0x1 => {
+            for y in 0..rows {
+                for x in 0..columns {
+                    if x == center_x || y == center_y {
+                        data[y * columns + x] = 255;
+                    }
+                }
+            }
+        }
+        // VX_PATTERN_DISK - disk pattern (circle)
+        0x17002 | 0x2 => {
+            let radius = (std::cmp::min(columns, rows) as f32 / 2.0).ceil() as i32;
+            for y in 0..rows {
+                for x in 0..columns {
+                    let dx = x as i32 - center_x as i32;
+                    let dy = y as i32 - center_y as i32;
+                    if dx * dx + dy * dy <= radius * radius {
+                        data[y * columns + x] = 255;
+                    }
+                }
+            }
+        }
+        _ => {
+            // Unknown pattern, fill with 255 as fallback
+            for val in data.iter_mut() { *val = 255; }
+        }
+    }
+    
+    // Write pattern data to matrix
+    unsafe {
+        crate::c_api_data::vxCopyMatrix(
+            matrix,
+            data.as_mut_ptr() as *mut c_void,
+            0x11002, // VX_WRITE_ONLY = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_ACCESSOR) + 2
+            0x0,     // VX_MEMORY_TYPE_HOST
+        );
+    }
+    
+    // Also register in unified MATRICES registry for vxQueryReference type check
+    if let Ok(mut matrices) = MATRICES.lock() {
+        matrices.insert(matrix as usize, Arc::new(VxCMatrix {
+            rows: rows as u32,
+            cols: columns as u32,
+            data_type: VX_TYPE_UINT8,
+            data: RwLock::new(vec![0.0; 0]), // not used, c_api_data handles real storage
+            ref_count: AtomicUsize::new(1),
+        }));
+    }
+    
+    matrix
 }
 
 /// Helper function to get or create a kernel by name
