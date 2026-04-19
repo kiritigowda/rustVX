@@ -63,9 +63,9 @@ impl std::fmt::Debug for vx_pixel_value_t {
 
 /// Scalar structure for C API
 pub struct VxCScalarData {
-    data_type: vx_enum,
-    data: Vec<u8>,
-    context: vx_context,
+    pub data_type: vx_enum,
+    pub data: Vec<u8>,
+    pub context: vx_context,
 }
 
 impl VxCScalarData {

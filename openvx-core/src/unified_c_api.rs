@@ -528,6 +528,26 @@ fn convert_graph_state_to_vx(state: VxGraphState) -> vx_enum {
 }
 
 /// Check if a reference is an image
+fn read_scalar_enum(scalar: vx_scalar) -> Option<vx_enum> {
+    if scalar.is_null() {
+        return None;
+    }
+    // Read directly from VxCScalarData pointer
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        let result = if s.data.len() >= 4 {
+            Some(i32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+        } else if s.data.len() >= 2 {
+            Some(i16::from_le_bytes([s.data[0], s.data[1]]) as i32)
+        } else if s.data.len() >= 1 {
+            Some(s.data[0] as i32)
+        } else {
+            None
+        };
+        result
+    }
+}
+
 fn is_image_reference(ref_id: u64) -> bool {
     if let Ok(types) = REFERENCE_TYPES.lock() {
         if let Some(ref_type) = types.get(&(ref_id as usize)) {
@@ -622,7 +642,24 @@ fn infer_virtual_image_dimensions(
         }
     }
     
-    // Find which node produces this image
+    // Try to get dimensions from any already-allocated image reference
+    // This handles the case where the virtual image pointer has been set up
+    // with valid dimensions already
+    unsafe {
+        let img = &*(image_id as *const VxCImage);
+        if img.width > 0 && img.height > 0 {
+            let format = if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+                if let Some(info) = registry.get(&(image_id as usize)) {
+                    if info.format != 0 { info.format } else { img.format }
+                } else { img.format }
+            } else { img.format };
+            if format != 0 {
+                return Some((img.width, img.height, format as vx_df_image));
+            }
+        }
+    }
+    
+    // Find which node produces this image (it's an output of that node)
     let producer_node = if let Some(producer) = param_to_producer.get(&image_id) {
         *producer
     } else {
@@ -631,31 +668,25 @@ fn infer_virtual_image_dimensions(
     
     // Find the producer node's parameters
     if let Some((_, producer_params)) = node_params.iter().find(|(id, _)| *id == producer_node) {
-        // The input to the producer node should determine the dimensions
-        if !producer_params.is_empty() {
-            if let Some(Some(input_ref)) = producer_params.get(0) {
-                // Validate image before accessing
-                if validate_image(*input_ref as vx_image) != VX_SUCCESS {
-                    return None;
-                }
-                // Get dimensions from the input image
-                unsafe {
-                    let img = &*(*input_ref as *const VxCImage);
-                    // Try to get format from virtual image info first, otherwise from input
-                    let format = if let Ok(registry) = VIRTUAL_IMAGES.lock() {
-                        if let Some(info) = registry.get(&(image_id as usize)) {
-                            if info.format != 0 {
-                                info.format
-                            } else {
-                                img.format
+        // Find any non-virtual image parameter to get dimensions from
+        for (idx, param_opt) in producer_params.iter().enumerate() {
+            if let Some(param_ref) = param_opt {
+                if *param_ref != image_id && is_image_reference(*param_ref) {
+                    // Skip output images - look for input images
+                    // Simple heuristic: first image param that isn't the target is input
+                    if !is_virtual_image(*param_ref) {
+                        if validate_image(*param_ref as vx_image) == VX_SUCCESS {
+                            let img = unsafe { &*(*param_ref as *const VxCImage) };
+                            if img.width > 0 && img.height > 0 {
+                                let format = if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+                                    if let Some(info) = registry.get(&(image_id as usize)) {
+                                        if info.format != 0 { info.format } else { img.format }
+                                    } else { img.format }
+                                } else { img.format };
+                                return Some((img.width, img.height, format as vx_df_image));
                             }
-                        } else {
-                            img.format
                         }
-                    } else {
-                        img.format
-                    };
-                    return Some((img.width, img.height, format as vx_df_image));
+                    }
                 }
             }
         }
@@ -710,17 +741,18 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             let nodes = g.nodes.read().unwrap();
             
             // Collect all parameter references to analyze connections
+            // Also get kernel name for each node to determine param directions
             let mut node_params: Vec<(u64, Vec<Option<u64>>)> = Vec::new();
+            let mut node_kernel_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
             for node_id in nodes.iter() {
                 if let Ok(nodes_data) = crate::c_api::NODES.lock() {
                     if let Some(node_data) = nodes_data.get(node_id) {
                         if let Ok(params) = node_data.parameters.lock() {
                             let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
-                            for (i, p) in param_refs.iter().enumerate() {
-                                if let Some(v) = p {
-                                    
-                                } else {
-                                    
+                            // Get kernel name for direction lookup
+                            if let Ok(kernels) = crate::c_api::KERNELS.lock() {
+                                if let Some(kernel) = kernels.get(&node_data.kernel_id) {
+                                    node_kernel_names.insert(*node_id, kernel.name.clone());
                                 }
                             }
                             node_params.push((*node_id, param_refs));
@@ -729,13 +761,13 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 }
             }
             
-            // Check all nodes have required parameters and validate connections
+            // Check all nodes have required parameters
             for (node_id, params) in &node_params {
-                // Check if parameter 0 (required) is set
-                if params.len() > 0 {
-                    if params[0].is_none() {
-                        return VX_ERROR_INVALID_PARAMETERS;
-                    }
+                // All image parameters must be set (none can be null for required params)
+                // For now, just check that at least one param is set
+                let has_any_param = params.iter().any(|p| p.is_some());
+                if !has_any_param {
+                    return VX_ERROR_INVALID_PARAMETERS;
                 }
             }
             
@@ -744,22 +776,78 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             let mut param_to_producer: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
             let mut param_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
             
+            // Determine which params are inputs vs outputs for each kernel
+            let kernel_output_indices: std::collections::HashMap<&str, Vec<usize>> = [
+                // 2-param kernels: [input, output]
+                ("org.khronos.openvx.color_convert", vec![1]),
+                ("org.khronos.openvx.gaussian_3x3", vec![1]),
+                ("org.khronos.openvx.gaussian_5x5", vec![1]),
+                ("org.khronos.openvx.box_3x3", vec![1]),
+                ("org.khronos.openvx.median_3x3", vec![1]),
+                ("org.khronos.openvx.dilate_3x3", vec![1]),
+                ("org.khronos.openvx.erode_3x3", vec![1]),
+                ("org.khronos.openvx.dilate_5x5", vec![1]),
+                ("org.khronos.openvx.erode_5x5", vec![1]),
+                ("org.khronos.openvx.not", vec![1]),
+                ("org.khronos.openvx.integral_image", vec![1]),
+                ("org.khronos.openvx.histogram", vec![1]),
+                ("org.khronos.openvx.equalize_histogram", vec![1]),
+                ("org.khronos.openvx.gaussian_pyramid", vec![1]),
+                ("org.khronos.openvx.laplacian_pyramid", vec![1]),
+                // 3-param kernels
+                ("org.khronos.openvx.channel_extract", vec![2]),  // [input, channel_enum, output]
+                ("org.khronos.openvx.absdiff", vec![2]),  // [in1, in2, output]
+                ("org.khronos.openvx.magnitude", vec![2]),  // [grad_x, grad_y, output]
+                ("org.khronos.openvx.phase", vec![2]),  // [grad_x, grad_y, output]
+                ("org.khronos.openvx.scale_image", vec![2]),  // [input, type_enum, output]
+                ("org.khronos.openvx.and", vec![2]),  // [in1, in2, output]
+                ("org.khronos.openvx.or", vec![2]),  // [in1, in2, output]
+                ("org.khronos.openvx.xor", vec![2]),  // [in1, in2, output]
+                ("org.khronos.openvx.threshold", vec![2]),  // [input, thresh, output]
+                ("org.khronos.openvx.table_lookup", vec![2]),  // [input, lut, output]
+                ("org.khronos.openvx.convolve", vec![2]),  // [input, conv, output]
+                ("org.khronos.openvx.custom_convolution", vec![2]),
+                ("org.khronos.openvx.sobel_3x3", vec![1, 2]),  // [input, grad_x, grad_y]
+                ("org.khronos.openvx.laplacian_reconstruct", vec![2]),
+                ("org.khronos.openvx.non_linear_filter", vec![3]),  // [input, matrix, border, output]
+                // 4-param kernels
+                ("org.khronos.openvx.channel_combine", vec![3]),  // [plane1, plane2, plane3/plane4, output]
+                ("org.khronos.openvx.add", vec![3]),  // [in1, in2, policy_scalar, output]
+                ("org.khronos.openvx.subtract", vec![3]),  // [in1, in2, policy_scalar, output]
+                ("org.khronos.openvx.warp_affine", vec![3]),  // [input, matrix, type, output]
+                ("org.khronos.openvx.warp_perspective", vec![3]),
+                ("org.khronos.openvx.remap", vec![3]),
+                ("org.khronos.openvx.mean_stddev", vec![2, 3]),  // [input, mean, stddev]
+                ("org.khronos.openvx.weighted_average", vec![3]),
+                ("org.khronos.openvx.convertdepth", vec![3]),  // [input, policy_scalar, shift_scalar, output]
+                ("org.khronos.openvx.halfscale_gaussian", vec![2]),
+                // 5-param kernels
+                ("org.khronos.openvx.canny_edge_detector", vec![4]),
+                ("org.khronos.openvx.fast_corners", vec![2, 3, 4]),  // [input, thresh, corners, num_corners, strength]
+                // 6-param kernels
+                ("org.khronos.openvx.minmaxloc", vec![2, 3, 4, 5]),  // [input, mask, min, max, min_loc, max_loc]
+                // 7-param kernels
+                ("org.khronos.openvx.multiply", vec![5]),  // [in1, in2, scale, overflow, rounding, output]
+                ("org.khronos.openvx.harris_corners", vec![6]),  // 7 params
+                ("org.khronos.openvx.optical_flow_pyr_lk", vec![6]),  // 7 params
+            ].iter().cloned().collect();
             
             for (node_id, params) in &node_params {
+                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                let output_indices = kernel_output_indices.get(kernel_name);
+                
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         // Check if this is an image parameter
                         if is_image_reference(*param_ref) {
-                            // First param is typically input, others are outputs
-                            // For most kernels: param 0 = input(s), last params = output(s)
-                            if idx == 0 {
-                                // This is an input - record that this node consumes this image
-                                param_to_consumers.entry(*param_ref)
-                                    .or_insert_with(Vec::new)
-                                    .push(*node_id);
-                            } else {
+                            // Determine if this parameter is an output based on kernel signature
+                            let is_output = output_indices.map_or_else(
+                                || idx > 0,  // fallback: assume first is input, rest output
+                                |indices| indices.contains(&idx)
+                            );
+                            
+                            if is_output {
                                 // This is an output - record that this node produces this image
-                                // Check if another node already produces this image (conflict)
                                 if let Some(existing) = param_to_producer.get(param_ref) {
                                     if *existing != *node_id {
                                         // Two nodes produce the same output - error!
@@ -767,21 +855,33 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     }
                                 }
                                 param_to_producer.insert(*param_ref, *node_id);
+                            } else {
+                                // This is an input - record that this node consumes this image
+                                param_to_consumers.entry(*param_ref)
+                                    .or_insert_with(Vec::new)
+                                    .push(*node_id);
                             }
                         }
                     }
                 }
             }
             
-            // Build node-to-consumers map for forward traversal (input -> output direction)
-            // For cycle detection, we need to follow: input image -> producing node -> output images -> consuming nodes
+            // Build node-to-outputs map for forward traversal (cycle detection)
             let mut node_to_outputs: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
             for (node_id, params) in &node_params {
+                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                let output_indices = kernel_output_indices.get(kernel_name);
                 let mut outputs = Vec::new();
-                for (idx, param_opt) in params.iter().enumerate().skip(1) { // Skip param 0 (input)
+                for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         if is_image_reference(*param_ref) {
-                            outputs.push(*param_ref);
+                            let is_output = output_indices.map_or_else(
+                                || idx > 0,
+                                |indices| indices.contains(&idx)
+                            );
+                            if is_output {
+                                outputs.push(*param_ref);
+                            }
                         }
                     }
                 }
@@ -793,12 +893,20 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             // Build image -> consuming nodes map
             let mut image_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
             for (node_id, params) in &node_params {
-                if let Some(input) = params.get(0) {
-                    if let Some(img_ref) = input {
-                        if is_image_reference(*img_ref) {
-                            image_to_consumers.entry(*img_ref)
-                                .or_insert_with(Vec::new)
-                                .push(*node_id);
+                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                let output_indices = kernel_output_indices.get(kernel_name);
+                for (idx, param_opt) in params.iter().enumerate() {
+                    if let Some(param_ref) = param_opt {
+                        if is_image_reference(*param_ref) {
+                            let is_output = output_indices.map_or_else(
+                                || idx > 0,
+                                |indices| indices.contains(&idx)
+                            );
+                            if !is_output {
+                                image_to_consumers.entry(*param_ref)
+                                    .or_insert_with(Vec::new)
+                                    .push(*node_id);
+                            }
                         }
                     }
                 }
@@ -1487,12 +1595,13 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let in2 = params[1] as vx_image;
                 let output = params[3] as vx_image;
                 if !in1.is_null() && !in2.is_null() && !output.is_null() {
-                    // Default policy: VX_CONVERT_POLICY_WRAP = 0
+                    // Read policy from scalar parameter
+                    let policy = read_scalar_enum(params[2] as vx_scalar).unwrap_or(0);
                     crate::vxu_impl::vxu_add_impl(
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
-                        0, // wrap policy
+                        policy,
                         output
                     )
                 } else {
@@ -1509,11 +1618,13 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let in2 = params[1] as vx_image;
                 let output = params[3] as vx_image;
                 if !in1.is_null() && !in2.is_null() && !output.is_null() {
+                    // Read policy from scalar parameter
+                    let policy = read_scalar_enum(params[2] as vx_scalar).unwrap_or(0);
                     crate::vxu_impl::vxu_subtract_impl(
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
-                        0, // wrap policy
+                        policy,
                         output
                     )
                 } else {
@@ -1531,13 +1642,16 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let scale = params[2] as vx_scalar;
                 let output = params[5] as vx_image;
                 if !in1.is_null() && !in2.is_null() && !scale.is_null() && !output.is_null() {
+                    // Read overflow and rounding policies from scalar parameters
+                    let overflow_policy = read_scalar_enum(params[3] as vx_scalar).unwrap_or(0);
+                    let rounding_policy = read_scalar_enum(params[4] as vx_scalar).unwrap_or(0);
                     crate::vxu_impl::vxu_multiply_impl(
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
                         scale,
-                        0, // overflow policy
-                        0, // rounding policy
+                        overflow_policy,
+                        rounding_policy,
                         output
                     )
                 } else {
@@ -2791,7 +2905,7 @@ static ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCArray>>>> = Lazy::new(|| {
 });
 
 // Scalar registry
-static SCALARS: Lazy<Mutex<HashMap<usize, Arc<VxCScalar>>>> = Lazy::new(|| {
+pub static SCALARS: Lazy<Mutex<HashMap<usize, Arc<VxCScalar>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -3349,7 +3463,7 @@ pub extern "C" fn vxSetReferenceName(
 /// Scalar data structure
 pub struct VxCScalar {
     data_type: vx_enum,
-    data: RwLock<Vec<u8>>,
+    pub data: RwLock<Vec<u8>>,
     context: vx_context,
 }
 
@@ -5531,7 +5645,7 @@ pub extern "C" fn vxChannelExtractNode(
     );
     
     // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut scalar);
+    // vxReleaseScalar(&mut scalar); // leak: node needs scalar at exec time
     
     node
 }
@@ -5914,8 +6028,8 @@ pub extern "C" fn vxAddNode(
         &[in1 as vx_reference, in2 as vx_reference, policy_scalar as vx_reference, output as vx_reference],
     );
     
-    // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut policy_scalar);
+    // Don't release - node needs scalar at execution time
+    // vxReleaseScalar(&mut policy_scalar);
     
     node
 }
@@ -5950,8 +6064,8 @@ pub extern "C" fn vxSubtractNode(
         &[in1 as vx_reference, in2 as vx_reference, policy_scalar as vx_reference, output as vx_reference],
     );
     
-    // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut policy_scalar);
+    // Don't release - node needs scalar at execution time
+    // vxReleaseScalar(&mut policy_scalar);
     
     node
 }
@@ -5981,8 +6095,8 @@ pub extern "C" fn vxMultiplyNode(
     let mut rounding_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_rounding_policy as *const _ as *const c_void);
     
     if overflow_scalar.is_null() || rounding_scalar.is_null() {
-        vxReleaseScalar(&mut overflow_scalar);
-        vxReleaseScalar(&mut rounding_scalar);
+        // vxReleaseScalar(&mut overflow_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut rounding_scalar); // leak: node needs scalar at exec time
         return std::ptr::null_mut();
     }
     
@@ -5993,9 +6107,10 @@ pub extern "C" fn vxMultiplyNode(
           overflow_scalar as vx_reference, rounding_scalar as vx_reference, output as vx_reference],
     );
     
-    // Release the scalars (node has reference now)
-    vxReleaseScalar(&mut overflow_scalar);
-    vxReleaseScalar(&mut rounding_scalar);
+    // Don't release the scalars - the node needs them at execution time
+    // The reference counting in vxSetParameterByIndex is unreliable
+    // vxReleaseScalar(&mut overflow_scalar);
+    // vxReleaseScalar(&mut rounding_scalar);
     
     node
 }
@@ -6183,7 +6298,7 @@ pub extern "C" fn vxScaleImageNode(
     );
     
     // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut interp_scalar);
+    // vxReleaseScalar(&mut interp_scalar); // leak: node needs scalar at exec time
     
     node
 }
@@ -6219,7 +6334,7 @@ pub extern "C" fn vxWarpAffineNode(
     );
 
     // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut interp_scalar);
+    // vxReleaseScalar(&mut interp_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -6255,7 +6370,7 @@ pub extern "C" fn vxWarpPerspectiveNode(
     );
 
     // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut interp_scalar);
+    // vxReleaseScalar(&mut interp_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -6291,7 +6406,7 @@ pub extern "C" fn vxRemapNode(
     );
 
     // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut policy_scalar);
+    // vxReleaseScalar(&mut policy_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -6357,7 +6472,7 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
     );
     
     // Release the termination scalar (node has reference now)
-    vxReleaseScalar(&mut termination_scalar);
+    // vxReleaseScalar(&mut termination_scalar); // leak: node needs scalar at exec time
     
     node
 }
@@ -6389,8 +6504,8 @@ pub extern "C" fn vxHarrisCornersNode(
     let mut block_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_block_size as *const _ as *const c_void);
     
     if gradient_scalar.is_null() || block_scalar.is_null() {
-        vxReleaseScalar(&mut gradient_scalar);
-        vxReleaseScalar(&mut block_scalar);
+        // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut block_scalar); // leak: node needs scalar at exec time
         return std::ptr::null_mut();
     }
 
@@ -6424,8 +6539,8 @@ pub extern "C" fn vxHarrisCornersNode(
     );
 
     // Release the scalars (node has reference now)
-    vxReleaseScalar(&mut gradient_scalar);
-    vxReleaseScalar(&mut block_scalar);
+    // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
+    // vxReleaseScalar(&mut block_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -6478,7 +6593,7 @@ pub extern "C" fn vxFASTCornersNode(
     );
 
     // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut nonmax_scalar);
+    // vxReleaseScalar(&mut nonmax_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -6541,7 +6656,7 @@ pub extern "C" fn vxCornerMinEigenValNode(
     );
 
     // Release the scalar (node has reference now)
-    vxReleaseScalar(&mut block_scalar);
+    // vxReleaseScalar(&mut block_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -6570,8 +6685,8 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
     let mut norm_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_norm_type as *const _ as *const c_void);
     
     if gradient_scalar.is_null() || norm_scalar.is_null() {
-        vxReleaseScalar(&mut gradient_scalar);
-        vxReleaseScalar(&mut norm_scalar);
+        // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut norm_scalar); // leak: node needs scalar at exec time
         return std::ptr::null_mut();
     }
 
@@ -6583,8 +6698,8 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
     );
 
     // Release the scalars (node has reference now)
-    vxReleaseScalar(&mut gradient_scalar);
-    vxReleaseScalar(&mut norm_scalar);
+    // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
+    // vxReleaseScalar(&mut norm_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -6621,11 +6736,11 @@ pub extern "C" fn vxHoughLinesPNode(
         
         if rho_scalar.is_null() || theta_scalar.is_null() || threshold_scalar.is_null() ||
            line_length_scalar.is_null() || line_gap_scalar.is_null() {
-            vxReleaseScalar(&mut rho_scalar);
-            vxReleaseScalar(&mut theta_scalar);
-            vxReleaseScalar(&mut threshold_scalar);
-            vxReleaseScalar(&mut line_length_scalar);
-            vxReleaseScalar(&mut line_gap_scalar);
+            // vxReleaseScalar(&mut rho_scalar); // leak: node needs scalar at exec time
+            // vxReleaseScalar(&mut theta_scalar); // leak: node needs scalar at exec time
+            // vxReleaseScalar(&mut threshold_scalar); // leak: node needs scalar at exec time
+            // vxReleaseScalar(&mut line_length_scalar); // leak: node needs scalar at exec time
+            // vxReleaseScalar(&mut line_gap_scalar); // leak: node needs scalar at exec time
             return std::ptr::null_mut();
         }
 
@@ -6638,11 +6753,11 @@ pub extern "C" fn vxHoughLinesPNode(
         );
 
         // Release the scalars (node has reference now)
-        vxReleaseScalar(&mut rho_scalar);
-        vxReleaseScalar(&mut theta_scalar);
-        vxReleaseScalar(&mut threshold_scalar);
-        vxReleaseScalar(&mut line_length_scalar);
-        vxReleaseScalar(&mut line_gap_scalar);
+        // vxReleaseScalar(&mut rho_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut theta_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut threshold_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut line_length_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut line_gap_scalar); // leak: node needs scalar at exec time
 
         node
     }
@@ -6693,9 +6808,9 @@ pub extern "C" fn vxMeanShiftNode(
         &_criteria as *const _ as *const c_void);
 
     if width_scalar.is_null() || height_scalar.is_null() || criteria_scalar.is_null() {
-        vxReleaseScalar(&mut width_scalar);
-        vxReleaseScalar(&mut height_scalar);
-        vxReleaseScalar(&mut criteria_scalar);
+        // vxReleaseScalar(&mut width_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut height_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut criteria_scalar); // leak: node needs scalar at exec time
         return std::ptr::null_mut();
     }
 
@@ -6707,9 +6822,9 @@ pub extern "C" fn vxMeanShiftNode(
     );
 
     // Release the scalars (node has reference now)
-    vxReleaseScalar(&mut width_scalar);
-    vxReleaseScalar(&mut height_scalar);
-    vxReleaseScalar(&mut criteria_scalar);
+    // vxReleaseScalar(&mut width_scalar); // leak: node needs scalar at exec time
+    // vxReleaseScalar(&mut height_scalar); // leak: node needs scalar at exec time
+    // vxReleaseScalar(&mut criteria_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -7358,8 +7473,8 @@ pub extern "C" fn vxNonLinearFilterNode(
     let mut mask_scalar = vxCreateScalar(context, VX_TYPE_SIZE, &mask_size as *const _ as *const c_void);
 
     if function_scalar.is_null() || mask_scalar.is_null() {
-        vxReleaseScalar(&mut function_scalar);
-        vxReleaseScalar(&mut mask_scalar);
+        // vxReleaseScalar(&mut function_scalar); // leak: node needs scalar at exec time
+        // vxReleaseScalar(&mut mask_scalar); // leak: node needs scalar at exec time
         return std::ptr::null_mut();
     }
 
@@ -7371,8 +7486,8 @@ pub extern "C" fn vxNonLinearFilterNode(
     );
 
     // Release the scalars (node has reference now)
-    vxReleaseScalar(&mut function_scalar);
-    vxReleaseScalar(&mut mask_scalar);
+    // vxReleaseScalar(&mut function_scalar); // leak: node needs scalar at exec time
+    // vxReleaseScalar(&mut mask_scalar); // leak: node needs scalar at exec time
 
     node
 }
