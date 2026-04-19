@@ -2853,14 +2853,111 @@ pub fn vxu_remap_impl(
     _table: vx_remap,
     _policy: vx_enum,
     output: vx_image,
+    override_border: Option<BorderMode>,
 ) -> vx_status {
     if context.is_null() || input.is_null() || _table.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // Remap implementation requires reading from remap table
-    // For now, stub implementation
-    VX_SUCCESS
+    unsafe {
+        let src = match c_image_to_rust(input) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Read remap table data
+        let (map_x, map_y, dst_w, dst_h) = {
+            let remap_data = &*(_table as *const crate::unified_c_api::VxCRemap);
+            let map: std::sync::RwLockReadGuard<'_, Vec<f32>> = match remap_data.map_data.read() {
+                Ok(d) => d,
+                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+            };
+            let dw = remap_data.dst_width as usize;
+            let dh = remap_data.dst_height as usize;
+            let mut mx = Vec::with_capacity(dw * dh);
+            let mut my = Vec::with_capacity(dw * dh);
+            for y in 0..dh {
+                for x in 0..dw {
+                    let idx = (y * dw + x) * 2;
+                    if idx + 1 < map.len() {
+                        mx.push(map[idx]);
+                        my.push(map[idx + 1]);
+                    } else {
+                        mx.push(0.0);
+                        my.push(0.0);
+                    }
+                }
+            }
+            (mx, my, dw, dh)
+        };
+
+        let border = override_border.unwrap_or_else(|| get_border_from_context(context));
+        let nearest_neighbor = _policy == 0x4000; // VX_INTERPOLATION_NEAREST_NEIGHBOR
+        let src_width = src.width as f32;
+        let src_height = src.height as f32;
+        let src_w = src.width as i32;
+        let src_h = src.height as i32;
+        let dst_data = dst.data_mut();
+
+        for y in 0..dst_h {
+            for x in 0..dst_w {
+                let idx = y * dst_w + x;
+                let src_x = map_x[idx];
+                let src_y = map_y[idx];
+                
+                let out_idx: usize = y.saturating_mul(dst_w).saturating_add(x);
+                
+                if nearest_neighbor {
+                    let nx = (src_x + 0.5).floor() as i32;
+                    let ny = (src_y + 0.5).floor() as i32;
+                    
+                    if nx >= 0 && nx < src_w && ny >= 0 && ny < src_h {
+                        if let Some(p) = dst_data.get_mut(out_idx) {
+                            *p = src.get_pixel(nx as usize, ny as usize);
+                        }
+                    } else {
+                        let val = match border {
+                            BorderMode::Constant(c) => c,
+                            _ => 0,
+                        };
+                        if let Some(p) = dst_data.get_mut(out_idx) {
+                            *p = val;
+                        }
+                    }
+                } else {
+                    // Bilinear interpolation
+                    if matches!(border, BorderMode::Undefined) {
+                        let x0 = src_x.floor() as i32;
+                        let y0 = src_y.floor() as i32;
+                        if x0 >= 0 && x0 + 1 < src_w && y0 >= 0 && y0 + 1 < src_h {
+                            if let Some(p) = dst_data.get_mut(out_idx) {
+                                *p = bilinear_interpolate_with_border(&src, src_x, src_y, border);
+                            }
+                        }
+                    } else {
+                        if src_x < 0.0 || src_x >= src_width || src_y < 0.0 || src_y >= src_height {
+                            let val = match border {
+                                BorderMode::Constant(c) => c,
+                                _ => 0,
+                            };
+                            if let Some(p) = dst_data.get_mut(out_idx) {
+                                *p = val;
+                            }
+                        } else if let Some(p) = dst_data.get_mut(out_idx) {
+                            *p = bilinear_interpolate_with_border(&src, src_x, src_y, border);
+                        }
+                    }
+                }
+            }
+        }
+
+        copy_rust_to_c_image(&dst, output)
+    }
 }
 
 /// ===========================================================================
