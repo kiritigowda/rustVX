@@ -2605,6 +2605,7 @@ pub fn vxu_warp_affine_impl(
     _matrix: vx_matrix,
     _interpolation: vx_enum,
     output: vx_image,
+    override_border: Option<BorderMode>,
 ) -> vx_status {
     if context.is_null() || input.is_null() || _matrix.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -2622,9 +2623,11 @@ pub fn vxu_warp_affine_impl(
         };
 
         // Read the affine matrix (2x3) from the vx_matrix handle
-        // OpenVX spec: matrix is VX_TYPE_FLOAT32, 2 rows x 3 columns
-        // Stored in COLUMN-MAJOR order: data[0]=m00, data[1]=m10, data[2]=m02,
-        //   data[3]=m01, data[4]=m11, data[5]=m12
+        // The CTS stores mat[col][row] with col\u{220}\\{0,1,2\}, row\u{220}\\{0,1\}
+        // Flat layout: m[col*2 + row], which is exactly what vxCopyMatrix stores
+        // CTS reference: x0 = m[0]*x + m[2]*y + m[4]
+        //               y0 = m[1]*x + m[3]*y + m[5]
+        // Pass raw data directly to warp_affine which now expects CTS layout
         let affine_matrix: [f32; 6] = {
             let m = crate::c_api_data::VxCMatrixData::from_ptr(_matrix);
             if m.is_none() {
@@ -2639,19 +2642,12 @@ pub fn vxu_warp_affine_impl(
             if data.len() < 6 {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            // Affine matrix: 2x3 stored column-major
-            // Row-major layout expected by warp_affine:
-            //   [a00, a01, a02, a10, a11, a12]
-            // Column-major storage:
-            //   data[0] = m(col0,row0) = a00, data[1] = m(col0,row1) = a10
-            //   data[2] = m(col1,row0) = a01, data[3] = m(col1,row1) = a11
-            //   data[4] = m(col2,row0) = a02, data[5] = m(col2,row1) = a12
-            // OpenVX affine: dst(x,y) = src(m00*x + m01*y + m02, m10*x + m11*y + m12)
-            // With column-major: [a00, a10, a01, a11, a02, a12]
-            [data[0], data[2], data[4], data[1], data[3], data[5]]
+            [data[0], data[1], data[2], data[3], data[4], data[5]]
         };
 
-        match warp_affine(&src, &affine_matrix, &mut dst) {
+        let border = override_border.unwrap_or_else(|| get_border_from_context(context));
+        let nn = _interpolation == 0x4000; // VX_INTERPOLATION_NEAREST_NEIGHBOR
+        match warp_affine(&src, &affine_matrix, &mut dst, border, nn) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -2664,6 +2660,7 @@ pub fn vxu_warp_perspective_impl(
     _matrix: vx_matrix,
     _interpolation: vx_enum,
     output: vx_image,
+    override_border: Option<BorderMode>,
 ) -> vx_status {
     if context.is_null() || input.is_null() || _matrix.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -2704,7 +2701,9 @@ pub fn vxu_warp_perspective_impl(
             [data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8]]
         };
 
-        match warp_perspective(&src, &persp_matrix, &mut dst) {
+        let border = override_border.unwrap_or_else(|| get_border_from_context(context));
+        let nn = _interpolation == 0x4000; // VX_INTERPOLATION_NEAREST_NEIGHBOR
+        match warp_perspective(&src, &persp_matrix, &mut dst, border, nn) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -4023,20 +4022,25 @@ enum InterpolationType {
     Area,
 }
 
-fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image) -> VxResult<()> {
+fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMode, nearest_neighbor: bool) -> VxResult<()> {
     let dst_width = dst.width;
     let dst_height = dst.height;
     let src_width = src.width as f32;
     let src_height = src.height as f32;
+    let src_w = src.width as i32;
+    let src_h = src.height as i32;
 
     let dst_data = dst.data_mut();
 
-    let a11 = matrix[0];
-    let a12 = matrix[1];
-    let a13 = matrix[2];
-    let a21 = matrix[3];
-    let a22 = matrix[4];
-    let a23 = matrix[5];
+    // CTS affine matrix layout: m[col*2 + row]
+    // m[0]=x-coeff of x, m[1]=y-coeff of x, m[2]=x-coeff of y,
+    // m[3]=y-coeff of y, m[4]=x-translation, m[5]=y-translation
+    let a11 = matrix[0]; // x-coeff of x
+    let a12 = matrix[2]; // x-coeff of y
+    let a13 = matrix[4]; // x-translation
+    let a21 = matrix[1]; // y-coeff of x
+    let a22 = matrix[3]; // y-coeff of y
+    let a23 = matrix[5]; // y-translation
 
     for y in 0..dst_height {
         for x in 0..dst_width {
@@ -4048,15 +4052,46 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image) -> VxResult<()> 
             let src_y = a21 * xf + a22 * yf + a23;
 
             let idx = y.saturating_mul(dst_width).saturating_add(x);
-            if src_x < 0.0 || src_x >= src_width || src_y < 0.0 || src_y >= src_height {
-                if let Some(p) = dst_data.get_mut(idx) {
-                    *p = 0;
+            
+            if nearest_neighbor {
+                // Nearest neighbor: round to nearest pixel
+                let nx = (src_x + 0.5).floor() as i32;
+                let ny = (src_y + 0.5).floor() as i32;
+                
+                if nx >= 0 && nx < src_w && ny >= 0 && ny < src_h {
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = src.get_pixel(nx as usize, ny as usize);
+                    }
+                } else {
+                    let val = match border {
+                        BorderMode::Constant(c) => c,
+                        _ => 0,
+                    };
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = val;
+                    }
                 }
-                continue;
-            }
-
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = bilinear_interpolate(src, src_x, src_y);
+            } else {
+                // Bilinear interpolation
+                // For VX_BORDER_UNDEFINED, only process pixels where the full 2x2
+                // neighborhood is within bounds (CTS skips validation for others)
+                // For VX_BORDER_CONSTANT, use the constant value for out-of-bounds pixels
+                if matches!(border, BorderMode::Undefined) {
+                    // Check if the full 2x2 neighborhood is within bounds
+                    let x0 = src_x.floor() as i32;
+                    let y0 = src_y.floor() as i32;
+                    if x0 >= 0 && x0 + 1 < src_w && y0 >= 0 && y0 + 1 < src_h {
+                        if let Some(p) = dst_data.get_mut(idx) {
+                            *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
+                        }
+                    }
+                    // else: for UNDEFINED border, leave as 0 (CTS won't validate these)
+                } else {
+                    // For CONSTANT and REPLICATE borders, always interpolate
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
+                    }
+                }
             }
         }
     }
@@ -4064,23 +4099,18 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image) -> VxResult<()> 
     Ok(())
 }
 
-fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image) -> VxResult<()> {
+fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: BorderMode, nearest_neighbor: bool) -> VxResult<()> {
     let dst_width = dst.width;
     let dst_height = dst.height;
     let src_width = src.width as f32;
     let src_height = src.height as f32;
+    let src_w = src.width as i32;
+    let src_h = src.height as i32;
 
     let dst_data = dst.data_mut();
 
-    // OpenVX stores matrices in COLUMN-MAJOR order:
-    // matrix[0-2] = first column (h00, h10, h20)
-    // matrix[3-5] = second column (h01, h11, h21)
-    // matrix[6-8] = third column (h02, h12, h22)
-    //
-    // Test code uses:
-    //   x0 = m[0]*x + m[3]*y + m[6]  (first elements of each column)
-    //   y0 = m[1]*x + m[4]*y + m[7]  (second elements of each column)
-    //   z0 = m[2]*x + m[5]*y + m[8]  (third elements of each column)
+    // CTS perspective matrix layout: m[col*3 + row]
+    // x0 = m[0]*x + m[3]*y + m[6], y0 = m[1]*x + m[4]*y + m[7], z0 = m[2]*x + m[5]*y + m[8]
     let h00 = matrix[0];
     let h10 = matrix[1];
     let h20 = matrix[2];
@@ -4103,8 +4133,12 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image) -> VxResult
             
             let idx = y.saturating_mul(dst_width).saturating_add(x);
             if w_h.abs() < 1e-6 {
+                let val = match border {
+                    BorderMode::Constant(c) => c,
+                    _ => 0,
+                };
                 if let Some(p) = dst_data.get_mut(idx) {
-                    *p = 0;
+                    *p = val;
                 }
                 continue;
             }
@@ -4112,15 +4146,39 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image) -> VxResult
             let src_x = x_h / w_h;
             let src_y = y_h / w_h;
 
-            if src_x < 0.0 || src_x >= src_width || src_y < 0.0 || src_y >= src_height {
-                if let Some(p) = dst_data.get_mut(idx) {
-                    *p = 0;
+            if nearest_neighbor {
+                let nx = (src_x + 0.5).floor() as i32;
+                let ny = (src_y + 0.5).floor() as i32;
+                
+                if nx >= 0 && nx < src_w && ny >= 0 && ny < src_h {
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = src.get_pixel(nx as usize, ny as usize);
+                    }
+                } else {
+                    let val = match border {
+                        BorderMode::Constant(c) => c,
+                        _ => 0,
+                    };
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = val;
+                    }
                 }
-                continue;
-            }
-
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = bilinear_interpolate(src, src_x, src_y);
+            } else {
+                // Bilinear interpolation with proper border handling
+                if matches!(border, BorderMode::Undefined) {
+                    let x0 = src_x.floor() as i32;
+                    let y0 = src_y.floor() as i32;
+                    if x0 >= 0 && x0 + 1 < src_w && y0 >= 0 && y0 + 1 < src_h {
+                        if let Some(p) = dst_data.get_mut(idx) {
+                            *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
+                        }
+                    }
+                    // else: UNDEFINED border, leave as 0
+                } else {
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
+                    }
+                }
             }
         }
     }
