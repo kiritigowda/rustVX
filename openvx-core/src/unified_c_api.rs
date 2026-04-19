@@ -2347,6 +2347,10 @@ pub const VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION: vx_enum = 0x00080106; // +0x6
 pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS_SIZE: vx_enum = 0x00080107; // +0x7
 pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS: vx_enum = 0x00080108;       // +0x8
 pub const VX_CONTEXT_ATTRIBUTE_USER_MEMORY_FREE: vx_enum = 0x00080109; // +0x9 (callback for user memory deallocation)
+pub const VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER: vx_enum = 0x0008010A; // +0xA
+pub const VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER_POLICY: vx_enum = 0x0008010C; // +0xC
+pub const VX_CONTEXT_ATTRIBUTE_CONVOLUTION_MAX_DIMENSION: vx_enum = 0x00080108; // +0x8
+pub const VX_CONTEXT_ATTRIBUTE_OPTICAL_FLOW_MAX_WINDOW: vx_enum = 0x00080109; // +0x9
 
 // Context version (OpenVX 1.3.1 = 1.3)
 // Packed as (major << 8) | minor, with patch in upper bits for 1.3.x
@@ -2515,6 +2519,24 @@ pub extern "C" fn vxQueryContext(
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
+            }
+            VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER => {
+                // vx_border_t is expected per spec
+                if size != std::mem::size_of::<vx_border_t>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                if let Ok(contexts) = CONTEXTS.lock() {
+                    if let Some(ctx) = contexts.get(&(context as usize)) {
+                        if let Ok(border_lock) = ctx.border_mode.read() {
+                            unsafe { std::ptr::write(ptr as *mut vx_border_t, *border_lock); }
+                            return VX_SUCCESS;
+                        }
+                    }
+                }
+                // If context not found or no border set, return default
+                let default_border = vx_border_t { mode: 0x1600 /* VX_BORDER_UNDEFINED */, constant_value: vx_pixel_value_t { reserved: [0u8; 16] } };
+                unsafe { std::ptr::write(ptr as *mut vx_border_t, default_border); }
+                VX_SUCCESS
             }
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }

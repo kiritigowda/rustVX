@@ -794,7 +794,7 @@ pub extern "C" fn vxQueryNode(
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
                 match attribute {
-                    0x00 | VX_NODE_STATUS => { // VX_NODE_STATUS (also handle 0x00 for backward compatibility)
+                    VX_NODE_STATUS => {
                         if size >= 4 {
                             let status = node_data.status.load(std::sync::atomic::Ordering::SeqCst);
                             let ptr_u8 = ptr as *mut u8;
@@ -2028,10 +2028,10 @@ pub const VX_TYPE_SIZE: vx_enum = 0x012;
 // Node attributes - calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_NODE) + offset
 // VX_ATTRIBUTE_BASE = ((0 << 20) | (0x803 << 8)) = 0x80300
 pub const VX_NODE_STATUS: vx_enum = 0x80300;           // VX_ATTRIBUTE_BASE + 0x00
-pub const VX_NODE_PERFORMANCE: vx_enum = 0x80302;      // VX_ATTRIBUTE_BASE + 0x02
-pub const VX_NODE_BORDER: vx_enum = 0x80303;           // VX_ATTRIBUTE_BASE + 0x03
-pub const VX_NODE_LOCAL_DATA_SIZE: vx_enum = 0x80304;  // VX_ATTRIBUTE_BASE + 0x04
-pub const VX_NODE_LOCAL_DATA_PTR: vx_enum = 0x80305;   // VX_ATTRIBUTE_BASE + 0x05
+pub const VX_NODE_PERFORMANCE: vx_enum = 0x80301;      // VX_ATTRIBUTE_BASE + 0x01
+pub const VX_NODE_BORDER: vx_enum = 0x80302;           // VX_ATTRIBUTE_BASE + 0x02
+pub const VX_NODE_LOCAL_DATA_SIZE: vx_enum = 0x80303;  // VX_ATTRIBUTE_BASE + 0x03
+pub const VX_NODE_LOCAL_DATA_PTR: vx_enum = 0x80304;   // VX_ATTRIBUTE_BASE + 0x04
 pub const VX_NODE_PARAMETERS: vx_enum = 0x80305;       // VX_ATTRIBUTE_BASE + 0x05
 pub const VX_NODE_IS_REPLICATED: vx_enum = 0x80306;    // VX_ATTRIBUTE_BASE + 0x06
 pub const VX_NODE_REPLICATE_FLAGS: vx_enum = 0x80307;  // VX_ATTRIBUTE_BASE + 0x07

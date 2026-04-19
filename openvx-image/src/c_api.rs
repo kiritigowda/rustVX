@@ -1819,41 +1819,42 @@ pub extern "C" fn vxQueryPyramid(
     let pyr = unsafe { &*(pyramid as *const VxCPyramid) };
 
     unsafe {
+        // VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_PYRAMID) = 0x80900
         match attribute {
-            // VX_PYRAMID_LEVELS = 0x00
-            0x00 => {
+            // VX_PYRAMID_LEVELS = 0x80900
+            0x80900 | 0x00 => {
                 if size != std::mem::size_of::<vx_size>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 *(ptr as *mut vx_size) = pyr.num_levels as vx_size;
                 VX_SUCCESS
             }
-            // VX_PYRAMID_SCALE = 0x01
-            0x01 => {
+            // VX_PYRAMID_SCALE = 0x80901
+            0x80901 | 0x01 => {
                 if size != std::mem::size_of::<vx_float32>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 *(ptr as *mut vx_float32) = pyr.scale;
                 VX_SUCCESS
             }
-            // VX_PYRAMID_FORMAT = 0x02
-            0x02 => {
+            // VX_PYRAMID_FORMAT = 0x80902
+            0x80902 | 0x02 => {
                 if size != std::mem::size_of::<vx_df_image>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 *(ptr as *mut vx_df_image) = pyr.format;
                 VX_SUCCESS
             }
-            // VX_PYRAMID_WIDTH = 0x03
-            0x03 => {
+            // VX_PYRAMID_WIDTH = 0x80903
+            0x80903 | 0x03 => {
                 if size != std::mem::size_of::<vx_uint32>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 *(ptr as *mut vx_uint32) = pyr.width;
                 VX_SUCCESS
             }
-            // VX_PYRAMID_HEIGHT = 0x04
-            0x04 => {
+            // VX_PYRAMID_HEIGHT = 0x80904
+            0x80904 | 0x04 => {
                 if size != std::mem::size_of::<vx_uint32>() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
