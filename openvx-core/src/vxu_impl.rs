@@ -2091,53 +2091,31 @@ pub fn vxu_sobel3x3_impl(
 
     unsafe {
         let src = match c_image_to_rust(input) {
-            Some(img) => {
-                img
-            },
-            None => {
-                return VX_ERROR_INVALID_PARAMETERS;
-            },
-        };
-
-        // Check output format
-        let (_, _, out_x_format) = match get_image_info(output_x) {
-            Some(info) => {
-                info
-            },
-            None => {
-                return VX_ERROR_INVALID_PARAMETERS;
-            },
-        };
-
-        let mut gx = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
             Some(img) => img,
-            None => {
-                return VX_ERROR_INVALID_PARAMETERS;
-            },
+            None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        let mut gy = match Image::new(src.width(), src.height(), ImageFormat::Gray) {
+        let width = src.width();
+        let height = src.height();
+
+        // Create S16 output images
+        let mut gx = match Image::new(width, height, ImageFormat::GrayS16) {
             Some(img) => img,
-            None => {
-                return VX_ERROR_INVALID_PARAMETERS;
-            },
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut gy = match Image::new(width, height, ImageFormat::GrayS16) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match sobel3x3(&src, &mut gx, &mut gy) {
-            Ok(_) => {
-                // Convert from U8 to output format
-                let status_x = convert_and_copy(&gx, output_x, out_x_format);
-                let status_y = convert_and_copy(&gy, output_y, VX_DF_IMAGE_S16);
-                if status_x == VX_SUCCESS && status_y == VX_SUCCESS {
-                    VX_SUCCESS
-                } else {
-                    VX_ERROR_INVALID_PARAMETERS
-                }
-            }
-            Err(e) => {
-                VX_ERROR_INVALID_PARAMETERS
-            },
-        }
+        // Get border mode from context
+        let border = get_border_from_context(context);
+
+        sobel3x3_s16(&src, &mut gx, &mut gy, border);
+
+        copy_rust_to_c_image(&gx, output_x);
+        copy_rust_to_c_image(&gy, output_y);
+        VX_SUCCESS
     }
 }
 
@@ -2162,15 +2140,19 @@ pub fn vxu_magnitude_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        let mut dst = match create_matching_image(output) {
+        let (_, _, out_format) = match get_image_info(output) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let dst_format = df_image_to_format(out_format).unwrap_or(ImageFormat::GrayS16);
+
+        let mut dst = match Image::new(gx.width(), gx.height(), dst_format) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match magnitude(&gx, &gy, &mut dst) {
-            Ok(_) => copy_rust_to_c_image(&dst, output),
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
-        }
+        magnitude_s16(&gx, &gy, &mut dst);
+        copy_rust_to_c_image(&dst, output)
     }
 }
 
@@ -2195,15 +2177,13 @@ pub fn vxu_phase_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        let mut dst = match create_matching_image(output) {
+        let mut dst = match Image::new(gx.width(), gx.height(), ImageFormat::Gray) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match phase_op(&gx, &gy, &mut dst) {
-            Ok(_) => copy_rust_to_c_image(&dst, output),
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
-        }
+        phase_s16(&gx, &gy, &mut dst);
+        copy_rust_to_c_image(&dst, output)
     }
 }
 
@@ -3339,15 +3319,20 @@ const SOBEL_Y: [[i32; 3]; 3] = [
     [ 1,  2,  1],
 ];
 
-fn sobel3x3(src: &Image, grad_x: &mut Image, grad_y: &mut Image) -> VxResult<()> {
-    let width = src.width;
-    let height = src.height;
+/// Compute Sobel gradients outputting S16 directly, with proper border handling
+fn sobel3x3_s16(src: &Image, grad_x: &mut Image, grad_y: &mut Image, border: BorderMode) {
+    let width = src.width();
+    let height = src.height();
 
-    let gx_data = grad_x.data_mut();
-    let gy_data = grad_y.data_mut();
+    // Determine pixel range based on border mode
+    // VX_BORDER_UNDEFINED: only compute inner pixels (1-pixel border left as zero)
+    let (start_y, end_y, start_x, end_x) = match border {
+        BorderMode::Undefined => (1, height.saturating_sub(1), 1, width.saturating_sub(1)),
+        _ => (0, height, 0, width),  // Replicate and Constant process all pixels
+    };
 
-    for y in 0..height {
-        for x in 0..width {
+    for y in start_y..end_y {
+        for x in start_x..end_x {
             let mut sum_x: i32 = 0;
             let mut sum_y: i32 = 0;
 
@@ -3355,71 +3340,67 @@ fn sobel3x3(src: &Image, grad_x: &mut Image, grad_y: &mut Image) -> VxResult<()>
                 for kx in 0..3 {
                     let px = x as isize + kx as isize - 1;
                     let py = y as isize + ky as isize - 1;
-                    let pixel = get_pixel_bordered(src, px, py, BorderMode::Replicate) as i32;
+                    let pixel = get_pixel_bordered(src, px, py, border) as i32;
                     sum_x += pixel * SOBEL_X[ky][kx];
                     sum_y += pixel * SOBEL_Y[ky][kx];
                 }
             }
 
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = gx_data.get_mut(idx) {
-                *p = clamp_u8((sum_x / 4).max(-128).min(127) + 128);
-            }
-            if let Some(p) = gy_data.get_mut(idx) {
-                *p = clamp_u8((sum_y / 4).max(-128).min(127) + 128);
-            }
+            // Output raw i16 values (no scaling)
+            grad_x.set_pixel_s16(x, y, sum_x as i16);
+            grad_y.set_pixel_s16(x, y, sum_y as i16);
         }
     }
-
-    Ok(())
 }
 
-fn magnitude(grad_x: &Image, grad_y: &Image, mag: &mut Image) -> VxResult<()> {
-    let width = grad_x.width;
-    let height = grad_x.height;
-
-    let mag_data = mag.data_mut();
+/// Compute magnitude from S16 gradient images, output S16
+/// mag(x,y) = floor(sqrt(gx² + gy²) + 0.5), saturated to S16 range
+fn magnitude_s16(grad_x: &Image, grad_y: &Image, mag: &mut Image) {
+    let width = grad_x.width();
+    let height = grad_x.height();
 
     for y in 0..height {
         for x in 0..width {
-            let gx = grad_x.get_pixel(x, y) as i32 - 128;
-            let gy = grad_y.get_pixel(x, y) as i32 - 128;
+            let gx = grad_x.get_pixel_s16(x, y) as i32;
+            let gy = grad_y.get_pixel_s16(x, y) as i32;
 
-            let magnitude = ((gx * gx + gy * gy) as f32).sqrt() as i32;
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = mag_data.get_mut(idx) {
-                *p = magnitude.min(255) as u8;
-            }
+            // Use double precision as per CTS reference
+            let val = ((gx as f64 * gx as f64 + gy as f64 * gy as f64) as f64).sqrt();
+            let ival = (val + 0.5).floor() as i32;
+            let s16_val = ival.clamp(-32768, 32767) as i16;
+            mag.set_pixel_s16(x, y, s16_val);
         }
     }
-
-    Ok(())
 }
 
-fn phase_op(grad_x: &Image, grad_y: &Image, phase: &mut Image) -> VxResult<()> {
-    let width = grad_x.width;
-    let height = grad_y.height;
-
+/// Compute phase from S16 gradient images, output U8
+/// phase(x,y) = atan2(gy, gx) * 256 / (2π), mapped to [0, 255]
+/// If val < 0, add 256; then floor(val + 0.5); clamp to [0, 255]
+fn phase_s16(grad_x: &Image, grad_y: &Image, phase: &mut Image) {
+    let width = grad_x.width();
+    let height = grad_x.height();
     let phase_data = phase.data_mut();
 
-    const DEG_PER_RAD: f32 = 180.0 / std::f32::consts::PI;
-
     for y in 0..height {
         for x in 0..width {
-            let gx = grad_x.get_pixel(x, y) as i32 - 128;
-            let gy = grad_y.get_pixel(x, y) as i32 - 128;
+            let gx = grad_x.get_pixel_s16(x, y) as f64;
+            let gy = grad_y.get_pixel_s16(x, y) as f64;
 
-            let phase_deg = (gy as f32).atan2(gx as f32) * DEG_PER_RAD;
-            let phase_u8 = ((phase_deg + 360.0) % 360.0) / 360.0 * 255.0;
-
-            let idx = y.saturating_mul(width).saturating_add(x);
+            // CTS reference: atan2(gy, gx) * 256 / (M_PI * 2)
+            let mut val = gy.atan2(gx) * 256.0 / (std::f64::consts::PI * 2.0);
+            if val < 0.0 {
+                val += 256.0;
+            }
+            let mut ival = (val + 0.5).floor() as i32;
+            if ival >= 256 {
+                ival -= 256;
+            }
+            let idx = y * width + x;
             if let Some(p) = phase_data.get_mut(idx) {
-                *p = phase_u8 as u8;
+                *p = ival.clamp(0, 255) as u8;
             }
         }
     }
-
-    Ok(())
 }
 
 // ============================================================================
