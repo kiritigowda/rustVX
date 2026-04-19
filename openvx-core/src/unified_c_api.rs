@@ -1726,13 +1726,14 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 3 {
                 let input = params[0] as vx_image;
                 let output = params[2] as vx_image;
+                // Read interpolation type from params[1] (a scalar enum)
+                let interpolation = read_scalar_enum(params[1] as vx_scalar).unwrap_or(0x4001); // default bilinear
                 if !input.is_null() && !output.is_null() {
-                    // Default interpolation: bilinear
                     crate::vxu_impl::vxu_scale_image_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        1 // bilinear interpolation
+                        interpolation
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS

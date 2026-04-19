@@ -145,14 +145,18 @@ pub fn bilinear_interpolate(img: &Image, x: f32, y: f32) -> u8 {
                 fx * (1.0 - fy) * p10 +
                 (1.0 - fx) * fy * p01 +
                 fx * fy * p11;
-    
-    clamp(value as i32, 0, 255) as u8
+
+    // Round to nearest integer, clamped to [0, 255]
+    // CTS reference uses (ref_float + 0.5f) cast to int
+    let rounded = (value + 0.5) as i32;
+    clamp(rounded, 0, 255) as u8
 }
 
-/// Nearest neighbor interpolation
+/// Nearest neighbor interpolation - uses floor(x+0.5) rounding
+/// which matches the OpenVX CTS reference
 pub fn nearest_interpolate(img: &Image, x: f32, y: f32) -> u8 {
-    let x = clamp(x.round() as i32, 0, img.width() as i32 - 1) as usize;
-    let y = clamp(y.round() as i32, 0, img.height() as i32 - 1) as usize;
+    let x = clamp((x + 0.5).floor() as i32, 0, img.width() as i32 - 1) as usize;
+    let y = clamp((y + 0.5).floor() as i32, 0, img.height() as i32 - 1) as usize;
     img.get_pixel(x, y)
 }
 

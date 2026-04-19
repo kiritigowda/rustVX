@@ -2636,8 +2636,35 @@ pub fn vxu_warp_affine_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Default identity affine
-        let affine_matrix: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        // Read the affine matrix (2x3) from the vx_matrix handle
+        // OpenVX spec: matrix is VX_TYPE_FLOAT32, 2 rows x 3 columns
+        // Stored in COLUMN-MAJOR order: data[0]=m00, data[1]=m10, data[2]=m02,
+        //   data[3]=m01, data[4]=m11, data[5]=m12
+        let affine_matrix: [f32; 6] = {
+            let m = crate::c_api_data::VxCMatrixData::from_ptr(_matrix);
+            if m.is_none() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            let m = m.unwrap();
+            let data = m.as_f32_slice();
+            if data.is_none() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            let data = data.unwrap();
+            if data.len() < 6 {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            // Affine matrix: 2x3 stored column-major
+            // Row-major layout expected by warp_affine:
+            //   [a00, a01, a02, a10, a11, a12]
+            // Column-major storage:
+            //   data[0] = m(col0,row0) = a00, data[1] = m(col0,row1) = a10
+            //   data[2] = m(col1,row0) = a01, data[3] = m(col1,row1) = a11
+            //   data[4] = m(col2,row0) = a02, data[5] = m(col2,row1) = a12
+            // OpenVX affine: dst(x,y) = src(m00*x + m01*y + m02, m10*x + m11*y + m12)
+            // With column-major: [a00, a10, a01, a11, a02, a12]
+            [data[0], data[2], data[4], data[1], data[3], data[5]]
+        };
 
         match warp_affine(&src, &affine_matrix, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
@@ -3863,14 +3890,15 @@ fn scale_image(src: &Image, dst: &mut Image, interpolation: InterpolationType, b
     let dst_data = dst.data_mut();
 
     // Backward mapping: for each output pixel, compute corresponding source pixel
+    // OpenVX uses center-aligned mapping: src = (dst + 0.5) * (src_size / dst_size) - 0.5
     let x_scale = src_width as f32 / dst_width as f32;
     let y_scale = src_height as f32 / dst_height as f32;
 
     for y in 0..dst_height {
         for x in 0..dst_width {
-            // Map from destination to source
-            let src_x = x as f32 * x_scale;
-            let src_y = y as f32 * y_scale;
+            // Map from destination to source with half-pixel offset (OpenVX standard)
+            let src_x = (x as f32 + 0.5) * x_scale - 0.5;
+            let src_y = (y as f32 + 0.5) * y_scale - 0.5;
 
             let value = match interpolation {
                 InterpolationType::NearestNeighbor => {
@@ -3899,9 +3927,10 @@ fn nearest_neighbor_interpolate(img: &Image, x: f32, y: f32, border: BorderMode)
     let width = img.width as i32;
     let height = img.height as i32;
     
-    // Round to nearest integer
-    let nx = x.round() as i32;
-    let ny = y.round() as i32;
+    // OpenVX nearest neighbor: round to nearest integer (round-half-up)
+    // floor(x + 0.5)
+    let nx = (x + 0.5).floor() as i32;
+    let ny = (y + 0.5).floor() as i32;
     
     // Check bounds
     if nx < 0 || nx >= width || ny < 0 || ny >= height {
@@ -3958,6 +3987,7 @@ fn bilinear_interpolate_with_border(img: &Image, x: f32, y: f32, border: BorderM
                 (1.0 - fx) * fy * p01 +
                 fx * fy * p11;
 
+    // Round to nearest integer (CTS reference uses ref_float + 0.5f)
     clamp_u8(value.round() as i32)
 }
 
