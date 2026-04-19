@@ -102,6 +102,11 @@ pub struct VxCImage {
     pub external_dim_x: Vec<vx_uint32>,
     /// External memory dim_y for each plane
     pub external_dim_y: Vec<vx_uint32>,
+    /// ROI offset in the parent image (start_x, start_y for each plane)
+    /// For non-ROI images, these are all 0
+    pub roi_offsets: Vec<(usize, usize)>,  // (start_x, start_y) per plane in parent coordinates
+    /// True only if created via vxCreateImageFromHandle (not inherited by ROI/channel sub-images)
+    pub is_from_handle: bool,
 }
 
 impl VxCImage {
@@ -218,10 +223,12 @@ impl VxCImage {
         }
 
         match format {
-            // NV12/NV21: UV plane is same width as Y, half height
+            // NV12/NV21: UV plane is half width, half height (chroma subsampling 2x2)
+            // dim_x = width/2 (number of UV pairs), dim_y = height/2
+            // stride_x = 2 (bytes per UV pair), stride_y = width (bytes per row)
             0x3231564E | 0x3132564E => {
                 if plane_index == 1 {
-                    (width, (height + 1) / 2)
+                    ((width + 1) / 2, (height + 1) / 2)
                 } else {
                     (0, 0)
                 }

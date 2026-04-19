@@ -2187,6 +2187,6 @@ pub struct vx_imagepatch_addressing_t {
     pub scale_x: vx_uint32,
     pub scale_y: vx_uint32,
     pub step_x: vx_uint32,
-    pub step_y: vx_uint32,
-    pub stride_x_bits: vx_int32,
+    pub step_y: u16,        // C type is vx_uint16 (u16)
+    pub stride_x_bits: u16,  // C type is vx_uint16 (u16)
 }

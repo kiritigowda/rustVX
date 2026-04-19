@@ -76,6 +76,8 @@ pub extern "C" fn vxCreateImage(
         external_stride_x: Vec::new(),
         external_dim_x: Vec::new(),
         external_dim_y: Vec::new(),
+        roi_offsets: Vec::new(),
+        is_from_handle: false,
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -199,6 +201,8 @@ pub extern "C" fn vxCreateVirtualImage(
         external_stride_x: Vec::new(),
         external_dim_x: Vec::new(),
         external_dim_y: Vec::new(),
+        roi_offsets: Vec::new(),
+        is_from_handle: false,
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -331,6 +335,8 @@ pub extern "C" fn vxCreateImageFromHandle(
             external_stride_x,
             external_dim_x,
             external_dim_y,
+            roi_offsets: Vec::new(),
+            is_from_handle: true,
         });
 
         let image_ptr = Box::into_raw(image) as vx_image;
@@ -493,6 +499,8 @@ pub extern "C" fn vxCreateUniformImage(
         external_stride_x: Vec::new(),
         external_dim_x: Vec::new(),
         external_dim_y: Vec::new(),
+        roi_offsets: Vec::new(),
+        is_from_handle: false,
     });
 
     // Convert to raw pointer
@@ -619,6 +627,8 @@ pub extern "C" fn vxCreateImageFromChannel(
         external_stride_x: Vec::new(),
         external_dim_x: Vec::new(),
         external_dim_y: Vec::new(),
+        roi_offsets: Vec::new(),
+        is_from_handle: false,
         });
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
@@ -627,6 +637,28 @@ pub extern "C" fn vxCreateImageFromChannel(
         register_valid_image(image_ptr as usize);
         
         image_ptr
+    }
+}
+
+/// Find the root parent image (the one created from handle or the top-level image)
+/// by following the parent chain
+unsafe fn find_root_parent(img: &VxCImage) -> (usize, bool) {
+    let mut current = img as *const VxCImage;
+    let mut addr = current as usize;
+    let mut has_from_handle = false;
+    
+    loop {
+        let cur = &*current;
+        if cur.is_from_handle {
+            has_from_handle = true;
+            return (addr, has_from_handle);
+        }
+        if let Some(parent_addr) = cur.parent {
+            current = parent_addr as *const VxCImage;
+            addr = parent_addr;
+        } else {
+            return (addr, has_from_handle);
+        }
     }
 }
 
@@ -910,24 +942,72 @@ pub extern "C" fn vxMapImagePatch(
 
         // For external memory images (created from handle), return pointer directly into user memory
         if img.is_external_memory {
-            let ext_ptr = if (plane_index as usize) < img.external_ptrs.len() {
-                img.external_ptrs[plane_index as usize]
+            // For ROI images, we need to get the root parent's current external pointers
+            // because the parent may have had its handles swapped.
+            // We follow the parent chain to find the image created from handle.
+            let (effective_ptrs, effective_strides, effective_stride_x, roi_start_x, roi_start_y) = {
+                if img.parent.is_some() {
+                    // This is a sub-image (ROI or channel) - find the root parent
+                    let (root_addr, root_is_from_handle) = unsafe { find_root_parent(img) };
+                    if root_is_from_handle {
+                        let root_img = unsafe { &*(root_addr as *const VxCImage) };
+                        let p_ptrs = root_img.external_ptrs.clone();
+                        let p_strides = root_img.external_strides.clone();
+                        let p_stride_x = root_img.external_stride_x.clone();
+                        // Accumulate ROI offsets through the parent chain
+                        // We need to sum up all the offsets from the current image up to the root
+                        let (mut accum_rx, mut accum_ry) = (0usize, 0usize);
+                        let mut current = img as *const VxCImage;
+                        loop {
+                            let cur = unsafe { &*current };
+                            if (plane_index as usize) < cur.roi_offsets.len() {
+                                let (rx, ry) = cur.roi_offsets[plane_index as usize];
+                                accum_rx += rx;
+                                accum_ry += ry;
+                            }
+                            if let Some(parent_addr) = cur.parent {
+                                current = parent_addr as *const VxCImage;
+                                // Stop at the root (from-handle image)
+                                if unsafe { &*current }.is_from_handle {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        (p_ptrs, p_strides, p_stride_x, accum_rx, accum_ry)
+                    } else {
+                        // Root parent is not from handle - use our own pointers
+                        (img.external_ptrs.clone(), img.external_strides.clone(), img.external_stride_x.clone(), 0, 0)
+                    }
+                } else {
+                    // Not a sub-image - use our own pointers
+                    (img.external_ptrs.clone(), img.external_strides.clone(), img.external_stride_x.clone(), 0, 0)
+                }
+            };
+
+            let ext_ptr = if (plane_index as usize) < effective_ptrs.len() {
+                effective_ptrs[plane_index as usize]
             } else {
                 return VX_ERROR_INVALID_PARAMETERS;
             };
             if ext_ptr.is_null() {
-                return VX_ERROR_INVALID_PARAMETERS;
+                // After vxSwapImageHandle with NULL new_ptrs, the image has no
+                // backing memory. Per OpenVX spec, vxMapImagePatch should return
+                // VX_ERROR_NO_MEMORY in this case.
+                use openvx_core::c_api::VX_ERROR_NO_MEMORY;
+                return VX_ERROR_NO_MEMORY;
             }
 
             // Use the original strides from the image handle
-            let ext_stride_y = if (plane_index as usize) < img.external_strides.len() {
-                img.external_strides[plane_index as usize]
+            let ext_stride_y = if (plane_index as usize) < effective_strides.len() {
+                effective_strides[plane_index as usize]
             } else {
                 // Fallback: compute stride from plane dimensions
                 plane_width as vx_int32
             };
-            let ext_stride_x = if (plane_index as usize) < img.external_stride_x.len() {
-                img.external_stride_x[plane_index as usize]
+            let ext_stride_x = if (plane_index as usize) < effective_stride_x.len() {
+                effective_stride_x[plane_index as usize]
             } else {
                 // For planar formats, stride_x is typically 1 byte per pixel
                 // For packed formats, it's bytes_per_pixel
@@ -935,7 +1015,9 @@ pub extern "C" fn vxMapImagePatch(
             };
 
             // Calculate the byte offset to the start of the patch in the plane
-            let offset_bytes = start_y as isize * ext_stride_y as isize + start_x as isize * ext_stride_x as isize;
+            // Include the ROI offset for ROI images
+            let offset_bytes = (roi_start_y + start_y) as isize * ext_stride_y as isize 
+                + (roi_start_x + start_x) as isize * ext_stride_x as isize;
             let patch_ptr = ext_ptr.offset(offset_bytes) as *mut c_void;
 
             // Fill addressing structure with ORIGINAL strides from handle
@@ -944,7 +1026,7 @@ pub extern "C" fn vxMapImagePatch(
             (*addr).stride_x = ext_stride_x;
             (*addr).stride_y = ext_stride_y;
             (*addr).step_x = 1;
-            (*addr).step_y = 1;
+            (*addr).step_y = 1u16;
             (*addr).scale_x = 1024; // VX_SCALE_UNITY
             (*addr).scale_y = 1024; // VX_SCALE_UNITY
             *ptr = patch_ptr;
@@ -1020,7 +1102,7 @@ pub extern "C" fn vxMapImagePatch(
         (*addr).stride_x = bpp as vx_int32;
         (*addr).stride_y = mapped_stride_y as vx_int32;
         (*addr).step_x = 1;
-        (*addr).step_y = 1;
+        (*addr).step_y = 1u16;
         (*addr).scale_x = 1024; // VX_SCALE_UNITY
         (*addr).scale_y = 1024; // VX_SCALE_UNITY
         *map_id = map_id_val;
@@ -1326,7 +1408,7 @@ pub extern "C" fn vxSetImageValidRectangle(
 ///   vx_status vxSwapImageHandle(vx_image image, void* const new_ptrs[], void* prev_ptrs[], vx_size num_planes)
 ///
 /// - If new_ptrs is non-NULL, the image's plane pointers are replaced with new_ptrs[].
-/// - If new_ptrs is NULL, the image reclaims its pointers (no replacement).
+/// - If new_ptrs is NULL, the image reclaims its pointers (sets them to NULL).
 /// - If prev_ptrs is non-NULL, the previous pointers are written to prev_ptrs[].
 /// - If prev_ptrs is NULL, previous pointers are not returned (but still swapped).
 #[no_mangle]
@@ -1342,13 +1424,14 @@ pub extern "C" fn vxSwapImageHandle(
 
     let img = unsafe { &mut *(image as *mut VxCImage) };
 
-    // Only works for images created from handles (external memory)
-    if !img.is_external_memory {
+    // Per OpenVX spec, this only works for images created directly from vxCreateImageFromHandle
+    // ROI images and channel images should fail even if they reference external memory
+    if !img.is_from_handle {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     let num_expected_planes = VxCImage::num_planes(img.format);
-    if num_planes != num_expected_planes {
+    if num_planes as usize != num_expected_planes {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
@@ -1367,6 +1450,12 @@ pub extern "C" fn vxSwapImageHandle(
                 let new_ptr = *new_ptrs.add(plane_idx);
                 if plane_idx < img.external_ptrs.len() {
                     img.external_ptrs[plane_idx] = new_ptr as *mut u8;
+                }
+            } else {
+                // new_ptrs is NULL: reclaim the image's pointers (set to NULL)
+                // This means the image no longer has valid external memory
+                if plane_idx < img.external_ptrs.len() {
+                    img.external_ptrs[plane_idx] = std::ptr::null_mut();
                 }
             }
         }
@@ -1528,26 +1617,96 @@ pub extern "C" fn vxCreateImageFromROI(
             return std::ptr::null_mut();
         }
 
-        // Create ROI image that references parent data
-        // Note: This is a simplified implementation that copies data
-        // A full implementation would handle ROI as a view into the parent
-        let bpp = VxCImage::bytes_per_pixel(source_img.format);
-        let parent_stride = source_img.width as usize * bpp;
-        let roi_stride = roi_width as usize * bpp;
-        let roi_size = roi_height as usize * roi_stride;
+        let context = source_img.context;
+        if context.is_null() {
+            return std::ptr::null_mut();
+        }
 
-        let mut roi_data = vec![0u8; roi_size];
+        // Per OpenVX spec, ROI images share memory with the parent.
+        // For external memory images, the ROI also shares external memory.
+        // When the parent's handles are swapped, the ROI sees the new data.
 
-        if let Ok(parent_data) = source_img.data.read() {
-            for y in 0..roi_height as usize {
-                let src_y = rect_ref.start_y as usize + y;
-                let src_offset = src_y * parent_stride + rect_ref.start_x as usize * bpp;
-                let dst_offset = y * roi_stride;
-                
-                if src_offset + roi_stride <= parent_data.len() {
-                    roi_data[dst_offset..dst_offset + roi_stride]
-                        .copy_from_slice(&parent_data[src_offset..src_offset + roi_stride]);
-                }
+        let is_planar = VxCImage::is_planar_format(source_img.format);
+        let num_planes = VxCImage::num_planes(source_img.format);
+
+        // Calculate per-plane ROI offsets and dimensions
+        let mut roi_external_ptrs = Vec::new();
+        let mut roi_external_strides = Vec::new();
+        let mut roi_external_stride_x = Vec::new();
+        let mut roi_external_dim_x = Vec::new();
+        let mut roi_external_dim_y = Vec::new();
+
+        let mut roi_offsets: Vec<(usize, usize)> = Vec::new();
+
+        for plane_idx in 0..num_planes {
+            let (plane_width, plane_height) = if is_planar {
+                let (pw, ph) = VxCImage::plane_dimensions(source_img.width, source_img.height, source_img.format, plane_idx);
+                (pw, ph)
+            } else {
+                (source_img.width, source_img.height)
+            };
+
+            let subsamp_x = if is_planar && plane_idx > 0 {
+                (source_img.width as usize) / (plane_width as usize)
+            } else {
+                1
+            };
+            let subsamp_y = if is_planar && plane_idx > 0 {
+                (source_img.height as usize) / (plane_height as usize)
+            } else {
+                1
+            };
+
+            let roi_plane_start_x = (rect_ref.start_x as usize) / subsamp_x;
+            let roi_plane_start_y = (rect_ref.start_y as usize) / subsamp_y;
+            let roi_plane_end_x = (rect_ref.end_x as usize + subsamp_x - 1) / subsamp_x;
+            let roi_plane_end_y = (rect_ref.end_y as usize + subsamp_y - 1) / subsamp_y;
+            let roi_plane_width = roi_plane_end_x.saturating_sub(roi_plane_start_x);
+            let roi_plane_height = roi_plane_end_y.saturating_sub(roi_plane_start_y);
+
+            roi_external_dim_x.push(roi_plane_width as u32);
+            roi_external_dim_y.push(roi_plane_height as u32);
+            roi_offsets.push((roi_plane_start_x, roi_plane_start_y));
+
+            if source_img.is_external_memory {
+                // For external memory, compute the offset to the ROI start within the plane
+                let ext_stride_y = if plane_idx < source_img.external_strides.len() {
+                    source_img.external_strides[plane_idx]
+                } else {
+                    plane_width as i32
+                };
+                let ext_stride_x = if plane_idx < source_img.external_stride_x.len() {
+                    source_img.external_stride_x[plane_idx]
+                } else {
+                    if is_planar { 1 } else { VxCImage::bytes_per_pixel(source_img.format) as i32 }
+                };
+
+                roi_external_strides.push(ext_stride_y);
+                roi_external_stride_x.push(ext_stride_x);
+
+                // Calculate the offset from the plane's base pointer to the ROI start
+                let offset_bytes = roi_plane_start_y as isize * ext_stride_y as isize
+                    + roi_plane_start_x as isize * ext_stride_x as isize;
+
+                // Get the parent's plane pointer and offset it
+                let parent_plane_ptr = if plane_idx < source_img.external_ptrs.len() {
+                    source_img.external_ptrs[plane_idx]
+                } else {
+                    std::ptr::null_mut()
+                };
+                let roi_ptr = if parent_plane_ptr.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    parent_plane_ptr.offset(offset_bytes)
+                };
+                roi_external_ptrs.push(roi_ptr);
+            } else {
+                // For internal memory, we still share the parent's Arc<RwLock<Vec<u8>>
+                // The offset is stored separately and used during map operations
+                roi_external_ptrs.push(std::ptr::null_mut());
+                let bpp = if is_planar { 1i32 } else { VxCImage::bytes_per_pixel(source_img.format) as i32 };
+                roi_external_stride_x.push(bpp);
+                roi_external_strides.push(plane_width as i32 * bpp);
             }
         }
 
@@ -1556,27 +1715,40 @@ pub extern "C" fn vxCreateImageFromROI(
             height: roi_height,
             format: source_img.format,
             is_virtual: false,
-            context: source_img.context,
-            data: Arc::new(RwLock::new(roi_data)),
+            context,
+            // Share the parent's data buffer - changes to parent data are visible in ROI
+            data: Arc::clone(&source_img.data),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
-            parent: Some(img as usize), // Store parent reference
-            is_external_memory: false,
-            external_ptrs: Vec::new(),
-        external_strides: Vec::new(),
-        external_stride_x: Vec::new(),
-        external_dim_x: Vec::new(),
-        external_dim_y: Vec::new(),
+            parent: Some(img as usize),
+            // If parent has external memory, ROI also uses external memory
+            // (with offset pointers to the ROI region)
+            is_external_memory: source_img.is_external_memory,
+            external_ptrs: roi_external_ptrs,
+            external_strides: roi_external_strides,
+            external_stride_x: roi_external_stride_x,
+            external_dim_x: roi_external_dim_x,
+            external_dim_y: roi_external_dim_y,
+            roi_offsets,
+            is_from_handle: false, // ROI images should NOT support vxSwapImageHandle
         });
 
         let image_ptr = Box::into_raw(roi_image) as vx_image;
 
         // Register image address in unified registry for type queries (vxQueryReference)
-        unsafe {
-            register_image(image_ptr as usize);
-        }
+        register_image(image_ptr as usize);
 
         // Register as valid image for double-free protection
         register_valid_image(image_ptr as usize);
+
+        // Register in reference counting
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(image_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+
+        // Register in REFERENCE_TYPES for type detection
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(image_ptr as usize, VX_TYPE_IMAGE);
+        }
 
         image_ptr
     }
