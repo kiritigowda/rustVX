@@ -72,6 +72,10 @@ pub extern "C" fn vxCreateImage(
         parent: None,
         is_external_memory: false,
         external_ptrs: Vec::new(),
+        external_strides: Vec::new(),
+        external_stride_x: Vec::new(),
+        external_dim_x: Vec::new(),
+        external_dim_y: Vec::new(),
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -191,6 +195,10 @@ pub extern "C" fn vxCreateVirtualImage(
         parent: None,
         is_external_memory: false,
         external_ptrs: Vec::new(),
+        external_strides: Vec::new(),
+        external_stride_x: Vec::new(),
+        external_dim_x: Vec::new(),
+        external_dim_y: Vec::new(),
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -235,6 +243,14 @@ pub extern "C" fn vxCreateVirtualImage(
 
 /// Create an image from existing handles
 /// 
+/// Per OpenVX spec:
+///   vx_image vxCreateImageFromHandle(
+///       vx_context context,
+///       vx_df_image color,
+///       vx_imagepatch_addressing_t addrs[],
+///       void *ptrs[],
+///       vx_enum memory_type)
+/// 
 /// IMPORTANT: The image created does NOT own the memory - it references external memory
 /// provided by the caller. vxReleaseImage will NOT free this memory.
 #[no_mangle]
@@ -243,12 +259,19 @@ pub extern "C" fn vxCreateImageFromHandle(
     color: vx_df_image,
     addrs: *const vx_imagepatch_addressing_t,
     ptrs: *mut *mut c_void,
-    num_planes: vx_uint32,
+    memory_type: vx_enum,
 ) -> vx_image {
     if context.is_null() || addrs.is_null() || ptrs.is_null() {
         return std::ptr::null_mut();
     }
 
+    // Validate memory type
+    if memory_type != VX_MEMORY_TYPE_HOST {
+        return std::ptr::null_mut();
+    }
+
+    // Determine number of planes from the format
+    let num_planes = VxCImage::num_planes(color);
     if num_planes == 0 {
         return std::ptr::null_mut();
     }
@@ -270,44 +293,23 @@ pub extern "C" fn vxCreateImageFromHandle(
             return std::ptr::null_mut();
         }
 
-        // Validate expected number of planes for the format
-        let expected_planes = VxCImage::num_planes(color) as vx_uint32;
-        if num_planes != expected_planes {
-            return std::ptr::null_mut();
-        }
-
-        // For planar formats, validate each plane's addressing info
-        let is_planar = VxCImage::is_planar_format(color);
-        if is_planar {
-            for plane_idx in 0..num_planes as usize {
-                let plane_addr = &*addrs.add(plane_idx);
-                // Each plane should have valid dimensions
-                if plane_addr.dim_x == 0 || plane_addr.dim_y == 0 {
-                    return std::ptr::null_mut();
-                }
-                // Validate stride is reasonable
-                if plane_addr.stride_y < plane_addr.dim_x as vx_int32 {
-                    // stride_y should be at least dim_x * bytes_per_pixel
-                    // For planar formats, each pixel is 1 byte
-                    return std::ptr::null_mut();
-                }
-            }
-        }
-
-        // Calculate total size for the image
-        let total_size = VxCImage::calculate_size(width, height, color);
-        if total_size == 0 {
-            return std::ptr::null_mut();
-        }
-
-        // Validate all plane pointers
-        let mut external_ptrs: Vec<*mut u8> = Vec::with_capacity(num_planes as usize);
-        for plane_idx in 0..num_planes as usize {
+        // Validate all plane pointers and collect them along with stride info
+        let mut external_ptrs: Vec<*mut u8> = Vec::with_capacity(num_planes);
+        let mut external_strides: Vec<i32> = Vec::with_capacity(num_planes);
+        let mut external_stride_x: Vec<i32> = Vec::with_capacity(num_planes);
+        let mut external_dim_x: Vec<u32> = Vec::with_capacity(num_planes);
+        let mut external_dim_y: Vec<u32> = Vec::with_capacity(num_planes);
+        for plane_idx in 0..num_planes {
             let plane_ptr = *ptrs.add(plane_idx);
             if plane_ptr.is_null() {
                 return std::ptr::null_mut();
             }
             external_ptrs.push(plane_ptr as *mut u8);
+            let plane_addr = &*addrs.add(plane_idx);
+            external_strides.push(plane_addr.stride_y);
+            external_stride_x.push(plane_addr.stride_x);
+            external_dim_x.push(plane_addr.dim_x);
+            external_dim_y.push(plane_addr.dim_y);
         }
 
         // Create an empty Vec - we won't use it for external memory
@@ -325,6 +327,10 @@ pub extern "C" fn vxCreateImageFromHandle(
             parent: None,
             is_external_memory: true,
             external_ptrs,
+            external_strides,
+            external_stride_x,
+            external_dim_x,
+            external_dim_y,
         });
 
         let image_ptr = Box::into_raw(image) as vx_image;
@@ -334,6 +340,16 @@ pub extern "C" fn vxCreateImageFromHandle(
         
         // Register as valid image for double-free protection
         register_valid_image(image_ptr as usize);
+
+        // Register in reference counting
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(image_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+
+        // Register in REFERENCE_TYPES for type detection
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(image_ptr as usize, VX_TYPE_IMAGE);
+        }
 
         image_ptr
     }
@@ -473,6 +489,10 @@ pub extern "C" fn vxCreateUniformImage(
         parent: None,
         is_external_memory: false,
         external_ptrs: Vec::new(),
+        external_strides: Vec::new(),
+        external_stride_x: Vec::new(),
+        external_dim_x: Vec::new(),
+        external_dim_y: Vec::new(),
     });
 
     // Convert to raw pointer
@@ -595,6 +615,10 @@ pub extern "C" fn vxCreateImageFromChannel(
             parent: Some(parent_ptr),
             is_external_memory: false,
             external_ptrs: Vec::new(),
+        external_strides: Vec::new(),
+        external_stride_x: Vec::new(),
+        external_dim_x: Vec::new(),
+        external_dim_y: Vec::new(),
         });
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
@@ -827,6 +851,12 @@ pub extern "C" fn vxSetImageAttribute(
 }
 
 /// Map image patch for CPU access
+///
+/// Per OpenVX spec, if the image was created via vxCreateImageFromHandle,
+/// the returned address (*ptr) will be the address of the patch in the
+/// original pixel buffer provided when the image was created.
+/// The returned memory layout will be identical to that of the addressing
+/// structure provided when vxCreateImageFromHandle was called.
 #[no_mangle]
 pub extern "C" fn vxMapImagePatch(
     image: vx_image,
@@ -861,7 +891,7 @@ pub extern "C" fn vxMapImagePatch(
         };
 
         // Validate the plane_index
-        if is_planar && plane_index as usize >= VxCImage::num_planes(img.format) {
+        if plane_index as usize >= VxCImage::num_planes(img.format) {
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
@@ -878,6 +908,66 @@ pub extern "C" fn vxMapImagePatch(
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
+        // For external memory images (created from handle), return pointer directly into user memory
+        if img.is_external_memory {
+            let ext_ptr = if (plane_index as usize) < img.external_ptrs.len() {
+                img.external_ptrs[plane_index as usize]
+            } else {
+                return VX_ERROR_INVALID_PARAMETERS;
+            };
+            if ext_ptr.is_null() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+
+            // Use the original strides from the image handle
+            let ext_stride_y = if (plane_index as usize) < img.external_strides.len() {
+                img.external_strides[plane_index as usize]
+            } else {
+                // Fallback: compute stride from plane dimensions
+                plane_width as vx_int32
+            };
+            let ext_stride_x = if (plane_index as usize) < img.external_stride_x.len() {
+                img.external_stride_x[plane_index as usize]
+            } else {
+                // For planar formats, stride_x is typically 1 byte per pixel
+                // For packed formats, it's bytes_per_pixel
+                if is_planar { 1 } else { VxCImage::bytes_per_pixel(img.format) as vx_int32 }
+            };
+
+            // Calculate the byte offset to the start of the patch in the plane
+            let offset_bytes = start_y as isize * ext_stride_y as isize + start_x as isize * ext_stride_x as isize;
+            let patch_ptr = ext_ptr.offset(offset_bytes) as *mut c_void;
+
+            // Fill addressing structure with ORIGINAL strides from handle
+            (*addr).dim_x = width as vx_uint32;
+            (*addr).dim_y = height as vx_uint32;
+            (*addr).stride_x = ext_stride_x;
+            (*addr).stride_y = ext_stride_y;
+            (*addr).step_x = 1;
+            (*addr).step_y = 1;
+            (*addr).scale_x = 1024; // VX_SCALE_UNITY
+            (*addr).scale_y = 1024; // VX_SCALE_UNITY
+            *ptr = patch_ptr;
+
+            // For external memory, we don't need to copy data.
+            // The user directly accesses the memory.
+            // We still need a map_id for unmap tracking.
+            // Store a minimal entry so vxUnmapImagePatch knows this was mapped.
+            let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
+                let id = patches.len() + 1;
+                // For external memory, we store empty data since no copy was made
+                // The (offset, stride_y, plane_index, mapped_width) are still stored for potential unmap use
+                patches.push((id, Vec::new(), usage, 0, ext_stride_y as usize, plane_index, width as u32));
+                id
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            };
+            *map_id = map_id_val;
+
+            return VX_SUCCESS;
+        }
+
+        // For regular (internal memory) images, copy the data to a separate buffer
         // Calculate stride and offset based on format and plane
         let bpp = if is_planar {
             1usize // For planar formats, each plane is 1 byte per pixel (luma/chroma)
@@ -899,52 +989,22 @@ pub extern "C" fn vxMapImagePatch(
         let patch_size = height * mapped_stride_y;
         let mut patch_data = vec![0u8; patch_size];
         
-        // Copy data row by row - handle both internal and external memory
-        if img.is_external_memory {
-            // For images from handle, read from external memory pointers
-            let ext_ptr = if (plane_index as usize) < img.external_ptrs.len() {
-                img.external_ptrs[plane_index as usize]
-            } else {
-                return VX_ERROR_INVALID_PARAMETERS;
-            };
-            if !ext_ptr.is_null() {
-                for y in 0..height {
-                    let src_start = offset + y * stride_y;
-                    let dst_start = y * mapped_stride_y;
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            ext_ptr.add(src_start),
-                            patch_data.as_mut_ptr().add(dst_start),
-                            width * bpp,
-                        );
-                    }
-                }
-            }
-        } else {
-            // For regular images, read from internal data buffer
-            let data_guard = match img.data.read() {
-                Ok(guard) => guard,
-                Err(_) => return VX_ERROR_INVALID_REFERENCE,
-            };
-            for y in 0..height {
-                let src_start = offset + y * stride_y;
-                let dst_start = y * mapped_stride_y;
-                if src_start + width * bpp <= data_guard.len() {
-                    patch_data[dst_start..dst_start + width * bpp]
-                        .copy_from_slice(&data_guard[src_start..src_start + width * bpp]);
-                }
-            }
-            drop(data_guard);
-        }
-        
-        // Store: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
-        // Note: For external memory, stride_y is the plane stride (full width * bpp)
-        // For unmapping, we need the actual stride_y of the source data
-        let store_stride_y = if img.is_external_memory {
-            stride_y // Full plane width stride for external memory
-        } else {
-            stride_y // Same for internal memory
+        // Copy data row by row from internal data buffer
+        let data_guard = match img.data.read() {
+            Ok(guard) => guard,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
         };
+        for y in 0..height {
+            let src_start = offset + y * stride_y;
+            let dst_start = y * mapped_stride_y;
+            if src_start + width * bpp <= data_guard.len() {
+                patch_data[dst_start..dst_start + width * bpp]
+                    .copy_from_slice(&data_guard[src_start..src_start + width * bpp]);
+            }
+        }
+        drop(data_guard);
+        
+        let store_stride_y = stride_y;
         
         let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
             let id = patches.len() + 1;
@@ -995,6 +1055,14 @@ pub extern "C" fn vxUnmapImagePatch(
         }) {
             let patch_tuple = patches.remove(pos);
             let (_, patch_data, usage, offset, stride_y, plane_index, mapped_width) = patch_tuple;
+            
+            // For external memory images, no copy-back needed since the user
+            // directly modified the external memory buffer.
+            // The patch_data will be empty for external memory maps.
+            if img.is_external_memory && patch_data.is_empty() {
+                // External memory: direct pointer was returned, nothing to copy back
+                return VX_SUCCESS;
+            }
             
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
@@ -1102,7 +1170,23 @@ pub extern "C" fn vxCopyImagePatch(
         };
 
         // Calculate stride and offset based on format and plane
-        let (bpp, stride_y, plane_offset) = if is_planar {
+        let (bpp, stride_y, plane_offset) = if img.is_external_memory {
+            // For external memory images, use the strides from vxCreateImageFromHandle
+            let ext_bpp = if (plane_index as usize) < img.external_stride_x.len() && img.external_stride_x[plane_index as usize] > 0 {
+                img.external_stride_x[plane_index as usize] as usize
+            } else if is_planar {
+                1usize
+            } else {
+                VxCImage::bytes_per_pixel(img.format)
+            };
+            let ext_stride_y = if (plane_index as usize) < img.external_strides.len() {
+                img.external_strides[plane_index as usize] as usize
+            } else {
+                plane_width * ext_bpp
+            };
+            // No plane_offset for external memory - each plane has its own pointer
+            (ext_bpp, ext_stride_y, 0usize)
+        } else if is_planar {
             // For planar formats, each plane is 1 byte per pixel (luma/chroma)
             let bpp = 1usize;
             let stride_y = plane_width * bpp;
@@ -1237,18 +1321,23 @@ pub extern "C" fn vxSetImageValidRectangle(
 }
 
 /// Swap image handle
+///
+/// Per OpenVX spec:
+///   vx_status vxSwapImageHandle(vx_image image, void* const new_ptrs[], void* prev_ptrs[], vx_size num_planes)
+///
+/// - If new_ptrs is non-NULL, the image's plane pointers are replaced with new_ptrs[].
+/// - If new_ptrs is NULL, the image reclaims its pointers (no replacement).
+/// - If prev_ptrs is non-NULL, the previous pointers are written to prev_ptrs[].
+/// - If prev_ptrs is NULL, previous pointers are not returned (but still swapped).
 #[no_mangle]
 pub extern "C" fn vxSwapImageHandle(
     image: vx_image,
     new_ptrs: *const *mut c_void,
     prev_ptrs: *mut *mut c_void,
-    num_planes: vx_uint32,
+    num_planes: vx_size,
 ) -> vx_status {
     if image.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
-    }
-    if new_ptrs.is_null() || prev_ptrs.is_null() {
-        return VX_ERROR_INVALID_PARAMETERS;
     }
 
     let img = unsafe { &mut *(image as *mut VxCImage) };
@@ -1258,23 +1347,27 @@ pub extern "C" fn vxSwapImageHandle(
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    let num_expected_planes = VxCImage::num_planes(img.format) as vx_uint32;
+    let num_expected_planes = VxCImage::num_planes(img.format);
     if num_planes != num_expected_planes {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
     unsafe {
-        for plane_idx in 0..num_planes as usize {
-            // Return old pointers
-            if plane_idx < img.external_ptrs.len() {
-                *prev_ptrs.add(plane_idx) = img.external_ptrs[plane_idx] as *mut c_void;
-            } else {
-                *prev_ptrs.add(plane_idx) = std::ptr::null_mut();
+        for plane_idx in 0..num_planes {
+            // Return old pointers if prev_ptrs is provided
+            if !prev_ptrs.is_null() {
+                if plane_idx < img.external_ptrs.len() {
+                    *prev_ptrs.add(plane_idx) = img.external_ptrs[plane_idx] as *mut c_void;
+                } else {
+                    *prev_ptrs.add(plane_idx) = std::ptr::null_mut();
+                }
             }
-            // Set new pointers
-            let new_ptr = *new_ptrs.add(plane_idx);
-            if plane_idx < img.external_ptrs.len() {
-                img.external_ptrs[plane_idx] = new_ptr as *mut u8;
+            // Set new pointers if new_ptrs is provided
+            if !new_ptrs.is_null() {
+                let new_ptr = *new_ptrs.add(plane_idx);
+                if plane_idx < img.external_ptrs.len() {
+                    img.external_ptrs[plane_idx] = new_ptr as *mut u8;
+                }
             }
         }
     }
@@ -1469,6 +1562,10 @@ pub extern "C" fn vxCreateImageFromROI(
             parent: Some(img as usize), // Store parent reference
             is_external_memory: false,
             external_ptrs: Vec::new(),
+        external_strides: Vec::new(),
+        external_stride_x: Vec::new(),
+        external_dim_x: Vec::new(),
+        external_dim_y: Vec::new(),
         });
 
         let image_ptr = Box::into_raw(roi_image) as vx_image;
