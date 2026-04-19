@@ -3396,34 +3396,8 @@ pub extern "C" fn vxCopyScalar(
     usage: vx_enum,
     user_mem_type: vx_enum,
 ) -> vx_status {
-    if scalar.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    if user_ptr.is_null() {
-        return VX_ERROR_INVALID_PARAMETERS;
-    }
-
-    if user_mem_type != VX_MEMORY_TYPE_HOST {
-        return VX_ERROR_NOT_IMPLEMENTED;
-    }
-
-    let s = unsafe { &*(scalar as *const VxCScalar) };
-    
-    unsafe {
-        match usage {
-            VX_READ_ONLY => {
-                let data = s.data.read().unwrap();
-                std::ptr::copy_nonoverlapping(data.as_ptr(), user_ptr as *mut u8, data.len());
-            }
-            VX_WRITE_ONLY => {
-                let mut data = s.data.write().unwrap();
-                std::ptr::copy_nonoverlapping(user_ptr as *const u8, data.as_mut_ptr(), data.len());
-            }
-            _ => return VX_ERROR_INVALID_PARAMETERS,
-        }
-    }
-
-    VX_SUCCESS
+    // Delegate to the c_api_data implementation which works with the actual VxCScalarData layout
+    crate::c_api_data::vxCopyScalarData(scalar, user_ptr, usage, user_mem_type)
 }
 
 // ============================================================================

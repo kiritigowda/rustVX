@@ -134,7 +134,7 @@ impl KernelTrait for WeightedAverageKernel {
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
         
-        weighted(src1, src2, dst, 128)?;
+        weighted(src1, src2, dst, 0.5)?;
         Ok(())
     }
 }
@@ -209,23 +209,25 @@ pub fn multiply(src1: &Image, src2: &Image, dst: &Image, scale: f32) -> VxResult
 }
 
 /// Weighted average: (src1 * w1 + src2 * w2) / 256
-pub fn weighted(src1: &Image, src2: &Image, dst: &Image, alpha: u8) -> VxResult<()> {
+pub fn weighted(src1: &Image, src2: &Image, dst: &Image, alpha_f32: f32) -> VxResult<()> {
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
     
     let width = src1.width();
     let height = src1.height();
-    let beta = 255 - alpha;
+    let alpha_w = alpha_f32;
+    let beta_w = 1.0 - alpha_f32;
     
     let mut dst_data = dst.data_mut();
     
     for y in 0..height {
         for x in 0..width {
-            let a = src1.get_pixel(x, y) as u32;
-            let b = src2.get_pixel(x, y) as u32;
-            let result = (a * alpha as u32 + b * beta as u32) / 256;
-            dst_data[y * width + x] = result as u8;
+            let a = src1.get_pixel(x, y) as f32;
+            let b = src2.get_pixel(x, y) as f32;
+            let result = alpha_w * a + beta_w * b;
+            // OpenVX spec: truncate towards zero (C-style cast)
+            dst_data[y * width + x] = result as i32 as u8;
         }
     }
     
