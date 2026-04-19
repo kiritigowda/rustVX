@@ -2311,13 +2311,32 @@ pub fn vxu_multiply_impl(
 pub fn vxu_weighted_average_impl(
     context: vx_context,
     img1: vx_image,
-    _alpha: vx_scalar,
+    alpha: vx_scalar,
     img2: vx_image,
     output: vx_image,
 ) -> vx_status {
     if context.is_null() || img1.is_null() || img2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
+
+    // Read alpha value from scalar
+    let mut alpha_f32: f32 = 0.5;
+    if !alpha.is_null() {
+        unsafe {
+            let status = crate::c_api_data::vxCopyScalarData(
+                alpha,
+                &mut alpha_f32 as *mut f32 as *mut c_void,
+                0x11001, // VX_READ_ONLY
+                0x0,     // VX_MEMORY_TYPE_HOST
+            );
+            if status != 0 { // 0 = VX_SUCCESS
+                alpha_f32 = 0.5; // fallback
+            }
+        }
+    }
+    
+    // Convert float alpha [0,1] - pass directly to weighted function
+    // alpha_f32 is already in [0,1] range from the scalar
 
     unsafe {
         let src1 = match c_image_to_rust(img1) {
@@ -2335,10 +2354,7 @@ pub fn vxu_weighted_average_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Default alpha value 128 (0.5)
-        let alpha_val: u8 = 128;
-
-        match weighted(&src1, &src2, &mut dst, alpha_val) {
+        match weighted(&src1, &src2, &mut dst, alpha_f32) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -3561,25 +3577,26 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_po
     Ok(())
 }
 
-fn weighted(src1: &Image, src2: &Image, dst: &mut Image, alpha: u8) -> VxResult<()> {
+fn weighted(src1: &Image, src2: &Image, dst: &mut Image, alpha_f32: f32) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
 
     let width = src1.width;
     let height = src1.height;
-    let beta = 255 - alpha;
+    let alpha_w = alpha_f32;
+    let beta_w = 1.0 - alpha_f32;
 
     let dst_data = dst.data_mut();
 
     for y in 0..height {
         for x in 0..width {
-            let a = src1.get_pixel(x, y) as u32;
-            let b = src2.get_pixel(x, y) as u32;
-            let result = (a * alpha as u32 + b * beta as u32) / 256;
+            let a = src1.get_pixel(x, y) as f32;
+            let b = src2.get_pixel(x, y) as f32;
+            let result = alpha_w * a + beta_w * b;
             let idx = y.saturating_mul(width).saturating_add(x);
             if let Some(p) = dst_data.get_mut(idx) {
-                *p = result as u8;
+                *p = result as i32 as u8;
             }
         }
     }

@@ -136,6 +136,47 @@ pub extern "C" fn vxCreateScalar(
     scalar_ptr
 }
 
+/// Copy scalar data (works with VxCScalarData layout)
+#[no_mangle]
+pub extern "C" fn vxCopyScalarData(
+    scalar: vx_scalar,
+    user_ptr: *mut c_void,
+    usage: vx_enum,
+    user_mem_type: vx_enum,
+) -> vx_status {
+    if scalar.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if user_ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != 0x0 { // VX_MEMORY_TYPE_HOST
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    unsafe {
+        let s = &*(scalar as *const VxCScalarData);
+        match usage {
+            0x11001 | 0x1 => {
+                // VX_READ_ONLY
+                std::ptr::copy_nonoverlapping(s.data.as_ptr(), user_ptr as *mut u8, s.data.len());
+            }
+            0x11002 | 0x2 => {
+                // VX_WRITE_ONLY
+                let s_mut = &mut *(scalar as *mut VxCScalarData);
+                std::ptr::copy_nonoverlapping(user_ptr as *const u8, s_mut.data.as_mut_ptr(), s_mut.data.len());
+            }
+            0x11003 | 0x3 => {
+                // VX_READ_AND_WRITE
+                std::ptr::copy_nonoverlapping(s.data.as_ptr(), user_ptr as *mut u8, s.data.len());
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+
+    VX_SUCCESS
+}
+
 /// Query scalar attributes
 #[no_mangle]
 pub extern "C" fn vxQueryScalar(
