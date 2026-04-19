@@ -16,6 +16,28 @@ use crate::c_api::{
 };
 use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage};
 
+/// OpenVX enum constants for convert policy
+const VX_CONVERT_POLICY_WRAP: vx_enum = 0xA000;
+const VX_CONVERT_POLICY_SATURATE: vx_enum = 0xA001;
+
+/// OpenVX enum constants for round policy  
+const VX_ROUND_POLICY_TO_ZERO: vx_enum = 0x12001;
+const VX_ROUND_POLICY_TO_NEAREST_EVEN: vx_enum = 0x12002;
+fn read_scale_from_scalar(scalar: vx_scalar) -> f32 {
+    if scalar.is_null() {
+        return 1.0; // Default scale
+    }
+    // Read directly from VxCScalarData pointer
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            f32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+        } else {
+            1.0
+        }
+    }
+}
+
 /// Image format enum for internal use
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageFormat {
@@ -2276,14 +2298,17 @@ pub fn vxu_multiply_impl(
     context: vx_context,
     in1: vx_image,
     in2: vx_image,
-    _scale: vx_scalar,
-    _overflow_policy: vx_enum,
-    _rounding_policy: vx_enum,
+    scale: vx_scalar,
+    overflow_policy: vx_enum,
+    rounding_policy: vx_enum,
     output: vx_image,
 ) -> vx_status {
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
+
+    // Read scale value from scalar
+    let scale_value = read_scale_from_scalar(scale);
 
     unsafe {
         let src1 = match c_image_to_rust(in1) {
@@ -2301,7 +2326,7 @@ pub fn vxu_multiply_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match multiply(&src1, &src2, &mut dst, 1.0, _overflow_policy, _rounding_policy) {
+        match multiply(&src1, &src2, &mut dst, scale_value, overflow_policy, rounding_policy) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -3359,7 +3384,7 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult
 
     let width = src1.width;
     let height = src1.height;
-    let saturate = policy == 1; // VX_CONVERT_POLICY_SATURATE = 1
+    let saturate = policy == VX_CONVERT_POLICY_SATURATE;
 
     // Check output format
     let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
@@ -3381,9 +3406,12 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult
                     src2.get_pixel(x, y) as i32 
                 };
                 let sum = a + b;
-                // For S16 output, wrap to i16 range
-                let wrapped = sum as i16;
-                dst.set_pixel_s16(x, y, wrapped);
+                let result = if saturate {
+                    sum.clamp(-32768, 32767) as i16
+                } else {
+                    sum as i16  // Wrap
+                };
+                dst.set_pixel_s16(x, y, result);
             }
         }
     } else {
@@ -3428,7 +3456,7 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
 
     let width = src1.width;
     let height = src1.height;
-    let saturate = policy == 1; // VX_CONVERT_POLICY_SATURATE = 1
+    let saturate = policy == VX_CONVERT_POLICY_SATURATE;
 
     // Check output format
     let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
@@ -3450,9 +3478,12 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
                     src2.get_pixel(x, y) as i32 
                 };
                 let diff = a - b;
-                // For S16 output, wrap to i16 range
-                let wrapped = diff as i16;
-                dst.set_pixel_s16(x, y, wrapped);
+                let result = if saturate {
+                    diff.clamp(-32768, 32767) as i16
+                } else {
+                    diff as i16  // Wrap
+                };
+                dst.set_pixel_s16(x, y, result);
             }
         }
     } else {
@@ -3498,43 +3529,54 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_po
 
     let width = src1.width;
     let height = src1.height;
-    let saturate = overflow_policy == 1; // VX_CONVERT_POLICY_SATURATE = 1
-    let round_to_nearest = rounding_policy == 2; // VX_ROUND_POLICY_TO_NEAREST_EVEN = 2
+    let saturate = overflow_policy == VX_CONVERT_POLICY_SATURATE;
+    let round_to_nearest = rounding_policy == VX_ROUND_POLICY_TO_NEAREST_EVEN;
 
     // Check output format
     let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
     let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
     let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
 
-    // Parse scale from scalar value - scale is typically a float representing 1/2^n
-    // OpenVX multiply: result = (src1 * src2 * scale) / 256.0
-    let scale_factor = scale * 256.0 / 255.0; // Normalize for byte range
+    // OpenVX spec: dst(x,y) = src1(x,y) * src2(x,y) * scale
+    // scale is a float32, e.g. 1/255 or 1/2^n
+    // For U8 output, result is clamped/wrapped to [0, 255]
+    // For S16 output, result is clamped/wrapped to [-32768, 32767]
 
     if dst_is_s16 {
-        // S16 output - use 32-bit intermediate
+        // S16 output - use 64-bit intermediate
         for y in 0..height {
             for x in 0..width {
                 let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i32 
+                    src1.get_pixel_s16(x, y) as i64 
                 } else { 
-                    src1.get_pixel(x, y) as i32 
+                    src1.get_pixel(x, y) as i64 
                 };
                 let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i32 
+                    src2.get_pixel_s16(x, y) as i64 
                 } else { 
-                    src2.get_pixel(x, y) as i32 
+                    src2.get_pixel(x, y) as i64 
                 };
                 
-                let product = (a * b) as f64 * scale as f64;
+                // Compute: a * b * scale with proper rounding
+                let product = (a as f64) * (b as f64) * (scale as f64);
                 let rounded = if round_to_nearest {
-                    product.round() as i32
+                    product.round_ties_even() as i64
                 } else {
-                    product as i32 // truncate toward zero
+                    // VX_ROUND_POLICY_TO_ZERO: truncate toward zero
+                    if product >= 0.0 {
+                        product.floor() as i64
+                    } else {
+                        product.ceil() as i64
+                    }
                 };
                 
-                // Wrap to i16 range for S16 output
-                let wrapped = rounded as i16;
-                dst.set_pixel_s16(x, y, wrapped);
+                let result = if saturate {
+                    rounded.clamp(-32768, 32767) as i16
+                } else {
+                    // Wrap: just truncate to i16
+                    rounded as i16
+                };
+                dst.set_pixel_s16(x, y, result);
             }
         }
     } else {
@@ -3543,27 +3585,34 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_po
         for y in 0..height {
             for x in 0..width {
                 let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i32 
+                    src1.get_pixel_s16(x, y) as i64 
                 } else { 
-                    src1.get_pixel(x, y) as i32 
+                    src1.get_pixel(x, y) as i64 
                 };
                 let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i32 
+                    src2.get_pixel_s16(x, y) as i64 
                 } else { 
-                    src2.get_pixel(x, y) as i32 
+                    src2.get_pixel(x, y) as i64 
                 };
                 
-                let product = (a * b) as f64 * scale as f64;
+                // Compute: a * b * scale with proper rounding
+                let product = (a as f64) * (b as f64) * (scale as f64);
                 let rounded = if round_to_nearest {
-                    product.round() as i32
+                    product.round_ties_even() as i64
                 } else {
-                    product as i32 // truncate toward zero
+                    // VX_ROUND_POLICY_TO_ZERO: truncate toward zero
+                    if product >= 0.0 {
+                        product.floor() as i64
+                    } else {
+                        product.ceil() as i64
+                    }
                 };
                 
                 let result = if saturate {
                     rounded.clamp(0, 255) as u8
                 } else {
-                    rounded as u8 // wrap
+                    // Wrap: just truncate to u8
+                    rounded as u8
                 };
                 
                 let idx = y.saturating_mul(width).saturating_add(x);
