@@ -4,6 +4,7 @@
 
 use std::ffi::c_void;
 use std::sync::RwLock;
+use std::sync::Arc;
 pub use crate::c_api::*;
 use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES};
 use crate::unified_c_api::{
@@ -614,6 +615,8 @@ pub struct VxCLUTData {
     pub offset: vx_int32,
     pub data: RwLock<Vec<u8>>,
     pub context: vx_context,
+    /// Structure for tracking mapped LUTs: (map_id, mapped_data, usage)
+    pub mapped_luts: Arc<RwLock<Vec<(usize, Vec<u8>, vx_enum)>>>,
 }
 
 impl VxCLUTData {
@@ -652,9 +655,10 @@ pub extern "C" fn vxCreateLUT(
     let lut = Box::new(VxCLUTData {
         data_type,
         count,
-        offset: 0,
+        offset: if data_type == 0x004 { (count / 2) as vx_int32 } else { 0 },
         data: RwLock::new(vec![0u8; total_size]),
         context,
+        mapped_luts: Arc::new(RwLock::new(Vec::new())),
     });
 
     let lut_ptr = Box::into_raw(lut) as vx_lut;
@@ -755,6 +759,140 @@ pub extern "C" fn vxReleaseLUT(lut: *mut vx_lut) -> vx_status {
     }
 
     VX_SUCCESS
+}
+
+/// Query LUT attributes
+#[no_mangle]
+pub extern "C" fn vxQueryLUT(
+    lut: vx_lut,
+    attribute: i32,
+    ptr: *mut c_void,
+    size: usize,
+) -> i32 {
+    if lut.is_null() || ptr.is_null() {
+        return -2;
+    }
+    
+    unsafe {
+        let l = &*(lut as *const VxCLUTData);
+        match attribute {
+            0x80700 => { // VX_LUT_TYPE
+                if size >= std::mem::size_of::<vx_enum>() {
+                    *(ptr as *mut vx_enum) = l.data_type;
+                    return 0;
+                }
+            }
+            0x80701 => { // VX_LUT_COUNT
+                if size >= std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = l.count;
+                    return 0;
+                }
+            }
+            0x80702 => { // VX_LUT_SIZE
+                if size >= std::mem::size_of::<vx_size>() {
+                    let elem_size = VxCLUTData::element_size(l.data_type);
+                    *(ptr as *mut vx_size) = l.count * elem_size;
+                    return 0;
+                }
+            }
+            0x80703 => { // VX_LUT_OFFSET
+                if size >= std::mem::size_of::<vx_int32>() {
+                    *(ptr as *mut vx_int32) = l.offset;
+                    return 0;
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    -30
+}
+
+/// Map LUT for CPU access
+#[no_mangle]
+pub extern "C" fn vxMapLUT(
+    lut: vx_lut,
+    map_id: *mut vx_map_id,
+    ptr: *mut *mut c_void,
+    usage: vx_enum,
+    mem_type: vx_enum,
+    _flags: vx_uint32,
+) -> vx_status {
+    if lut.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if map_id.is_null() || ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if mem_type != VX_MEMORY_TYPE_HOST {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    let l = unsafe { &mut *(lut as *mut VxCLUTData) };
+
+    unsafe {
+        // Get LUT data
+        let data_guard = match l.data.read() {
+            Ok(guard) => guard,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        // Create a copy of the data for the mapped LUT
+        let mapped_data = data_guard.clone();
+
+        // Store the mapped data
+        let map_id_val = if let Ok(mut mappings) = l.mapped_luts.write() {
+            let id = mappings.len() + 1;
+            mappings.push((id, mapped_data, usage));
+            id
+        } else {
+            return VX_ERROR_INVALID_REFERENCE;
+        };
+
+        // Set output parameters
+        *map_id = map_id_val;
+
+        // Return pointer to the STORED mapped data
+        if let Ok(mappings) = l.mapped_luts.read() {
+            if let Some(mapping) = mappings.iter().find(|(id, _, _)| *id == map_id_val) {
+                *ptr = mapping.1.as_ptr() as *mut c_void;
+            }
+        }
+
+        drop(data_guard);
+    }
+
+    VX_SUCCESS
+}
+
+/// Unmap LUT
+#[no_mangle]
+pub extern "C" fn vxUnmapLUT(
+    lut: vx_lut,
+    map_id: vx_map_id,
+) -> vx_status {
+    if lut.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    let l = unsafe { &mut *(lut as *mut VxCLUTData) };
+
+    if let Ok(mut mappings) = l.mapped_luts.write() {
+        if let Some(pos) = mappings.iter().position(|(id, _, _)| *id == map_id) {
+            let (_, mapped_data, usage) = mappings.remove(pos);
+
+            // If write access, copy data back
+            if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
+                if let Ok(mut data) = l.data.write() {
+                    data.copy_from_slice(&mapped_data);
+                }
+            }
+
+            return VX_SUCCESS;
+        }
+    }
+
+    VX_ERROR_INVALID_REFERENCE
 }
 
 // ============================================================================

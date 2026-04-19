@@ -318,13 +318,6 @@ pub struct VxCConvolution {
 }
 
 /// LUT data
-pub struct VxCLUT {
-    data_type: vx_enum,
-    count: usize,
-    data: RwLock<Vec<u8>>,
-    ref_count: AtomicUsize,
-}
-
 /// Distribution data
 pub struct VxCDistribution {
     bins: usize,
@@ -2175,8 +2168,7 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let lut = params[1] as vx_lut;
                 let output = params[2] as vx_image;
                 if !input.is_null() && !lut.is_null() && !output.is_null() {
-                    // stub - returns success for now
-                    VX_SUCCESS
+                    table_lookup_impl(input, lut, output)
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
@@ -3001,10 +2993,6 @@ static CONVOLUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCConvolution>>>> = Lazy::ne
 });
 
 // LUT registry
-static LUTS: Lazy<Mutex<HashMap<usize, Arc<VxCLUT>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
-
 // Distribution registry
 static DISTRIBUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCDistribution>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
@@ -3185,11 +3173,13 @@ pub extern "C" fn vxQueryReference(
                     }
                 }
                 
-                // Check LUTs
-                if let Ok(luts) = LUTS.lock() {
-                    if luts.contains_key(&addr) {
-                        *(ptr as *mut vx_enum) = VX_TYPE_LUT;
-                        return VX_SUCCESS;
+                // Check LUTs - now tracked in REFERENCE_TYPES
+                if let Ok(types) = REFERENCE_TYPES.lock() {
+                    if let Some(&t) = types.get(&addr) {
+                        if t == VX_TYPE_LUT {
+                            *(ptr as *mut vx_enum) = VX_TYPE_LUT;
+                            return VX_SUCCESS;
+                        }
                     }
                 }
                 
@@ -4198,10 +4188,10 @@ pub const VX_CONVOLUTION_SCALE: vx_enum = 0x02;
 pub const VX_CONVOLUTION_SIZE: vx_enum = 0x03;
 
 // LUT attributes
-pub const VX_LUT_TYPE: vx_enum = 0x00;
-pub const VX_LUT_COUNT: vx_enum = 0x01;
-pub const VX_LUT_SIZE: vx_enum = 0x02;
-pub const VX_LUT_OFFSET: vx_enum = 0x03;
+pub const VX_LUT_TYPE: vx_enum = 0x80700;
+pub const VX_LUT_COUNT: vx_enum = 0x80701;
+pub const VX_LUT_SIZE: vx_enum = 0x80702;
+pub const VX_LUT_OFFSET: vx_enum = 0x80703;
 
 // Distribution attributes
 pub const VX_DISTRIBUTION_BINS: vx_enum = 0x00;
@@ -4475,19 +4465,6 @@ pub extern "C" fn vxSetConvolutionAttribute(
     size: usize,
 ) -> i32 {
     if conv.is_null() || ptr.is_null() {
-        return -2;
-    }
-    -30
-}
-
-#[no_mangle]
-pub extern "C" fn vxQueryLUT(
-    lut: vx_lut,
-    attribute: i32,
-    ptr: *mut c_void,
-    size: usize,
-) -> i32 {
-    if lut.is_null() || ptr.is_null() {
         return -2;
     }
     -30
@@ -8078,30 +8055,6 @@ pub extern "C" fn vxuNot(context: vx_context, input: vx_image, output: vx_image)
 // Table Lookup Operations
 // ============================================================================
 
-/// Map LUT for CPU access
-#[no_mangle]
-pub extern "C" fn vxMapLUT(lut: vx_lut, map_id: *mut vx_map_id, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, copy_enable: vx_bool) -> vx_status {
-    if lut.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    if map_id.is_null() || ptr.is_null() {
-        return VX_ERROR_INVALID_PARAMETERS;
-    }
-    if mem_type != VX_MEMORY_TYPE_HOST {
-        return VX_ERROR_NOT_IMPLEMENTED;
-    }
-    VX_SUCCESS
-}
-
-/// Unmap LUT
-#[no_mangle]
-pub extern "C" fn vxUnmapLUT(lut: vx_lut, map_id: vx_map_id) -> vx_status {
-    if lut.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    VX_SUCCESS
-}
-
 /// Table lookup node - apply LUT to image
 #[no_mangle]
 pub extern "C" fn vxTableLookupNode(graph: vx_graph, input: vx_image, lut: vx_lut, output: vx_image) -> vx_node {
@@ -8122,8 +8075,7 @@ pub extern "C" fn vxuTableLookup(context: vx_context, input: vx_image, lut: vx_l
     if context.is_null() || input.is_null() || lut.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // Stub implementation
-    VX_SUCCESS
+    table_lookup_impl(input, lut, output)
 }
 
 // ============================================================================
@@ -8417,5 +8369,120 @@ pub extern "C" fn vxuFastCorners(context: vx_context, input: vx_image, strength_
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
+    VX_SUCCESS
+}
+
+/// Table lookup implementation
+fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_status {
+    if input.is_null() || lut.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    
+    unsafe {
+        let lut_obj = &*(lut as *const crate::c_api_data::VxCLUTData);
+        let input_img = &*(input as *const VxCImage);
+        let output_img = &*(output as *const VxCImage);
+        
+        let width = input_img.width as usize;
+        let height = input_img.height as usize;
+        
+        let input_data = match input_img.data.read() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let lut_data = match lut_obj.data.read() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let mut output_data = match output_img.data.write() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        
+        let data_type = lut_obj.data_type;
+        let offset = lut_obj.offset;
+        
+        // Check if input/output are S16
+        let input_format = input_img.format as i32;
+        let output_format = output_img.format as i32;
+        let is_s16_input = input_format == 0x36313053 || input_format == 0x53313053; // 'S016' variants
+        let is_s16_output = output_format == 0x36313053 || output_format == 0x53313053;
+        
+        if data_type == 0x003 { // VX_TYPE_UINT8
+            // UINT8 LUT: input values 0-255, LUT maps each to a UINT8 output
+            if is_s16_input {
+                // S16 input with UINT8 LUT: use offset
+                for y in 0..height {
+                    for x in 0..width {
+                        let idx = (y * width + x) * 2;
+                        let value = i16::from_le_bytes([input_data[idx], input_data[idx + 1]]);
+                        let lut_idx = (value as i32 + offset as i32) as usize;
+                        if lut_idx < 256 {
+                            output_data[y * width + x] = lut_data[lut_idx];
+                        } else {
+                            output_data[y * width + x] = 0;
+                        }
+                    }
+                }
+            } else {
+                // U8 input with UINT8 LUT
+                for y in 0..height {
+                    for x in 0..width {
+                        let value = input_data[y * width + x] as usize;
+                        if value < 256 {
+                            output_data[y * width + x] = lut_data[value];
+                        } else {
+                            output_data[y * width + x] = 0;
+                        }
+                    }
+                }
+            }
+        } else if data_type == 0x004 { // VX_TYPE_INT16
+            // INT16 LUT: 65536 entries, 2 bytes each
+            if is_s16_input {
+                // S16 input with INT16 LUT
+                for y in 0..height {
+                    for x in 0..width {
+                        let idx = (y * width + x) * 2;
+                        let value = i16::from_le_bytes([input_data[idx], input_data[idx + 1]]);
+                        let lut_idx = ((value as i32 + offset as i32) as usize) * 2;
+                        if lut_idx + 1 < lut_data.len() {
+                            let result = i16::from_le_bytes([lut_data[lut_idx], lut_data[lut_idx + 1]]);
+                            if is_s16_output {
+                                let out_idx = (y * width + x) * 2;
+                                let bytes = result.to_le_bytes();
+                                output_data[out_idx] = bytes[0];
+                                output_data[out_idx + 1] = bytes[1];
+                            } else {
+                                output_data[y * width + x] = result.clamp(0, 255) as u8;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // U8 input with INT16 LUT
+                for y in 0..height {
+                    for x in 0..width {
+                        let value = input_data[y * width + x] as usize;
+                        let lut_idx = ((value as i32 + offset as i32) as usize) * 2;
+                        if lut_idx + 1 < lut_data.len() {
+                            let result = i16::from_le_bytes([lut_data[lut_idx], lut_data[lut_idx + 1]]);
+                            if is_s16_output {
+                                let out_idx = (y * width + x) * 2;
+                                let bytes = result.to_le_bytes();
+                                output_data[out_idx] = bytes[0];
+                                output_data[out_idx + 1] = bytes[1];
+                            } else {
+                                output_data[y * width + x] = result.clamp(0, 255) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+    }
+    
     VX_SUCCESS
 }
