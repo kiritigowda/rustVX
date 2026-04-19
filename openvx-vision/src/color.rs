@@ -3,18 +3,11 @@
 use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
 use openvx_image::{Image, ImageFormat};
 
-/// BT.709 coefficients for YUV conversion (from OpenVX conformance tests)
-const Y_COEFF_R: i32 = 54;   // 0.2126 * 256 (BT.709)
-const Y_COEFF_G: i32 = 183;  // 0.7152 * 256 (BT.709)
-const Y_COEFF_B: i32 = 18;   // 0.0722 * 256 (BT.709)
-
-const U_COEFF_R: i32 = -29;  // -0.1146 * 256 (BT.709)
-const U_COEFF_G: i32 = -99;  // -0.3854 * 256 (BT.709)
-const U_COEFF_B: i32 = 128;  // 0.5 * 256
-
-const V_COEFF_R: i32 = 128;  // 0.5 * 256
-const V_COEFF_G: i32 = -116; // -0.4542 * 256 (BT.709)
-const V_COEFF_B: i32 = -12;  // -0.0458 * 256 (BT.709)
+/// RGB to YUV conversion using BT.709 coefficients (from OpenVX CTS reference)
+/// Uses floating-point to match the reference exactly:
+/// Y = 0.2126*R + 0.7152*G + 0.0722*B (rounded)
+/// U = -0.1146*R - 0.3854*G + 0.5*B + 128 (rounded)
+/// V = 0.5*R - 0.4542*G - 0.0458*B + 128 (rounded)
 
 /// ColorConvert kernel - converts between color spaces
 pub struct ColorConvertKernel;
@@ -462,46 +455,43 @@ impl KernelTrait for ChannelCombineKernel {
     }
 }
 
-/// RGB to YUV conversion (BT.709)
+/// RGB to YUV conversion (BT.709) - matches CTS reference exactly
+/// CTS uses: (int)(r*0.2126 + g*0.7152 + b*0.0722 + 0.5)
+///           (int)(-r*0.1146 - g*0.3854 + b*0.5 + 128.5)
+///           (int)(r*0.5 - g*0.4542 - b*0.0458 + 128.5)
 #[inline]
 fn rgb_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let r = r as i32;
-    let g = g as i32;
-    let b = b as i32;
+    let rf = r as f32;
+    let gf = g as f32;
+    let bf = b as f32;
     
-    // BT.709 coefficients (from OpenVX conformance test)
-    // Y = 0.2126*R + 0.7152*G + 0.0722*B
-    // U = -0.1146*R - 0.3854*G + 0.5*B + 128
-    // V = 0.5*R - 0.4542*G - 0.0458*B + 128
-    // Note: The test adds 0.5f before casting to int for rounding
-    // We add 128 before >> 8 to achieve the same effect
-    let y = (((54 * r + 183 * g + 18 * b + 128) >> 8)).clamp(0, 255) as u8;
-    let u = (((-29 * r - 99 * g + 128 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
-    let v = (((128 * r - 116 * g - 12 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+    // BT.709 coefficients matching CTS reference exactly
+    let yval = (rf * 0.2126 + gf * 0.7152 + bf * 0.0722 + 0.5) as i32;
+    let uval = (-rf * 0.1146 - gf * 0.3854 + bf * 0.5 + 128.5) as i32;
+    let vval = (rf * 0.5 - gf * 0.4542 - bf * 0.0458 + 128.5) as i32;
+    
+    let y = yval.clamp(0, 255) as u8;
+    let u = uval.clamp(0, 255) as u8;
+    let v = vval.clamp(0, 255) as u8;
     
     (y, u, v)
 }
 
-/// YUV to RGB conversion (BT.709)
-/// R = Y + 1.5748*(V-128)
-/// G = Y - 0.1873*(U-128) - 0.4681*(V-128)
-/// B = Y + 1.8556*(U-128)
+/// YUV to RGB conversion (BT.709) - matches CTS reference exactly
+/// CTS uses: (int)(y + 1.5748*(v-128) + 0.5)
+///           (int)(y - 0.1873*(u-128) - 0.4681*(v-128) + 0.5)
+///           (int)(y + 1.8556*(u-128) + 0.5)
 #[inline]
 fn yuv_to_rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
-    let y = y as i32;
-    let u = u as i32 - 128;
-    let v = v as i32 - 128;
+    let yf = y as f32;
+    let uf = (u as f32) - 128.0;
+    let vf = (v as f32) - 128.0;
     
-    // BT.709 coefficients (from OpenVX conformance test)
-    // R = Y + 1.5748*V = Y + (403*V)/256
-    // G = Y - 0.1873*U - 0.4681*V = Y - (48*U + 120*V)/256
-    // B = Y + 1.8556*U = Y + (475*U)/256
-    // Add 128 before >> 8 for round-to-nearest (matching test's + 0.5f)
-    let r = y + ((403 * v + 128) >> 8);
-    let g = y - ((48 * u + 120 * v + 128) >> 8);
-    let b = y + ((475 * u + 128) >> 8);
+    let rval = (yf + 1.5748 * vf + 0.5) as i32;
+    let gval = (yf - 0.1873 * uf - 0.4681 * vf + 0.5) as i32;
+    let bval = (yf + 1.8556 * uf + 0.5) as i32;
     
-    (r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8)
+    (rval.clamp(0, 255) as u8, gval.clamp(0, 255) as u8, bval.clamp(0, 255) as u8)
 }
 
 /// RGB to Grayscale using BT.709 coefficients
@@ -514,13 +504,12 @@ pub fn rgb_to_gray(src: &Image, dst: &Image) -> VxResult<()> {
     let height = src.height();
     let mut dst_data = dst.data_mut();
     
-    // BT.709 coefficients: Y = 0.2126*R + 0.7152*G + 0.0722*B
+    // BT.709 coefficients matching CTS reference: Y = (int)(R*0.2126 + G*0.7152 + B*0.0722 + 0.5)
     for y in 0..height {
         for x in 0..width {
             let (r, g, b) = src.get_rgb(x, y);
-            // Add 128 for rounding before >> 8 to match test's + 0.5f
-            let gray = (((54 * r as u32 + 183 * g as u32 + 18 * b as u32 + 128) >> 8)).clamp(0, 255) as u8;
-            dst_data[y * width + x] = gray;
+            let gray = (r as f32 * 0.2126 + g as f32 * 0.7152 + b as f32 * 0.0722 + 0.5) as i32;
+            dst_data[y * width + x] = gray.clamp(0, 255) as u8;
         }
     }
     
