@@ -2810,6 +2810,12 @@ static LUTS: Lazy<Mutex<HashMap<usize, Arc<VxCLUT>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
+// Track mapped LUT buffers for write-back on unmap
+// Key: mapped buffer address, Value: (lut address, mapped_data_vec, usage)
+static LUT_MAPPED_BUFFERS: Lazy<Mutex<HashMap<usize, (usize, Vec<u8>, vx_enum)>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
 // Distribution registry
 static DISTRIBUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCDistribution>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
@@ -3389,6 +3395,7 @@ unsafe impl Send for VxCScalar {}
 unsafe impl Sync for VxCScalar {}
 
 /// Copy scalar value to/from user memory
+/// Uses VxCScalarData from c_api_data.rs (the struct used by vxCreateScalar)
 #[no_mangle]
 pub extern "C" fn vxCopyScalar(
     scalar: vx_scalar,
@@ -3407,17 +3414,18 @@ pub extern "C" fn vxCopyScalar(
         return VX_ERROR_NOT_IMPLEMENTED;
     }
 
-    let s = unsafe { &*(scalar as *const VxCScalar) };
+    // Cast to VxCScalarData which is what vxCreateScalar allocates
+    let s = unsafe { &*(scalar as *const crate::c_api_data::VxCScalarData) };
     
     unsafe {
         match usage {
             VX_READ_ONLY => {
-                let data = s.data.read().unwrap();
-                std::ptr::copy_nonoverlapping(data.as_ptr(), user_ptr as *mut u8, data.len());
+                std::ptr::copy_nonoverlapping(s.data.as_ptr(), user_ptr as *mut u8, s.data.len());
             }
             VX_WRITE_ONLY => {
-                let mut data = s.data.write().unwrap();
-                std::ptr::copy_nonoverlapping(user_ptr as *const u8, data.as_mut_ptr(), data.len());
+                // VxCScalarData.data is Vec<u8> (not RwLock), so we need to cast mutably
+                let s_mut = &mut *(scalar as *mut crate::c_api_data::VxCScalarData);
+                std::ptr::copy_nonoverlapping(user_ptr as *const u8, s_mut.data.as_mut_ptr(), s_mut.data.len());
             }
             _ => return VX_ERROR_INVALID_PARAMETERS,
         }
@@ -3988,10 +3996,10 @@ pub const VX_PYRAMID_WIDTH: vx_enum = 0x00080903;
 pub const VX_PYRAMID_HEIGHT: vx_enum = 0x00080904;
 
 // Matrix attributes
-pub const VX_MATRIX_TYPE: vx_enum = 0x00;
-pub const VX_MATRIX_ROWS: vx_enum = 0x01;
-pub const VX_MATRIX_COLUMNS: vx_enum = 0x02;
-pub const VX_MATRIX_SIZE: vx_enum = 0x03;
+pub const VX_MATRIX_TYPE: vx_enum = 0x80B00;
+pub const VX_MATRIX_ROWS: vx_enum = 0x80B01;
+pub const VX_MATRIX_COLUMNS: vx_enum = 0x80B02;
+pub const VX_MATRIX_SIZE: vx_enum = 0x80B03;
 pub const VX_MATRIX_PATTERN: vx_enum = 0x04;
 pub const VX_MATRIX_ORIGIN: vx_enum = 0x05;
 pub const VX_MATRIX_ELEMENT_SIZE: vx_enum = 0x06;
@@ -4003,16 +4011,16 @@ pub const VX_CONVOLUTION_SCALE: vx_enum = 0x02;
 pub const VX_CONVOLUTION_SIZE: vx_enum = 0x03;
 
 // LUT attributes
-pub const VX_LUT_TYPE: vx_enum = 0x00;
-pub const VX_LUT_COUNT: vx_enum = 0x01;
-pub const VX_LUT_SIZE: vx_enum = 0x02;
-pub const VX_LUT_OFFSET: vx_enum = 0x03;
+pub const VX_LUT_TYPE: vx_enum = 0x80700;
+pub const VX_LUT_COUNT: vx_enum = 0x80701;
+pub const VX_LUT_SIZE: vx_enum = 0x80702;
+pub const VX_LUT_OFFSET: vx_enum = 0x80703;
 
 // Distribution attributes
-pub const VX_DISTRIBUTION_BINS: vx_enum = 0x00;
-pub const VX_DISTRIBUTION_OFFSET: vx_enum = 0x01;
-pub const VX_DISTRIBUTION_RANGE: vx_enum = 0x02;
-pub const VX_DISTRIBUTION_SIZE: vx_enum = 0x03;
+pub const VX_DISTRIBUTION_BINS: vx_enum = 0x80800;
+pub const VX_DISTRIBUTION_OFFSET: vx_enum = 0x80801;
+pub const VX_DISTRIBUTION_RANGE: vx_enum = 0x80802;
+pub const VX_DISTRIBUTION_SIZE: vx_enum = 0x80803;
 
 // Threshold attributes
 pub const VX_THRESHOLD_TYPE: vx_enum = 0x00;
@@ -4241,9 +4249,44 @@ pub extern "C" fn vxQueryMatrix(
     size: usize,
 ) -> i32 {
     if matrix.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+
+    // Cast to VxCMatrixData which is what vxCreateMatrix allocates
+    let m = unsafe { &*(matrix as *const crate::c_api_data::VxCMatrixData) };
+
+    unsafe {
+        match attribute {
+            VX_MATRIX_TYPE => {
+                if size != std::mem::size_of::<vx_enum>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_enum) = m.data_type;
+            }
+            VX_MATRIX_ROWS => {
+                if size != std::mem::size_of::<vx_size>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_size) = m.rows;
+            }
+            VX_MATRIX_COLUMNS => {
+                if size != std::mem::size_of::<vx_size>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_size) = m.columns;
+            }
+            VX_MATRIX_SIZE => {
+                if size != std::mem::size_of::<vx_size>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                let elem_size = crate::c_api_data::VxCMatrixData::element_size(m.data_type);
+                *(ptr as *mut vx_size) = m.columns * m.rows * elem_size;
+            }
+            _ => return VX_ERROR_NOT_SUPPORTED,
+        }
+    }
+
+    VX_SUCCESS
 }
 
 #[no_mangle]
@@ -4254,9 +4297,9 @@ pub extern "C" fn vxSetMatrixAttribute(
     size: usize,
 ) -> i32 {
     if matrix.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+    VX_ERROR_NOT_SUPPORTED
 }
 
 #[no_mangle]
@@ -4293,9 +4336,44 @@ pub extern "C" fn vxQueryLUT(
     size: usize,
 ) -> i32 {
     if lut.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+
+    // Cast to VxCLUTData which is what vxCreateLUT allocates
+    let l = unsafe { &*(lut as *const crate::c_api_data::VxCLUTData) };
+
+    unsafe {
+        match attribute {
+            VX_LUT_TYPE => {
+                if size != std::mem::size_of::<vx_enum>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_enum) = l.data_type;
+            }
+            VX_LUT_COUNT => {
+                if size != std::mem::size_of::<vx_size>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_size) = l.count;
+            }
+            VX_LUT_SIZE => {
+                if size != std::mem::size_of::<vx_size>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                let elem_size = crate::c_api_data::VxCLUTData::element_size(l.data_type);
+                *(ptr as *mut vx_size) = l.count * elem_size;
+            }
+            VX_LUT_OFFSET => {
+                if size != std::mem::size_of::<vx_uint32>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                *(ptr as *mut vx_uint32) = l.offset as vx_uint32;
+            }
+            _ => return VX_ERROR_NOT_SUPPORTED,
+        }
+    }
+
+    VX_SUCCESS
 }
 
 #[no_mangle]
@@ -4351,35 +4429,41 @@ pub extern "C" fn vxQueryDistribution(
     size: usize,
 ) -> i32 {
     if distribution.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
     
     unsafe {
         let dist = &*(distribution as *const VxCDistribution);
         match attribute {
             VX_DISTRIBUTION_BINS => {
-                if size >= std::mem::size_of::<usize>() {
-                    *(ptr as *mut usize) = dist.bins;
-                    return 0;
+                if size >= std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = dist.bins;
+                    return VX_SUCCESS;
                 }
             }
             VX_DISTRIBUTION_OFFSET => {
-                if size >= std::mem::size_of::<u32>() {
-                    *(ptr as *mut u32) = dist.offset;
-                    return 0;
+                if size >= std::mem::size_of::<vx_int32>() {
+                    *(ptr as *mut vx_int32) = dist.offset as vx_int32;
+                    return VX_SUCCESS;
                 }
             }
             VX_DISTRIBUTION_RANGE => {
-                if size >= std::mem::size_of::<u32>() {
-                    *(ptr as *mut u32) = dist.range;
-                    return 0;
+                if size >= std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = dist.range;
+                    return VX_SUCCESS;
                 }
             }
-            _ => {}
+            VX_DISTRIBUTION_SIZE => {
+                if size >= std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = dist.bins * std::mem::size_of::<vx_uint32>();
+                    return VX_SUCCESS;
+                }
+            }
+            _ => return VX_ERROR_NOT_SUPPORTED,
         }
     }
     
-    -30
+    VX_ERROR_INVALID_PARAMETERS
 }
 
 #[no_mangle]
@@ -4390,9 +4474,33 @@ pub extern "C" fn vxCopyDistribution(
     user_mem_type: i32,
 ) -> i32 {
     if distribution.is_null() || user_ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    0
+    if user_mem_type != VX_MEMORY_TYPE_HOST as i32 {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    let dist = unsafe { &*(distribution as *const VxCDistribution) };
+    
+    match usage {
+        VX_READ_ONLY => {
+            let data = dist.data.read().unwrap();
+            let data_size = dist.bins * std::mem::size_of::<vx_uint32>();
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, user_ptr as *mut u8, data_size);
+            }
+        }
+        VX_WRITE_ONLY => {
+            let mut data = dist.data.write().unwrap();
+            let data_size = dist.bins * std::mem::size_of::<vx_uint32>();
+            unsafe {
+                std::ptr::copy_nonoverlapping(user_ptr as *const u8, data.as_mut_ptr() as *mut u8, data_size);
+            }
+        }
+        _ => return VX_ERROR_INVALID_PARAMETERS,
+    }
+    
+    VX_SUCCESS
 }
 
 /// Map distribution for CPU access
@@ -7082,7 +7190,7 @@ pub extern "C" fn vxCopyRemapPatch(
     VX_SUCCESS
 }
 
-/// Set image pixel values
+/// Set image pixel values - fill entire image with a uniform pixel value
 #[no_mangle]
 pub extern "C" fn vxSetImagePixelValues(
     image: vx_image,
@@ -7094,11 +7202,70 @@ pub extern "C" fn vxSetImagePixelValues(
     if value.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    // Stub - no actual pixel setting
+
+    let img = unsafe { &mut *(image as *mut crate::unified_c_api::VxCImage) };
+    
+    // Read the pixel value
+    let val = unsafe { std::ptr::read(value) };
+    
+    // Fill image data with the uniform value
+    if let Ok(mut data) = img.data.write() {
+        match img.format {
+            // Single-byte formats
+            0x38303055 => { data.fill(unsafe { val.U8 }); } // VX_DF_IMAGE_U8
+            0x38303053 => { data.fill(unsafe { val.S16 as u8 }); } // VX_DF_IMAGE_S8 - use first byte
+            // Two-byte formats
+            0x36313055 | 0x36313053 => { // VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16
+                let v = unsafe { val.U16 };
+                let bytes = v.to_le_bytes();
+                for chunk in data.chunks_exact_mut(2) {
+                    chunk[0] = bytes[0];
+                    chunk[1] = bytes[1];
+                }
+            }
+            // Four-byte formats
+            0x32333055 | 0x32333053 => { // VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32
+                let v = unsafe { val.U32 };
+                let bytes = v.to_le_bytes();
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk[0] = bytes[0];
+                    chunk[1] = bytes[1];
+                    chunk[2] = bytes[2];
+                    chunk[3] = bytes[3];
+                }
+            }
+            // RGB format (3 bytes per pixel)
+            0x32424752 => { // VX_DF_IMAGE_RGB
+                let rgb = unsafe { val.RGB };
+                for chunk in data.chunks_exact_mut(3) {
+                    chunk[0] = rgb[0];
+                    chunk[1] = rgb[1];
+                    chunk[2] = rgb[2];
+                }
+            }
+            // RGBA/RGBX format (4 bytes per pixel)
+            0x41424752 => { // VX_DF_IMAGE_RGBA
+                let rgba = unsafe { val.RGBA };
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk[0] = rgba[0];
+                    chunk[1] = rgba[1];
+                    chunk[2] = rgba[2];
+                    chunk[3] = rgba[3];
+                }
+            }
+            // Default for other formats
+            _ => {
+                // Use U8 value from reserved array
+                data.fill(unsafe { val.U8 });
+            }
+        }
+    }
+
     VX_SUCCESS
 }
 
 /// Format image patch address 1d
+/// Computes the address of the index-th pixel in a 1D mapped patch
 #[no_mangle]
 pub extern "C" fn vxFormatImagePatchAddress1d(
     ptr: *mut c_void,
@@ -7110,8 +7277,10 @@ pub extern "C" fn vxFormatImagePatchAddress1d(
     }
     unsafe {
         let address = &*addr;
-        let stride = address.stride_y as isize;
-        (ptr as *mut u8).offset((index as isize) * stride) as *mut c_void
+        // For a 1D linear index, the pixel address is: base + index * stride_x
+        // This is different from 2D which uses stride_y for row stride
+        let offset = (index as isize) * (address.stride_x as isize);
+        (ptr as *mut u8).offset(offset) as *mut c_void
     }
 }
 
@@ -7505,29 +7674,55 @@ pub extern "C" fn vxCreateScalarWithSize(context: vx_context, data_type: vx_enum
     if context.is_null() || ptr.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        let data_size = if size > 0 { size as usize } else { 4 };
-        if data_size > isize::MAX as usize {
-            return std::ptr::null_mut();
-        }
-        let layout = match std::alloc::Layout::from_size_align(data_size, 8) {
-            Ok(l) => l,
-            Err(_) => return std::ptr::null_mut(),
-        };
-        let data_ptr = std::alloc::alloc(layout);
-        if data_ptr.is_null() {
-            return std::ptr::null_mut();
-        }
-        std::ptr::copy_nonoverlapping(ptr as *const u8, data_ptr, data_size);
-        data_ptr as vx_scalar
+    // Delegate to vxCreateScalar from c_api_data, but honor the explicit size
+    // First create with vxCreateScalar which handles registration properly
+    let scalar = crate::c_api_data::vxCreateScalar(context, data_type, ptr);
+    if scalar.is_null() {
+        return std::ptr::null_mut();
     }
+    // If the explicit size differs from the auto-detected size, resize the data
+    let s = unsafe { &mut *(scalar as *mut crate::c_api_data::VxCScalarData) };
+    let expected_size = crate::c_api_data::VxCScalarData::type_size(data_type);
+    if size as usize != expected_size && size > 0 {
+        s.data.resize(size as usize, 0);
+        // Re-copy with the correct size
+        if !ptr.is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr as *const u8, s.data.as_mut_ptr(), size as usize);
+            }
+        }
+    }
+    scalar
 }
 
 /// Copy scalar with size
 #[no_mangle]
-pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, data_type: vx_enum, ptr: *mut c_void, size: vx_size, usage: vx_enum) -> vx_status {
+pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, size: vx_size, ptr: *mut c_void, usage: vx_enum, user_mem_type: vx_enum) -> vx_status {
     if scalar.is_null() || ptr.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
+    }
+    if size == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != VX_MEMORY_TYPE_HOST {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+    // Cast to VxCScalarData which is what vxCreateScalar allocates
+    let s = unsafe { &*(scalar as *const crate::c_api_data::VxCScalarData) };
+    let copy_size = size as usize;
+    unsafe {
+        match usage {
+            VX_READ_ONLY => {
+                let actual_size = copy_size.min(s.data.len());
+                std::ptr::copy_nonoverlapping(s.data.as_ptr(), ptr as *mut u8, actual_size);
+            }
+            VX_WRITE_ONLY => {
+                let s_mut = &mut *(scalar as *mut crate::c_api_data::VxCScalarData);
+                let actual_size = copy_size.min(s_mut.data.len());
+                std::ptr::copy_nonoverlapping(ptr as *const u8, s_mut.data.as_mut_ptr(), actual_size);
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
     }
     VX_SUCCESS
 }
@@ -7675,7 +7870,7 @@ pub extern "C" fn vxuNot(context: vx_context, input: vx_image, output: vx_image)
 
 /// Map LUT for CPU access
 #[no_mangle]
-pub extern "C" fn vxMapLUT(lut: vx_lut, map_id: *mut vx_map_id, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, copy_enable: vx_bool) -> vx_status {
+pub extern "C" fn vxMapLUT(lut: vx_lut, map_id: *mut vx_map_id, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, _copy_enable: vx_bool) -> vx_status {
     if lut.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -7685,6 +7880,49 @@ pub extern "C" fn vxMapLUT(lut: vx_lut, map_id: *mut vx_map_id, ptr: *mut *mut c
     if mem_type != VX_MEMORY_TYPE_HOST {
         return VX_ERROR_NOT_IMPLEMENTED;
     }
+
+    // Cast to VxCLUTData which is what vxCreateLUT allocates
+    let l = unsafe { &*(lut as *const crate::c_api_data::VxCLUTData) };
+    let elem_size = crate::c_api_data::VxCLUTData::element_size(l.data_type);
+    let data_size = l.count * elem_size;
+
+    match usage {
+        VX_READ_ONLY => {
+            let data = l.data.read().unwrap();
+            let mut mapped_data = vec![0u8; data_size];
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), mapped_data.as_mut_ptr(), data_size);
+            }
+            let mapped_ptr = mapped_data.as_mut_ptr();
+            std::mem::forget(mapped_data);
+            unsafe {
+                *map_id = 1; // simple ID for read-only
+                *ptr = mapped_ptr as *mut c_void;
+            }
+        }
+        VX_WRITE_ONLY | VX_READ_AND_WRITE => {
+            let mut mapped_data = vec![0u8; data_size];
+            if usage == VX_READ_AND_WRITE {
+                let data = l.data.read().unwrap();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), mapped_data.as_mut_ptr(), data_size);
+                }
+            }
+            let mapped_ptr = mapped_data.as_mut_ptr();
+            let key = mapped_ptr as usize;
+            {
+                if let Ok(mut map) = LUT_MAPPED_BUFFERS.lock() {
+                    map.insert(key, (lut as usize, mapped_data, usage));
+                }
+            }
+            unsafe {
+                *map_id = key as vx_map_id;
+                *ptr = mapped_ptr as *mut c_void;
+            }
+        }
+        _ => return VX_ERROR_INVALID_PARAMETERS,
+    }
+
     VX_SUCCESS
 }
 
@@ -7694,6 +7932,32 @@ pub extern "C" fn vxUnmapLUT(lut: vx_lut, map_id: vx_map_id) -> vx_status {
     if lut.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
+
+    // If map_id is 1, it's a read-only mapping that was leaked
+    if map_id == 1 {
+        return VX_SUCCESS;
+    }
+
+    // Look up the mapped buffer
+    let key = map_id as usize;
+    if let Ok(mut map) = LUT_MAPPED_BUFFERS.lock() {
+        if let Some((lut_addr, mapped_data, usage)) = map.remove(&key) {
+            if lut_addr != lut as usize {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
+                let l = unsafe { &*(lut as *const crate::c_api_data::VxCLUTData) };
+                let elem_size = crate::c_api_data::VxCLUTData::element_size(l.data_type);
+                let data_size = l.count * elem_size;
+                let mut data = l.data.write().unwrap();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(mapped_data.as_ptr(), data.as_mut_ptr(), data_size.min(mapped_data.len()).min(data.len()));
+                }
+            }
+            return VX_SUCCESS;
+        }
+    }
+
     VX_SUCCESS
 }
 

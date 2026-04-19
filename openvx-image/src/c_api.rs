@@ -511,75 +511,86 @@ pub extern "C" fn vxCreateImageFromChannel(
         let source_img = &*(img as *const VxCImage);
         
         // Per OpenVX spec, only YUV formats support channel extraction
-        // Validate channel based on source format
-        // VX_CHANNEL_Y = 0x00009014, VX_CHANNEL_U = 0x00009015, VX_CHANNEL_V = 0x00009016
         match channel {
-            // Y channel is valid for IYUV, NV12, NV21, YUV4
             0x00009014 /* VX_CHANNEL_Y */ => {
                 match source_img.format {
-                    VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
-                        // Valid - continue
-                    }
+                    VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {}
                     _ => return std::ptr::null_mut(),
                 }
             }
-            // U and V channels are only valid for YUV4 and IYUV
             0x00009015 /* VX_CHANNEL_U */ | 0x00009016 /* VX_CHANNEL_V */ => {
                 match source_img.format {
-                    VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV => {
-                        // Valid - continue
-                    }
+                    VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV => {}
                     _ => return std::ptr::null_mut(),
                 }
             }
             _ => return std::ptr::null_mut(),
         }
 
-        // Get context from parent image
         let context = source_img.context;
         if context.is_null() {
             return std::ptr::null_mut();
         }
 
         // Calculate dimensions based on plane
-        // For YUV formats:
-        // - Y plane: full width x height
-        // - U/V planes for IYUV: width/2 x height/2 (4:2:0 subsampling)
-        // - U/V planes for YUV4: full width x height (4:4:4, no subsampling)
         let (output_width, output_height) = match channel {
-            0x00009014 /* VX_CHANNEL_Y */ => {
-                // Y plane is full resolution
-                (source_img.width, source_img.height)
-            }
-            0x00009015 /* VX_CHANNEL_U */ | 0x00009016 /* VX_CHANNEL_V */ => {
-                // U/V planes depend on format
+            0x00009014 /* VX_CHANNEL_Y */ => (source_img.width, source_img.height),
+            0x00009015 | 0x00009016 => {
                 match source_img.format {
-                    VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
-                        // 4:2:0 subsampling - half resolution
-                        ((source_img.width + 1) / 2, (source_img.height + 1) / 2)
-                    }
-                    VX_DF_IMAGE_YUV4 => {
-                        // 4:4:4 - full resolution
-                        (source_img.width, source_img.height)
-                    }
+                    VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => ((source_img.width + 1) / 2, (source_img.height + 1) / 2),
+                    VX_DF_IMAGE_YUV4 => (source_img.width, source_img.height),
                     _ => return std::ptr::null_mut(),
                 }
             }
             _ => return std::ptr::null_mut(),
         };
 
-        // Create channel image that shares data with parent
-        // Note: This is a simplified implementation. A full implementation
-        // would need to handle plane offsets for YUV formats properly.
-        // Store the parent image pointer to keep parent alive while sub-image exists
+        // Determine the plane index for the channel
+        let plane_index = match channel {
+            0x00009014 => 0, // Y is plane 0
+            0x00009015 => 1, // U is plane 1
+            0x00009016 => 2, // V is plane 2
+            _ => 0,
+        };
+
         let parent_ptr = img as usize;
+        
+        // For channel images, we create a new image with its own data buffer
+        // that contains a copy of just the channel plane data.
+        // This avoids complex offset calculations during map/unmap.
+        let plane_size = VxCImage::plane_size(output_width, output_height, source_img.format, plane_index);
+        let plane_offset = VxCImage::plane_offset(source_img.width, source_img.height, source_img.format, plane_index);
+        
+        // Create data buffer for the channel image
+        let mut channel_data = vec![0u8; plane_size];
+        
+        // Copy the channel data from parent
+        if source_img.is_external_memory {
+            // Read from external memory
+            let ext_ptr = if plane_index < source_img.external_ptrs.len() {
+                source_img.external_ptrs[plane_index]
+            } else {
+                std::ptr::null_mut()
+            };
+            if !ext_ptr.is_null() {
+                std::ptr::copy_nonoverlapping(ext_ptr, channel_data.as_mut_ptr(), plane_size);
+            }
+        } else {
+            // Read from internal data
+            if let Ok(data) = source_img.data.read() {
+                if plane_offset + plane_size <= data.len() {
+                    channel_data.copy_from_slice(&data[plane_offset..plane_offset + plane_size]);
+                }
+            }
+        }
+        
         let channel_image = Box::new(VxCImage {
             width: output_width,
             height: output_height,
             format: VX_DF_IMAGE_U8, // Channel images are always U8
             is_virtual: false,
             context: context,
-            data: Arc::clone(&source_img.data),
+            data: Arc::new(RwLock::new(channel_data)),
             mapped_patches: Arc::new(RwLock::new(Vec::new())),
             parent: Some(parent_ptr),
             is_external_memory: false,
@@ -588,12 +599,7 @@ pub extern "C" fn vxCreateImageFromChannel(
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
 
-        // Register image address in unified registry for type queries (vxQueryReference)
-        unsafe {
-            register_image(image_ptr as usize);
-        }
-        
-        // Register as valid image for double-free protection
+        register_image(image_ptr as usize);
         register_valid_image(image_ptr as usize);
         
         image_ptr
@@ -845,12 +851,6 @@ pub extern "C" fn vxMapImagePatch(
     unsafe {
         let rect_ref = &*rect;
 
-        // Get image data first
-        let data_guard = match img.data.read() {
-            Ok(guard) => guard,
-            Err(_) => return VX_ERROR_INVALID_REFERENCE,
-        };
-
         // Determine plane-specific parameters for planar YUV formats
         let is_planar = VxCImage::is_planar_format(img.format);
         let (plane_width, plane_height) = if is_planar {
@@ -874,7 +874,6 @@ pub extern "C" fn vxMapImagePatch(
         let width = end_x.saturating_sub(start_x);
         let height = end_y.saturating_sub(start_y);
         
-        
         if width == 0 || height == 0 {
             return VX_ERROR_INVALID_PARAMETERS;
         }
@@ -896,44 +895,74 @@ pub extern "C" fn vxMapImagePatch(
         let offset = plane_offset + start_y * stride_y + start_x * bpp;
 
         // Create a copy of the data for the mapped patch
-        // Use the mapped region width for stride, not the full plane width
         let mapped_stride_y = width * bpp;
         let patch_size = height * mapped_stride_y;
         let mut patch_data = vec![0u8; patch_size];
         
-        // Copy data row by row
-        for y in 0..height {
-            let src_start = offset + y * stride_y;
-            let dst_start = y * mapped_stride_y;
-            if src_start + width * bpp <= data_guard.len() {
-                patch_data[dst_start..dst_start + width * bpp]
-                    .copy_from_slice(&data_guard[src_start..src_start + width * bpp]);
+        // Copy data row by row - handle both internal and external memory
+        if img.is_external_memory {
+            // For images from handle, read from external memory pointers
+            let ext_ptr = if (plane_index as usize) < img.external_ptrs.len() {
+                img.external_ptrs[plane_index as usize]
+            } else {
+                return VX_ERROR_INVALID_PARAMETERS;
+            };
+            if !ext_ptr.is_null() {
+                for y in 0..height {
+                    let src_start = offset + y * stride_y;
+                    let dst_start = y * mapped_stride_y;
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            ext_ptr.add(src_start),
+                            patch_data.as_mut_ptr().add(dst_start),
+                            width * bpp,
+                        );
+                    }
+                }
             }
+        } else {
+            // For regular images, read from internal data buffer
+            let data_guard = match img.data.read() {
+                Ok(guard) => guard,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            for y in 0..height {
+                let src_start = offset + y * stride_y;
+                let dst_start = y * mapped_stride_y;
+                if src_start + width * bpp <= data_guard.len() {
+                    patch_data[dst_start..dst_start + width * bpp]
+                        .copy_from_slice(&data_guard[src_start..src_start + width * bpp]);
+                }
+            }
+            drop(data_guard);
         }
         
-        // Store the patch FIRST, then get pointer to the stored data
         // Store: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
+        // Note: For external memory, stride_y is the plane stride (full width * bpp)
+        // For unmapping, we need the actual stride_y of the source data
+        let store_stride_y = if img.is_external_memory {
+            stride_y // Full plane width stride for external memory
+        } else {
+            stride_y // Same for internal memory
+        };
+        
         let map_id_val = if let Ok(mut patches) = img.mapped_patches.write() {
             let id = patches.len() + 1;
-            // Store patch with mapped_width to correctly unmap later
-            patches.push((id, patch_data, usage, offset, stride_y, plane_index, width as u32));
+            patches.push((id, patch_data, usage, offset, store_stride_y, plane_index, width as u32));
             id
         } else {
             return VX_ERROR_INVALID_REFERENCE;
         };
 
         // Fill addressing structure
-        // Per OpenVX spec: step_x/step_y are step sizes (typically 1), scale_x/scale_y are VX_SCALE_UNITY for 1:1
         (*addr).dim_x = width as vx_uint32;
         (*addr).dim_y = height as vx_uint32;
         (*addr).stride_x = bpp as vx_int32;
-        // The stride returned should be for the mapped region (contiguous), not full plane
         (*addr).stride_y = mapped_stride_y as vx_int32;
         (*addr).step_x = 1;
         (*addr).step_y = 1;
         (*addr).scale_x = 1024; // VX_SCALE_UNITY
         (*addr).scale_y = 1024; // VX_SCALE_UNITY
-        // Set output parameters
         *map_id = map_id_val;
         
         // Return pointer to the STORED patch data (not the local variable)
@@ -942,9 +971,6 @@ pub extern "C" fn vxMapImagePatch(
                 *ptr = patch.1.as_ptr() as *mut c_void;
             }
         }
-
-        // Keep the data_guard alive until after we've set the ptr
-        drop(data_guard);
     }
 
     VX_SUCCESS
@@ -963,47 +989,51 @@ pub extern "C" fn vxUnmapImagePatch(
     let img = unsafe { &mut *(image as *mut VxCImage) };
 
     if let Ok(mut patches) = img.mapped_patches.write() {
-        // Find the patch with matching id - handle both old 6-tuple and new 7-tuple formats
         if let Some(pos) = patches.iter().position(|p| {
-            // Check based on tuple length - first element is always id
-            let &(id, _, _, _, _, _, ..) = p;
-            id == map_id
+            let (id, _, _, _, _, _, _) = p;
+            *id == map_id
         }) {
-            // Extract the stored patch data
             let patch_tuple = patches.remove(pos);
-            
-            // Unpack the tuple - storage is 7-tuple: (id, patch_data, usage, offset, stride_y, plane_index, mapped_width)
-            // Use proper destructuring instead of transmute to avoid memory corruption
             let (_, patch_data, usage, offset, stride_y, plane_index, mapped_width) = patch_tuple;
             
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
-                if let Ok(mut data) = img.data.write() {
-                    let is_planar = VxCImage::is_planar_format(img.format);
-                    
-                    let bpp = if is_planar {
-                        1 // Planar formats are 1 byte per pixel
+                let is_planar = VxCImage::is_planar_format(img.format);
+                let bpp = if is_planar { 1 } else { VxCImage::bytes_per_pixel(img.format) };
+                let width = mapped_width as usize;
+                let mapped_stride = width * bpp;
+                let height = if mapped_stride > 0 { patch_data.len() / mapped_stride } else { 0 };
+                
+                if img.is_external_memory {
+                    // Write back to external memory
+                    let ext_ptr = if (plane_index as usize) < img.external_ptrs.len() {
+                        img.external_ptrs[plane_index as usize]
                     } else {
-                        VxCImage::bytes_per_pixel(img.format)
+                        return VX_ERROR_INVALID_PARAMETERS;
                     };
-                    
-                    // Use stored mapped_width for correct dimensions
-                    let width = mapped_width as usize;
-                    // Calculate height from stored patch data size and mapped region width
-                    let mapped_stride = width * bpp;
-                    let height = if mapped_stride > 0 {
-                        patch_data.len() / mapped_stride
-                    } else {
-                        0
-                    };
-                    
-                    // Copy data back row by row
-                    for y in 0..height {
-                        let src_start = y * mapped_stride;
-                        let dst_start = offset + y * stride_y;
-                        if dst_start + width * bpp <= data.len() && src_start + width * bpp <= patch_data.len() {
-                            data[dst_start..dst_start + width * bpp]
-                                .copy_from_slice(&patch_data[src_start..src_start + width * bpp]);
+                    if !ext_ptr.is_null() {
+                        for y in 0..height {
+                            let src_start = y * mapped_stride;
+                            let dst_start = offset + y * stride_y;
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    patch_data.as_ptr().add(src_start),
+                                    ext_ptr.add(dst_start),
+                                    width * bpp,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    // Write back to internal data buffer
+                    if let Ok(mut data) = img.data.write() {
+                        for y in 0..height {
+                            let src_start = y * mapped_stride;
+                            let dst_start = offset + y * stride_y;
+                            if dst_start + width * bpp <= data.len() && src_start + width * bpp <= patch_data.len() {
+                                data[dst_start..dst_start + width * bpp]
+                                    .copy_from_slice(&patch_data[src_start..src_start + width * bpp]);
+                            }
                         }
                     }
                 }
@@ -1090,32 +1120,78 @@ pub extern "C" fn vxCopyImagePatch(
         match usage {
             VX_READ_ONLY => {
                 // Copy from image to user buffer
-                if let Ok(data) = img.data.read() {
-                    for y in 0..height {
-                        let src_start = offset + y * stride_y;
-                        let dst_start = y * addr.stride_y as usize;
-                        if src_start + width * bpp <= data.len() {
-                            std::ptr::copy_nonoverlapping(
-                                data.as_ptr().add(src_start),
-                                (user_ptr as *mut u8).add(dst_start),
-                                width * bpp
-                            );
+                if img.is_external_memory {
+                    let ext_ptr = if (plane_index as usize) < img.external_ptrs.len() {
+                        img.external_ptrs[plane_index as usize]
+                    } else {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    };
+                    if !ext_ptr.is_null() {
+                        for y in 0..height {
+                            let src_start = offset + y * stride_y;
+                            let dst_start = y * addr.stride_y as usize;
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    ext_ptr.add(src_start),
+                                    (user_ptr as *mut u8).add(dst_start),
+                                    width * bpp,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    if let Ok(data) = img.data.read() {
+                        for y in 0..height {
+                            let src_start = offset + y * stride_y;
+                            let dst_start = y * addr.stride_y as usize;
+                            if src_start + width * bpp <= data.len() {
+                                unsafe {
+                                    std::ptr::copy_nonoverlapping(
+                                        data.as_ptr().add(src_start),
+                                        (user_ptr as *mut u8).add(dst_start),
+                                        width * bpp
+                                    );
+                                }
+                            }
                         }
                     }
                 }
             }
             VX_WRITE_ONLY => {
                 // Copy from user buffer to image
-                if let Ok(mut data) = img.data.write() {
-                    for y in 0..height {
-                        let dst_start = offset + y * stride_y;
-                        let src_start = y * addr.stride_y as usize;
-                        if dst_start + width * bpp <= data.len() {
-                            std::ptr::copy_nonoverlapping(
-                                (user_ptr as *const u8).add(src_start),
-                                data.as_mut_ptr().add(dst_start),
-                                width * bpp
-                            );
+                if img.is_external_memory {
+                    let ext_ptr = if (plane_index as usize) < img.external_ptrs.len() {
+                        img.external_ptrs[plane_index as usize]
+                    } else {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    };
+                    if !ext_ptr.is_null() {
+                        for y in 0..height {
+                            let dst_start = offset + y * stride_y;
+                            let src_start = y * addr.stride_y as usize;
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    (user_ptr as *const u8).add(src_start),
+                                    ext_ptr.add(dst_start),
+                                    width * bpp,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    if let Ok(mut data) = img.data.write() {
+                        for y in 0..height {
+                            let dst_start = offset + y * stride_y;
+                            let src_start = y * addr.stride_y as usize;
+                            if dst_start + width * bpp <= data.len() {
+                                unsafe {
+                                    std::ptr::copy_nonoverlapping(
+                                        (user_ptr as *const u8).add(src_start),
+                                        data.as_mut_ptr().add(dst_start),
+                                        width * bpp
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -1163,12 +1239,47 @@ pub extern "C" fn vxSetImageValidRectangle(
 /// Swap image handle
 #[no_mangle]
 pub extern "C" fn vxSwapImageHandle(
-    _image: vx_image,
-    _new_ptrs: *const *mut c_void,
-    _prev_ptrs: *mut *mut c_void,
-    _num_planes: vx_uint32,
+    image: vx_image,
+    new_ptrs: *const *mut c_void,
+    prev_ptrs: *mut *mut c_void,
+    num_planes: vx_uint32,
 ) -> vx_status {
-    VX_ERROR_NOT_IMPLEMENTED
+    if image.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if new_ptrs.is_null() || prev_ptrs.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let img = unsafe { &mut *(image as *mut VxCImage) };
+
+    // Only works for images created from handles (external memory)
+    if !img.is_external_memory {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    let num_expected_planes = VxCImage::num_planes(img.format) as vx_uint32;
+    if num_planes != num_expected_planes {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    unsafe {
+        for plane_idx in 0..num_planes as usize {
+            // Return old pointers
+            if plane_idx < img.external_ptrs.len() {
+                *prev_ptrs.add(plane_idx) = img.external_ptrs[plane_idx] as *mut c_void;
+            } else {
+                *prev_ptrs.add(plane_idx) = std::ptr::null_mut();
+            }
+            // Set new pointers
+            let new_ptr = *new_ptrs.add(plane_idx);
+            if plane_idx < img.external_ptrs.len() {
+                img.external_ptrs[plane_idx] = new_ptr as *mut u8;
+            }
+        }
+    }
+
+    VX_SUCCESS
 }
 
 /// Compute image pattern

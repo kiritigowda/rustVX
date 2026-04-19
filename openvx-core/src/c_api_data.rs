@@ -63,19 +63,34 @@ impl std::fmt::Debug for vx_pixel_value_t {
 
 /// Scalar structure for C API
 pub struct VxCScalarData {
-    data_type: vx_enum,
-    data: Vec<u8>,
-    context: vx_context,
+    pub data_type: vx_enum,
+    pub data: Vec<u8>,
+    pub context: vx_context,
 }
 
 impl VxCScalarData {
-    fn type_size(data_type: vx_enum) -> usize {
+    pub fn type_size(data_type: vx_enum) -> usize {
         match data_type {
             0x003 | 0x002 => 1, // VX_TYPE_UINT8 | VX_TYPE_INT8
             0x005 | 0x004 => 2, // VX_TYPE_UINT16 | VX_TYPE_INT16
             0x007 | 0x006 | 0x00A => 4, // VX_TYPE_UINT32 | VX_TYPE_INT32 | VX_TYPE_FLOAT32
             0x009 | 0x008 | 0x00B => 8, // VX_TYPE_UINT64 | VX_TYPE_INT64 | VX_TYPE_FLOAT64
-            _ => 4,
+            0x020 => 16, // VX_TYPE_RECTANGLE
+            0x021 => 28, // VX_TYPE_KEYPOINT
+            0x022 => 8,  // VX_TYPE_COORDINATES2D
+            0x023 => 12, // VX_TYPE_COORDINATES3D
+            0x024 => 8,  // VX_TYPE_COORDINATES2DF (2 floats)
+            _ => {
+                // Check user-registered struct sizes
+                if data_type >= 0x100 {
+                    if let Ok(structs) = crate::unified_c_api::USER_STRUCTS.lock() {
+                        if let Some((_, size)) = structs.get(&data_type) {
+                            return *size;
+                        }
+                    }
+                }
+                4
+            },
         }
     }
 }
@@ -371,7 +386,7 @@ pub struct VxCMatrixData {
 }
 
 impl VxCMatrixData {
-    fn element_size(data_type: vx_enum) -> usize {
+    pub fn element_size(data_type: vx_enum) -> usize {
         match data_type {
             0x003 | 0x002 => 1, // VX_TYPE_UINT8 | VX_TYPE_INT8
             0x005 | 0x004 => 2, // VX_TYPE_UINT16 | VX_TYPE_INT16
@@ -553,15 +568,15 @@ pub extern "C" fn vxReleaseMatrix(matrix: *mut vx_matrix) -> vx_status {
 
 /// LUT structure for C API
 pub struct VxCLUTData {
-    data_type: vx_enum,
-    count: vx_size,
-    offset: vx_int32,
-    data: RwLock<Vec<u8>>,
-    context: vx_context,
+    pub data_type: vx_enum,
+    pub count: vx_size,
+    pub offset: vx_int32,
+    pub data: RwLock<Vec<u8>>,
+    pub context: vx_context,
 }
 
 impl VxCLUTData {
-    fn element_size(data_type: vx_enum) -> usize {
+    pub fn element_size(data_type: vx_enum) -> usize {
         match data_type {
             0x003 | 0x002 => 1, // VX_TYPE_UINT8 | VX_TYPE_INT8
             0x005 | 0x004 => 2, // VX_TYPE_UINT16 | VX_TYPE_INT16

@@ -2060,7 +2060,7 @@ pub const VX_PARAMETER_TYPE: vx_enum = 0x80502;     // VX_ATTRIBUTE_BASE + 0x02
 pub const VX_PARAMETER_REF: vx_enum = 0x80504;      // VX_ATTRIBUTE_BASE + 0x04
 
 // Scalar attributes
-pub const VX_SCALAR_TYPE: vx_enum = 0x00;
+pub const VX_SCALAR_TYPE: vx_enum = 0x80D00;
 
 // Threshold attributes
 pub const VX_THRESHOLD_VALUE: vx_enum = 0x00;
@@ -2159,10 +2159,10 @@ pub const VX_IMAGE_IS_VIRTUAL: vx_enum = 0x80F0A;
 // ============================================================================
 
 // Array attributes - VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_ARRAY) = (0<<20)|(0x80E<<8) = 0x80E00
-pub const VX_ARRAY_ITEMTYPE: vx_enum = 0x80E00;     // VX_ATTRIBUTE_BASE + 0x0
-pub const VX_ARRAY_NUMITEMS: vx_enum = 0x80E01;     // VX_ATTRIBUTE_BASE + 0x1
-pub const VX_ARRAY_CAPACITY: vx_enum = 0x80E02;     // VX_ATTRIBUTE_BASE + 0x2
-pub const VX_ARRAY_ITEMSIZE: vx_enum = 0x80E03;     // VX_ATTRIBUTE_BASE + 0x3
+pub const VX_ARRAY_ITEMTYPE: vx_enum = 0x80E02;     // VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_ARRAY) + 2
+pub const VX_ARRAY_NUMITEMS: vx_enum = 0x80E03;     // + 3
+pub const VX_ARRAY_CAPACITY: vx_enum = 0x80E04;     // + 4
+pub const VX_ARRAY_ITEMSIZE: vx_enum = 0x80E05;     // + 5
 
 // ============================================================================
 // Opaque Types for Arrays and Structures
