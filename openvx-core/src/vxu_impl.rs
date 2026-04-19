@@ -2333,6 +2333,45 @@ pub fn vxu_multiply_impl(
     }
 }
 
+/// Direct-scale version for vxuMultiply (takes vx_float32 directly, not vx_scalar)
+/// The OpenVX spec defines vxuMultiply with vx_float32 scale parameter,
+/// not vx_scalar. The graph version (vxMultiplyNode) uses vx_scalar.
+pub fn vxu_multiply_impl_direct_scale(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    scale_value: vx_float32,
+    overflow_policy: vx_enum,
+    rounding_policy: vx_enum,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        match multiply(&src1, &src2, &mut dst, scale_value, overflow_policy, rounding_policy) {
+            Ok(_) => copy_rust_to_c_image(&dst, output),
+            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+}
+
 pub fn vxu_weighted_average_impl(
     context: vx_context,
     img1: vx_image,

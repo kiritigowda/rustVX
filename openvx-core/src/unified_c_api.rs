@@ -6884,12 +6884,12 @@ pub extern "C" fn vxuMultiply(
     context: vx_context,
     in1: vx_image,
     in2: vx_image,
-    _scale: vx_scalar,
+    _scale: vx_float32,
     _overflow_policy: i32,
     _rounding_policy: i32,
     output: vx_image,
 ) -> i32 {
-    crate::vxu_impl::vxu_multiply_impl(context, in1, in2, _scale, _overflow_policy, _rounding_policy, output)
+    crate::vxu_impl::vxu_multiply_impl_direct_scale(context, in1, in2, _scale, _overflow_policy, _rounding_policy, output)
 }
 
 #[no_mangle]
