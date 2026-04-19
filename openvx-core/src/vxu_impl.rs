@@ -505,43 +505,38 @@ fn clamp_u8(val: i32) -> u8 {
 
 /// RGB to YUV conversion (BT.709)
 #[inline]
+/// RGB to YUV conversion (BT.709) - matches CTS reference exactly
+/// CTS uses: (int)(r*0.2126f + g*0.7152f + b*0.0722f + 0.5f)
+///           (int)(-r*0.1146f - g*0.3854f + b*0.5f + 128.5f)
+///           (int)(r*0.5f - g*0.4542f - b*0.0458f + 128.5f)
+#[inline]
 fn rgb_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let r = r as i32;
-    let g = g as i32;
-    let b = b as i32;
+    let rf = r as f32;
+    let gf = g as f32;
+    let bf = b as f32;
     
-    // BT.709 coefficients (from OpenVX conformance test)
-    // Y = 0.2126*R + 0.7152*G + 0.0722*B
-    // U = -0.1146*R - 0.3854*G + 0.5*B + 128
-    // V = 0.5*R - 0.4542*G - 0.0458*B + 128
-    // Add 128 before >> 8 for round-to-nearest (matching test's + 0.5f)
-    let y = ((54 * r + 183 * g + 18 * b + 128) >> 8) as u8;
-    let u = (((-29 * r - 99 * g + 128 * b + 128) >> 8) + 128) as u8;
-    let v = (((128 * r - 116 * g - 12 * b + 128) >> 8) + 128) as u8;
+    let yval = (rf * 0.2126 + gf * 0.7152 + bf * 0.0722 + 0.5) as i32;
+    let uval = (-rf * 0.1146 - gf * 0.3854 + bf * 0.5 + 128.5) as i32;
+    let vval = (rf * 0.5 - gf * 0.4542 - bf * 0.0458 + 128.5) as i32;
     
-    (y, u, v)
+    (clamp_u8(yval), clamp_u8(uval), clamp_u8(vval))
 }
 
-/// YUV to RGB conversion (BT.709)
-/// R = Y + 1.5748*(V-128)
-/// G = Y - 0.1873*(U-128) - 0.4681*(V-128)
-/// B = Y + 1.8556*(U-128)
+/// YUV to RGB conversion (BT.709) - matches CTS reference exactly
+/// CTS uses: (int)(y + 1.5748f*(v-128) + 0.5f)
+///           (int)(y - 0.1873f*(u-128) - 0.4681f*(v-128) + 0.5f)
+///           (int)(y + 1.8556f*(u-128) + 0.5f)
 #[inline]
 fn yuv_to_rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
-    let y = y as i32;
-    let u = u as i32 - 128;
-    let v = v as i32 - 128;
+    let yf = y as f32;
+    let uf = (u as f32) - 128.0;
+    let vf = (v as f32) - 128.0;
     
-    // BT.709 coefficients (from OpenVX conformance test)
-    // R = Y + 1.5748*V = Y + (403*V)/256
-    // G = Y - 0.1873*U - 0.4681*V = Y - (48*U + 120*V)/256
-    // B = Y + 1.8556*U = Y + (475*U)/256
-    // Add 128 before >> 8 for round-to-nearest (matching test's + 0.5f)
-    let r = y + ((403 * v + 128) >> 8);
-    let g = y - ((48 * u + 120 * v) >> 8);
-    let b = y + ((475 * u + 128) >> 8);
+    let rval = (yf + 1.5748 * vf + 0.5) as i32;
+    let gval = (yf - 0.1873 * uf - 0.4681 * vf + 0.5) as i32;
+    let bval = (yf + 1.8556 * uf + 0.5) as i32;
     
-    (clamp_u8(r), clamp_u8(g), clamp_u8(b))
+    (clamp_u8(rval), clamp_u8(gval), clamp_u8(bval))
 }
 
 /// Calculate plane sizes and offsets for planar YUV formats
@@ -709,31 +704,28 @@ pub fn vxu_color_convert_impl(
                     }
                     
                     // Second pass: compute UV plane (subsampled 2x2)
+                    // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            // Average 2x2 block for chroma
-                            let mut sum_r = 0u32;
-                            let mut sum_g = 0u32;
-                            let mut sum_b = 0u32;
-                            let mut count = 0u32;
+                            let mut sum_u = 0i32;
+                            let mut sum_v = 0i32;
                             
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
                                     let px = (x + dx).min(width - 1);
                                     let src_idx = py * width * 4 + px * 4;
-                                    sum_r += src_data[src_idx] as u32;
-                                    sum_g += src_data[src_idx + 1] as u32;
-                                    sum_b += src_data[src_idx + 2] as u32;
-                                    count += 1;
+                                    let r = src_data[src_idx];
+                                    let g = src_data[src_idx + 1];
+                                    let b = src_data[src_idx + 2];
+                                    let (_, u, v) = rgb_to_yuv(r, g, b);
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
                                 }
                             }
                             
-                            let avg_r = (sum_r / count) as u8;
-                            let avg_g = (sum_g / count) as u8;
-                            let avg_b = (sum_b / count) as u8;
-                            
-                            let (_, u_val, v_val) = rgb_to_yuv(avg_r, avg_g, avg_b);
+                            let u_val = (sum_u / 4) as u8;
+                            let v_val = (sum_v / 4) as u8;
                             
                             let uv_y = y / 2;
                             let uv_idx = y_size + uv_y * width + x;
@@ -772,30 +764,28 @@ pub fn vxu_color_convert_impl(
                     }
                     
                     // Compute U and V planes (subsampled 2x2)
+                    // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            let mut sum_r = 0u32;
-                            let mut sum_g = 0u32;
-                            let mut sum_b = 0u32;
-                            let mut count = 0u32;
+                            let mut sum_u = 0i32;
+                            let mut sum_v = 0i32;
                             
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
                                     let px = (x + dx).min(width - 1);
                                     let src_idx = py * width * 4 + px * 4;
-                                    sum_r += src_data[src_idx] as u32;
-                                    sum_g += src_data[src_idx + 1] as u32;
-                                    sum_b += src_data[src_idx + 2] as u32;
-                                    count += 1;
+                                    let r = src_data[src_idx];
+                                    let g = src_data[src_idx + 1];
+                                    let b = src_data[src_idx + 2];
+                                    let (_, u, v) = rgb_to_yuv(r, g, b);
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
                                 }
                             }
                             
-                            let avg_r = (sum_r / count) as u8;
-                            let avg_g = (sum_g / count) as u8;
-                            let avg_b = (sum_b / count) as u8;
-                            
-                            let (_, u_val, v_val) = rgb_to_yuv(avg_r, avg_g, avg_b);
+                            let u_val = (sum_u / 4) as u8;
+                            let v_val = (sum_v / 4) as u8;
                             
                             let uv_y = y / 2;
                             let uv_x = x / 2;
@@ -928,31 +918,28 @@ pub fn vxu_color_convert_impl(
                     }
                     
                     // Second pass: compute UV plane (subsampled 2x2)
+                    // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            // Average 2x2 block for chroma
-                            let mut sum_r = 0u32;
-                            let mut sum_g = 0u32;
-                            let mut sum_b = 0u32;
-                            let mut count = 0u32;
+                            let mut sum_u = 0i32;
+                            let mut sum_v = 0i32;
                             
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
                                     let px = (x + dx).min(width - 1);
                                     let src_idx = py * width * 3 + px * 3;
-                                    sum_r += src_data[src_idx] as u32;
-                                    sum_g += src_data[src_idx + 1] as u32;
-                                    sum_b += src_data[src_idx + 2] as u32;
-                                    count += 1;
+                                    let r = src_data[src_idx];
+                                    let g = src_data[src_idx + 1];
+                                    let b = src_data[src_idx + 2];
+                                    let (_, u, v) = rgb_to_yuv(r, g, b);
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
                                 }
                             }
                             
-                            let avg_r = (sum_r / count) as u8;
-                            let avg_g = (sum_g / count) as u8;
-                            let avg_b = (sum_b / count) as u8;
-                            
-                            let (_, u_val, v_val) = rgb_to_yuv(avg_r, avg_g, avg_b);
+                            let u_val = (sum_u / 4) as u8;
+                            let v_val = (sum_v / 4) as u8;
                             
                             let uv_y = y / 2;
                             let uv_idx = y_size + uv_y * width + x;
@@ -1045,30 +1032,28 @@ pub fn vxu_color_convert_impl(
                     }
                     
                     // Compute U and V planes (subsampled 2x2)
+                    // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            let mut sum_r = 0u32;
-                            let mut sum_g = 0u32;
-                            let mut sum_b = 0u32;
-                            let mut count = 0u32;
+                            let mut sum_u = 0i32;
+                            let mut sum_v = 0i32;
                             
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
                                     let px = (x + dx).min(width - 1);
                                     let src_idx = py * width * 3 + px * 3;
-                                    sum_r += src_data[src_idx] as u32;
-                                    sum_g += src_data[src_idx + 1] as u32;
-                                    sum_b += src_data[src_idx + 2] as u32;
-                                    count += 1;
+                                    let r = src_data[src_idx];
+                                    let g = src_data[src_idx + 1];
+                                    let b = src_data[src_idx + 2];
+                                    let (_, u, v) = rgb_to_yuv(r, g, b);
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
                                 }
                             }
                             
-                            let avg_r = (sum_r / count) as u8;
-                            let avg_g = (sum_g / count) as u8;
-                            let avg_b = (sum_b / count) as u8;
-                            
-                            let (_, u_val, v_val) = rgb_to_yuv(avg_r, avg_g, avg_b);
+                            let u_val = (sum_u / 4) as u8;
+                            let v_val = (sum_v / 4) as u8;
                             
                             let uv_y = y / 2;
                             let uv_x = x / 2;
