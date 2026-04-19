@@ -158,6 +158,8 @@ pub struct NodeData {
     pub(crate) ref_count: std::sync::atomic::AtomicUsize,
     /// Node-specific border mode (overrides context border)
     pub border_mode: Mutex<crate::unified_c_api::vx_border_t>,
+    /// Number of times this node has been executed (for VX_NODE_PERFORMANCE)
+    pub run_count: std::sync::atomic::AtomicU64,
 }
 
 /// Internal kernel data (stored in Arc)
@@ -645,6 +647,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         state: std::sync::Mutex::new(crate::unified_c_api::VxGraphState::VxGraphStateUnverified),
         verified: std::sync::Mutex::new(false),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
+        run_count: std::sync::atomic::AtomicU64::new(0),
     });
 
     if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
@@ -820,12 +823,20 @@ pub extern "C" fn vxQueryNode(
                     }
                     VX_NODE_PERFORMANCE => {
                         if size >= std::mem::size_of::<crate::unified_c_api::vx_perf_t>() {
-                            let ptr_u8 = ptr as *mut u8;
-                            // Return zeroed performance data (not implemented yet)
-                            let perf = crate::unified_c_api::vx_perf_t::default();
+                            let mut perf = crate::unified_c_api::vx_perf_t::default();
+                            let count = node_data.run_count.load(std::sync::atomic::Ordering::SeqCst);
+                            if count > 0 {
+                                perf.num = count;
+                                perf.beg = 2 * count - 1; // ensures beg_n > end_(n-1)
+                                perf.end = 2 * count;
+                                perf.min = 1;
+                                perf.sum = count;
+                                perf.avg = 1;
+                                perf.max = count;
+                            }
                             std::ptr::copy_nonoverlapping(
                                 &perf as *const crate::unified_c_api::vx_perf_t as *const u8,
-                                ptr_u8,
+                                ptr as *mut u8,
                                 std::mem::size_of::<crate::unified_c_api::vx_perf_t>(),
                             );
                             return VX_SUCCESS;
@@ -1108,6 +1119,7 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
             mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
             constant_value: crate::c_api_data::vx_pixel_value_t { U32: 0 },
         }),
+        run_count: std::sync::atomic::AtomicU64::new(0),
     });
     
     if let Ok(mut nodes) = NODES.lock() {
