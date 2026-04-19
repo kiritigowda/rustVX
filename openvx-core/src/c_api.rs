@@ -315,12 +315,12 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.table_lookup", 0x08, 3),
         ("org.khronos.openvx.convertdepth", 0x1A, 4),
         // Feature detection
-        ("org.khronos.openvx.harris_corners", 0x25, 7),
+        ("org.khronos.openvx.harris_corners", 0x25, 8),
         ("org.khronos.openvx.fast_corners", 0x26, 5),
         ("org.khronos.openvx.optical_flow_pyr_lk", 0x27, 7),
         ("org.khronos.openvx.canny_edge_detector", 0x1B, 5),
         // OpenVX 1.1
-        ("org.khronos.openvx.laplacian_pyramid", 0x2A, 2),
+        ("org.khronos.openvx.laplacian_pyramid", 0x2A, 3),
         ("org.khronos.openvx.laplacian_reconstruct", 0x2B, 3),
         ("org.khronos.openvx.non_linear_filter", 0x2C, 4),
         // OpenVX 1.0.2 addition
@@ -1355,15 +1355,21 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
     // Determine num_params based on kernel enum
     let num_params = match kernel_e {
         // 2-parameter kernels
-        0x0E | 0x11 | 0x12 | 0x13 | 0x15 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x24 | 0x25 | 0x26 | 0x27 | 0x28 | 0x2A => 2,
+        0x0E | 0x11 | 0x12 | 0x13 | 0x15 | 0x1C | 0x1D | 0x1E | 0x1F => 2,
         // 3-parameter kernels
-        0x00 | 0x03 | 0x04 | 0x05 | 0x06 | 0x10 | 0x16 | 0x17 | 0x20 | 0x21 | 0x22 | 0x23 | 0x29 => 3,
+        0x01 | 0x04 | 0x05 | 0x06 | 0x10 | 0x0B | 0x0D | 0x22 | 0x29 | 0x2B => 3,
         // 4-parameter kernels
-        0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x14 | 0x1F | 0x2B | 0x2D => 4,
+        0x02 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0C | 0x14 | 0x1A | 0x21 | 0x23 | 0x24 | 0x28 | 0x2C | 0x40 => 4,
         // 5-parameter kernels (fast_corners, canny_edge)
-        0x1B => 5,
-        // 7-parameter kernels (optical_flow_pyr_lk, harris_corners)
-        0x27 | 0x25 => 7,
+        0x1B | 0x26 => 5,
+        // 6-parameter kernels (minmaxloc)
+        0x19 => 6,
+        // 7-parameter kernels (optical_flow_pyr_lk)
+        0x27 => 7,
+        // 8-parameter kernels (harris_corners)
+        0x25 => 8,
+        // 3-parameter pyramid
+        0x2A => 3,
         // Default
         _ => 4,
     };
@@ -1742,19 +1748,10 @@ pub extern "C" fn vxSetParameterByIndex(
             let cid = node_data.context_id;
             let kid = node_data.kernel_id;
             if let Ok(kernels) = KERNELS.lock() {
-                if let Some(kernel_data) = kernels.get(&kid) {
-                    // Check if trying to set NULL to a required parameter
-                    // For standard kernels, param 0 is typically required input
-                    let is_required = if index == 0 {
-                        // Parameter 0 is typically required input
-                        true
-                    } else {
-                        false
-                    };
-                    
-                    if is_required && value.is_null() {
-                        return VX_ERROR_INVALID_PARAMETERS;
-                    }
+                if let Some(_kernel_data) = kernels.get(&kid) {
+                    // NULL values are allowed for optional output parameters
+                    // The caller (create_node_with_params) already skips NULLs,
+                    // but if we get here with NULL, just allow it silently
                 }
             }
             

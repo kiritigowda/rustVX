@@ -5471,8 +5471,11 @@ fn create_node_with_params(
         return std::ptr::null_mut();
     }
     
-    // Set parameters
+    // Set parameters (skip NULL params - they are optional outputs)
     for (index, &param) in params.iter().enumerate() {
+        if param.is_null() {
+            continue; // Optional parameter not provided
+        }
         let status = crate::c_api::vxSetParameterByIndex(node, index as vx_uint32, param);
         if status != crate::c_api::VX_SUCCESS {
             // Clean up and return null on error
@@ -6378,7 +6381,9 @@ pub extern "C" fn vxHarrisCornersNode(
         return std::ptr::null_mut();
     }
 
-    // HarrisCorners has params: input, strength_thresh, min_distance, sensitivity, gradient_size, block_size, corners, num_corners
+    // HarrisCorners has 8 params: input, strength_thresh, min_distance, sensitivity,
+    // gradient_size, block_size, corners, num_corners
+    // All params must be set at their fixed index positions.
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
@@ -6394,28 +6399,19 @@ pub extern "C" fn vxHarrisCornersNode(
         return std::ptr::null_mut();
     }
 
-    // Build params list
+    // Build params list at fixed indices (all 8 params including optional num_corners)
     let mut params: Vec<vx_reference> = vec![
-        input as vx_reference,
+        std::ptr::null_mut(); 8
     ];
     
-    if !strength_thresh.is_null() {
-        params.push(strength_thresh as vx_reference);
-    }
-    if !min_distance.is_null() {
-        params.push(min_distance as vx_reference);
-    }
-    if !sensitivity.is_null() {
-        params.push(sensitivity as vx_reference);
-    }
-    
-    params.push(gradient_scalar as vx_reference);
-    params.push(block_scalar as vx_reference);
-    params.push(corners as vx_reference);
-    
-    if !num_corners.is_null() {
-        params.push(num_corners as vx_reference);
-    }
+    params[0] = input as vx_reference;
+    if !strength_thresh.is_null() { params[1] = strength_thresh as vx_reference; }
+    if !min_distance.is_null() { params[2] = min_distance as vx_reference; }
+    if !sensitivity.is_null() { params[3] = sensitivity as vx_reference; }
+    params[4] = gradient_scalar as vx_reference;
+    params[5] = block_scalar as vx_reference;
+    params[6] = corners as vx_reference;
+    if !num_corners.is_null() { params[7] = num_corners as vx_reference; }
 
     let node = create_node_with_params(
         graph,
@@ -6443,7 +6439,7 @@ pub extern "C" fn vxFASTCornersNode(
         return std::ptr::null_mut();
     }
 
-    // FASTCorners has params: input, strength_thresh, nonmax_suppression, corners, num_corners
+    // FASTCorners has 5 params at fixed indices: input(0), strength_thresh(1), nonmax_suppression(2), corners(3), num_corners(4)
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
@@ -6455,21 +6451,13 @@ pub extern "C" fn vxFASTCornersNode(
         return std::ptr::null_mut();
     }
 
-    // Build params list
-    let mut params: Vec<vx_reference> = vec![
-        input as vx_reference,
-    ];
-    
-    if !strength_thresh.is_null() {
-        params.push(strength_thresh as vx_reference);
-    }
-    
-    params.push(nonmax_scalar as vx_reference);
-    params.push(corners as vx_reference);
-    
-    if !num_corners.is_null() {
-        params.push(num_corners as vx_reference);
-    }
+    // Build params list at fixed indices
+    let mut params: Vec<vx_reference> = vec![std::ptr::null_mut(); 5];
+    params[0] = input as vx_reference;
+    if !strength_thresh.is_null() { params[1] = strength_thresh as vx_reference; }
+    params[2] = nonmax_scalar as vx_reference;
+    params[3] = corners as vx_reference;
+    if !num_corners.is_null() { params[4] = num_corners as vx_reference; }
 
     let node = create_node_with_params(
         graph,
@@ -7223,12 +7211,24 @@ pub extern "C" fn vxRegisterUserStruct(
 pub extern "C" fn vxLaplacianPyramidNode(
     graph: vx_graph,
     input: vx_image,
-    output: vx_pyramid,
+    laplacian: vx_pyramid,
+    output: vx_image,
 ) -> vx_node {
-    if graph.is_null() || input.is_null() || output.is_null() {
+    if graph.is_null() || input.is_null() || laplacian.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+
+    // LaplacianPyramid params: input(0), laplacian(1), output(2)
+    let mut params: Vec<vx_reference> = vec![std::ptr::null_mut(); 3];
+    params[0] = input as vx_reference;
+    params[1] = laplacian as vx_reference;
+    params[2] = output as vx_reference;
+
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.laplacian_pyramid",
+        &params,
+    )
 }
 
 /// Laplacian reconstruct node
@@ -7242,7 +7242,18 @@ pub extern "C" fn vxLaplacianReconstructNode(
     if graph.is_null() || pyr.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+
+    // LaplacianReconstruct params: laplacian(0), input(1), output(2)
+    let mut params: Vec<vx_reference> = vec![std::ptr::null_mut(); 3];
+    params[0] = pyr as vx_reference;
+    params[1] = input as vx_reference;
+    params[2] = output as vx_reference;
+
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.laplacian_reconstruct",
+        &params,
+    )
 }
 
 /// Gaussian pyramid immediate function
@@ -7341,7 +7352,7 @@ pub extern "C" fn vxNonLinearFilterNode(
     graph: vx_graph,
     function: vx_enum,
     input: vx_image,
-    mask_size: vx_size,
+    mask: vx_matrix,
     output: vx_image,
 ) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
@@ -7353,26 +7364,28 @@ pub extern "C" fn vxNonLinearFilterNode(
         return std::ptr::null_mut();
     }
 
-    // Create scalars for function and mask_size
+    // Create scalar for function
     let mut function_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &function as *const _ as *const c_void);
-    let mut mask_scalar = vxCreateScalar(context, VX_TYPE_SIZE, &mask_size as *const _ as *const c_void);
 
-    if function_scalar.is_null() || mask_scalar.is_null() {
+    if function_scalar.is_null() {
         vxReleaseScalar(&mut function_scalar);
-        vxReleaseScalar(&mut mask_scalar);
         return std::ptr::null_mut();
     }
+
+    // NonLinearFilter params: function(0), input(1), mask(2), output(3)
+    let mut params: Vec<vx_reference> = vec![std::ptr::null_mut(); 4];
+    params[0] = function_scalar as vx_reference;
+    params[1] = input as vx_reference;
+    if !mask.is_null() { params[2] = mask as vx_reference; }
+    params[3] = output as vx_reference;
 
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.non_linear_filter",
-        &[function_scalar as vx_reference, input as vx_reference, 
-          mask_scalar as vx_reference, output as vx_reference],
+        &params,
     );
 
-    // Release the scalars (node has reference now)
     vxReleaseScalar(&mut function_scalar);
-    vxReleaseScalar(&mut mask_scalar);
 
     node
 }
@@ -7538,12 +7551,11 @@ pub extern "C" fn vxNotNode(graph: vx_graph, input: vx_image, output: vx_image) 
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
-    }
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.not",
+        &[input as vx_reference, output as vx_reference],
+    )
 }
 
 /// Convert depth node
@@ -7552,12 +7564,36 @@ pub extern "C" fn vxConvertDepthNode(graph: vx_graph, input: vx_image, output: v
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
     }
+
+    // Create scalars for policy and shift
+    let mut policy_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &policy as *const _ as *const c_void);
+    let mut shift_scalar = vxCreateScalar(context, VX_TYPE_INT32, &shift as *const _ as *const c_void);
+    if policy_scalar.is_null() || shift_scalar.is_null() {
+        vxReleaseScalar(&mut policy_scalar);
+        vxReleaseScalar(&mut shift_scalar);
+        return std::ptr::null_mut();
+    }
+
+    // ConvertDepth params: input(0), output(1), policy(2), shift(3)
+    let mut params: Vec<vx_reference> = vec![std::ptr::null_mut(); 4];
+    params[0] = input as vx_reference;
+    params[1] = output as vx_reference;
+    params[2] = policy_scalar as vx_reference;
+    params[3] = shift_scalar as vx_reference;
+
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.convertdepth",
+        &params,
+    );
+
+    vxReleaseScalar(&mut policy_scalar);
+    vxReleaseScalar(&mut shift_scalar);
+    node
 }
 
 /// Optical flow pyramid LK immediate mode
@@ -7909,16 +7945,36 @@ pub extern "C" fn vxRetrieveNodeCallback(node: vx_node, callback: *mut vx_nodeco
 
 /// Half scale Gaussian node
 #[no_mangle]
-pub extern "C" fn vxHalfScaleGaussianNode(graph: vx_graph, input: vx_image, output: vx_image, kernel_size: vx_size) -> vx_node {
+pub extern "C" fn vxHalfScaleGaussianNode(graph: vx_graph, input: vx_image, output: vx_image, kernel_size: vx_int32) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
+    
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
     }
+
+    // Create scalar for kernel_size
+    let mut ks_scalar = vxCreateScalar(context, VX_TYPE_INT32, &kernel_size as *const _ as *const c_void);
+    if ks_scalar.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    // HalfScaleGaussian params: input(0), output(1), kernel_size(2)
+    let mut params: Vec<vx_reference> = vec![std::ptr::null_mut(); 3];
+    params[0] = input as vx_reference;
+    params[1] = output as vx_reference;
+    params[2] = ks_scalar as vx_reference;
+
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.halfscale_gaussian",
+        &params,
+    );
+
+    vxReleaseScalar(&mut ks_scalar);
+    node
 }
 
 /// Immediate mode half scale Gaussian
@@ -7949,12 +8005,11 @@ pub extern "C" fn vxEqualizeHistNode(graph: vx_graph, input: vx_image, output: v
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
-    }
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.equalize_histogram",
+        &[input as vx_reference, output as vx_reference],
+    )
 }
 
 /// Equalize histogram immediate mode
@@ -7978,32 +8033,28 @@ pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_t
         return std::ptr::null_mut();
     }
     
-    let mut kernel = unsafe { crate::c_api::vxGetKernelByName(context, b"org.khronos.openvx.fast_corners\0".as_ptr() as *const i8) };
-    if kernel.is_null() {
+    // Create scalar for nonmax_suppression
+    let mut nonmax_scalar = vxCreateScalar(context, VX_TYPE_BOOL, &nonmax_suppression as *const _ as *const c_void);
+    if nonmax_scalar.is_null() {
         return std::ptr::null_mut();
     }
-    
-    unsafe {
-        let node = vxCreateGenericNode(graph, kernel);
-        if node.is_null() {
-            crate::c_api::vxReleaseKernel(&mut kernel);
-            return std::ptr::null_mut();
-        }
-        
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        if !strength_thresh.is_null() {
-            vxSetParameterByIndex(node, 1, strength_thresh as vx_reference);
-        }
-        if !corners.is_null() {
-            vxSetParameterByIndex(node, 4, corners as vx_reference);
-        }
-        if !num_corners.is_null() {
-            vxSetParameterByIndex(node, 5, num_corners as vx_reference);
-        }
-        
-        crate::c_api::vxReleaseKernel(&mut kernel);
-        node
-    }
+
+    // Build params at fixed indices: input(0), strength_thresh(1), nonmax(2), corners(3), num_corners(4)
+    let mut params: Vec<vx_reference> = vec![std::ptr::null_mut(); 5];
+    params[0] = input as vx_reference;
+    if !strength_thresh.is_null() { params[1] = strength_thresh as vx_reference; }
+    params[2] = nonmax_scalar as vx_reference;
+    if !corners.is_null() { params[3] = corners as vx_reference; }
+    if !num_corners.is_null() { params[4] = num_corners as vx_reference; }
+
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.fast_corners",
+        &params,
+    );
+
+    vxReleaseScalar(&mut nonmax_scalar);
+    node
 }
 
 /// Fast corners immediate mode

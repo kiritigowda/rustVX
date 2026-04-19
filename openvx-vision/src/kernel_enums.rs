@@ -128,12 +128,12 @@ pub const VISION_KERNELS: &[(&str, i32, u32)] = &[
     ("org.khronos.openvx.table_lookup", VX_KERNEL_TABLE_LOOKUP, 3),
     ("org.khronos.openvx.convertdepth", VX_KERNEL_CONVERTDEPTH, 4),
     // Feature detection
-    ("org.khronos.openvx.harris_corners", VX_KERNEL_HARRIS_CORNERS, 7),
+    ("org.khronos.openvx.harris_corners", VX_KERNEL_HARRIS_CORNERS, 8),
     ("org.khronos.openvx.fast_corners", VX_KERNEL_FAST_CORNERS, 5),
     ("org.khronos.openvx.optical_flow_pyr_lk", VX_KERNEL_OPTICAL_FLOW_PYR_LK, 7),
     ("org.khronos.openvx.canny_edge_detector", VX_KERNEL_CANNY_EDGE_DETECTOR, 5),
     // OpenVX 1.1
-    ("org.khronos.openvx.laplacian_pyramid", VX_KERNEL_LAPLACIAN_PYRAMID, 2),
+    ("org.khronos.openvx.laplacian_pyramid", VX_KERNEL_LAPLACIAN_PYRAMID, 3),
     ("org.khronos.openvx.laplacian_reconstruct", VX_KERNEL_LAPLACIAN_RECONSTRUCT, 3),
     ("org.khronos.openvx.non_linear_filter", VX_KERNEL_NON_LINEAR_FILTER, 4),
     // OpenVX 1.0.2
