@@ -57,12 +57,22 @@ impl KernelTrait for WarpAffineKernel {
         let src = params.get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let matrix_ref = params.get(1)
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
         let dst = params.get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
         
-        // Default identity-like affine transform (scale=1, no translation)
-        let matrix = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0];
+        // Extract matrix data from the matrix reference
+        let matrix: [f32; 6] = if let Some(matrix_data) = matrix_ref.as_any().downcast_ref::<openvx_core::c_api_data::VxCMatrixData>() {
+            matrix_data.as_f32_slice()
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+        } else {
+            // Default identity affine transform
+            [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0]
+        };
+        
         warp_affine(src, &matrix, dst)?;
         Ok(())
     }
@@ -145,7 +155,13 @@ pub fn scale_image(src: &Image, dst: &Image, bilinear: bool) -> VxResult<()> {
 }
 
 /// Warp affine: dst(x,y) = src(A*[x,y,1])
-/// matrix is [a11, a12, a13, a21, a22, a23]
+/// CTS stores affine matrix as mat[col][row] with col\u{220}\\{0,1,2\}, row\u{220}\\{0,1\}
+/// Flat layout: m[col*2 + row], so:
+///   m[0]=col0_row0 (x-coeff of x), m[1]=col0_row1 (y-coeff of x)
+///   m[2]=col1_row0 (x-coeff of y), m[3]=col1_row1 (y-coeff of y)
+///   m[4]=col2_row0 (x-translation),  m[5]=col2_row1 (y-translation)
+/// CTS reference: x0 = m[0]*x + m[2]*y + m[4]
+///               y0 = m[1]*x + m[3]*y + m[5]
 pub fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &Image) -> VxResult<()> {
     let dst_width = dst.width();
     let dst_height = dst.height();
@@ -154,12 +170,13 @@ pub fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &Image) -> VxResult<()> 
     
     let mut dst_data = dst.data_mut();
     
-    let a11 = matrix[0];
-    let a12 = matrix[1];
-    let a13 = matrix[2];
-    let a21 = matrix[3];
-    let a22 = matrix[4];
-    let a23 = matrix[5];
+    // Correct CTS column-major layout
+    let a11 = matrix[0]; // x-coeff of x
+    let a12 = matrix[2]; // x-coeff of y
+    let a13 = matrix[4]; // x-translation
+    let a21 = matrix[1]; // y-coeff of x
+    let a22 = matrix[3]; // y-coeff of y
+    let a23 = matrix[5]; // y-translation
     
     for y in 0..dst_height {
         for x in 0..dst_width {

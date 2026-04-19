@@ -358,10 +358,14 @@ pub struct VxCPyramid {
 
 /// Remap data
 pub struct VxCRemap {
-    src_width: u32,
-    src_height: u32,
-    dst_width: u32,
-    dst_height: u32,
+    pub src_width: u32,
+    pub src_height: u32,
+    pub dst_width: u32,
+    pub dst_height: u32,
+    /// Map data: pairs of (x, y) coordinates for each destination pixel
+    /// Stored as flat array: map_x_y[dst_y * dst_width + dst_x * 2 + 0] = x
+    ///                       map_x_y[dst_y * dst_width + dst_x * 2 + 1] = y
+    pub map_data: RwLock<Vec<f32>>,
     ref_count: AtomicUsize,
 }
 
@@ -1357,6 +1361,21 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
 }
 
 /// Dispatch execution to the appropriate VXU implementation based on kernel name
+    fn border_from_vx(border: &Option<vx_border_t>) -> crate::vxu_impl::BorderMode {
+        match border {
+            Some(b) => match b.mode {
+                0x0000C000 => crate::vxu_impl::BorderMode::Undefined, // VX_BORDER_UNDEFINED
+                0x0000C001 => { // VX_BORDER_CONSTANT
+                    let val = unsafe { b.constant_value.U8 };
+                    crate::vxu_impl::BorderMode::Constant(val)
+                },
+                0x0000C002 => crate::vxu_impl::BorderMode::Replicate, // VX_BORDER_REPLICATE
+                _ => crate::vxu_impl::BorderMode::Undefined,
+            },
+            None => crate::vxu_impl::BorderMode::Undefined,
+        }
+    }
+
 fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], border: Option<vx_border_t>) -> vx_status {
     match kernel_name {
         // Box filter
@@ -1538,6 +1557,20 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 4 {
                 let input = params[0] as vx_image;
                 let matrix = params[1] as vx_matrix;
+                // Read interpolation type from the scalar parameter
+                let interp_scalar = params[2] as vx_scalar;
+                let interp_type: i32 = if !interp_scalar.is_null() {
+                    let mut val: i32 = 0x4001; // default bilinear
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        interp_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, // VX_READ_ONLY
+                        0x0,     // VX_MEMORY_TYPE_HOST
+                    );
+                    if status == 0 { val } else { 0x4001 } // VX_INTERPOLATION_BILINEAR
+                } else {
+                    0x4001 // VX_INTERPOLATION_BILINEAR
+                };
                 let output = params[3] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
@@ -1550,8 +1583,9 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         matrix,
-                        0, // interpolation
-                        output
+                        interp_type,
+                        output,
+                        Some(border_from_vx(&border))
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -1783,14 +1817,30 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 4 {
                 let input = params[0] as vx_image;
                 let matrix = params[1] as vx_matrix;
+                // Read interpolation type from the scalar parameter
+                let interp_scalar = params[2] as vx_scalar;
+                let interp_type: i32 = if !interp_scalar.is_null() {
+                    let mut val: i32 = 0x4001; // default bilinear
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        interp_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, // VX_READ_ONLY
+                        0x0,     // VX_MEMORY_TYPE_HOST
+                    );
+                    if status == 0 { val } else { 0x4001 } // VX_INTERPOLATION_BILINEAR
+                } else {
+                    0x4001 // VX_INTERPOLATION_BILINEAR
+                };
                 let output = params[3] as vx_image;
                 if !input.is_null() && !matrix.is_null() && !output.is_null() {
+                    let border_mode = border_from_vx(&border);
                     crate::vxu_impl::vxu_warp_affine_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         matrix,
-                        1, // bilinear interpolation
-                        output
+                        interp_type,
+                        output,
+                        Some(border_mode)
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -1804,14 +1854,28 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 4 {
                 let input = params[0] as vx_image;
                 let table = params[1] as vx_remap;
+                let interp_type: i32 = if let Some(interp) = params.get(2) {
+                    let interp_scalar = *interp as vx_scalar;
+                    if !interp_scalar.is_null() {
+                        let mut val: i32 = 0x4001;
+                        let status = crate::c_api_data::vxCopyScalarData(
+                            interp_scalar,
+                            &mut val as *mut i32 as *mut c_void,
+                            0x11001, 0x0,
+                        );
+                        if status == 0 { val } else { 0x4001 }
+                    } else { 0x4001 }
+                } else { 0x4001 };
                 let output = params[3] as vx_image;
+                let border_mode = border_from_vx(&border);
                 if !input.is_null() && !table.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_remap_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         table,
-                        0, // nearest neighbor
-                        output
+                        interp_type,
+                        output,
+                        Some(border_mode)
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -4649,11 +4713,13 @@ pub extern "C" fn vxCreateRemap(
         return std::ptr::null_mut();
     }
     
+    let map_size = (dst_width as usize) * (dst_height as usize) * 2;
     let remap = Box::new(VxCRemap {
         src_width,
         src_height,
         dst_width,
         dst_height,
+        map_data: RwLock::new(vec![0.0f32; map_size]),
         ref_count: AtomicUsize::new(1),
     });
     
@@ -6983,7 +7049,7 @@ pub extern "C" fn vxuWarpAffine(
     _interpolation: i32,
     output: vx_image,
 ) -> i32 {
-    crate::vxu_impl::vxu_warp_affine_impl(context, input, matrix, _interpolation, output)
+    crate::vxu_impl::vxu_warp_affine_impl(context, input, matrix, _interpolation, output, None)
 }
 
 #[no_mangle]
@@ -6994,7 +7060,7 @@ pub extern "C" fn vxuWarpPerspective(
     _interpolation: i32,
     output: vx_image,
 ) -> i32 {
-    crate::vxu_impl::vxu_warp_perspective_impl(context, input, matrix, _interpolation, output)
+    crate::vxu_impl::vxu_warp_perspective_impl(context, input, matrix, _interpolation, output, None)
 }
 
 #[no_mangle]
@@ -7134,7 +7200,7 @@ pub extern "C" fn vxuRemap(
     _policy: i32,
     output: vx_image,
 ) -> i32 {
-    crate::vxu_impl::vxu_remap_impl(context, input, table, _policy, output)
+    crate::vxu_impl::vxu_remap_impl(context, input, table, _policy, output, None)
 }
 
 #[no_mangle]
@@ -7199,18 +7265,80 @@ pub extern "C" fn vxCreateThresholdForImageUnified(
 pub extern "C" fn vxCopyRemapPatch(
     remap: vx_remap,
     rect: *const vx_rectangle_t,
-    user_addr: *const vx_imagepatch_addressing_t,
+    stride_y: vx_size,
     user_ptr: *mut c_void,
+    data_type: vx_enum,
     usage: vx_enum,
     user_mem_type: vx_enum,
 ) -> vx_status {
-    if remap.is_null() || rect.is_null() || user_addr.is_null() || user_ptr.is_null() {
+    if remap.is_null() || rect.is_null() || user_ptr.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
     if user_mem_type != VX_MEMORY_TYPE_HOST {
         return VX_ERROR_NOT_IMPLEMENTED;
     }
-    // Stub - no actual copy
+    
+    unsafe {
+        let r = &*(rect);
+        let remap_data = &*(remap as *const VxCRemap);
+        let dst_w = remap_data.dst_width as usize;
+        let dst_h = remap_data.dst_height as usize;
+        
+        let start_x = r.start_x as usize;
+        let start_y = r.start_y as usize;
+        let end_x = r.end_x as usize;
+        let end_y = r.end_y as usize;
+        
+        if start_x >= dst_w || start_y >= dst_h || end_x > dst_w || end_y > dst_h {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        
+        // stride_y is the byte stride between rows
+        // data_type should be VX_TYPE_COORDINATES2DF (pairs of f32 x,y)
+        // Each vx_coordinates2df_t is 8 bytes (2 * f32)
+        let coord_stride = if stride_y > 0 { stride_y / 8 } else { end_x - start_x };
+        let row_stride = if stride_y > 0 { stride_y as usize } else { (end_x - start_x) * 8 };
+        
+        let mut map_data = match remap_data.map_data.write() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        
+        match usage {
+            VX_WRITE_ONLY => {
+                // Copy from user_ptr to remap
+                for y in start_y..end_y {
+                    for x in start_x..end_x {
+                        let src_offset = (y - start_y) * row_stride + (x - start_x) * 8;
+                        let src_ptr = (user_ptr as *const u8).add(src_offset);
+                        let x_val = std::ptr::read(src_ptr as *const f32);
+                        let y_val = std::ptr::read(src_ptr.add(4) as *const f32);
+                        let dst_idx = (y * dst_w + x) * 2;
+                        if dst_idx + 1 < map_data.len() {
+                            map_data[dst_idx] = x_val;
+                            map_data[dst_idx + 1] = y_val;
+                        }
+                    }
+                }
+            }
+            VX_READ_ONLY => {
+                // Copy from remap to user_ptr
+                for y in start_y..end_y {
+                    for x in start_x..end_x {
+                        let dst_offset = (y - start_y) * row_stride + (x - start_x) * 8;
+                        let dst_ptr = (user_ptr as *mut u8).add(dst_offset);
+                        let src_idx = (y * dst_w + x) * 2;
+                        if src_idx + 1 < map_data.len() {
+                            std::ptr::write(dst_ptr as *mut f32, map_data[src_idx]);
+                            std::ptr::write(dst_ptr.add(4) as *mut f32, map_data[src_idx + 1]);
+                        }
+                    }
+                }
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+    
     VX_SUCCESS
 }
 
