@@ -8,213 +8,345 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build rustVX
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source $HOME/.cargo/env
+          rustc --version
+          cargo --version
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
 
   baseline:
+    runs-on: ubuntu-22.04
     needs: build
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
       - name: Run All Baseline Tests
         run: |
           cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 120 ./bin/vx_test_conformance --filter="SmokeTest.*:Scalar.*:Array.*:ObjectArray.*:GraphCallback.*:GraphDelay.*"
 
   vision-pixel:
+    runs-on: ubuntu-22.04
     needs: build
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
       - name: Run Vision Pixel Tests
         run: |
           cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="Scale:*:Remap:*:WarpPerspective:*:WarpAffine:*:Convolve:*:Threshold:*:LUT:*:SwapImageHandle:*"
 
   vision-filters:
+    runs-on: ubuntu-22.04
     needs: build
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
       - name: Run Vision Filter Tests
         run: |
           cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 180 ./bin/vx_test_conformance --filter="Box3x3:*:Gaussian3x3:*:Median3x3:*:Dilate3x3:*:Erode3x3:*:Sobel3x3:*:Magnitude:*:Phase:*:HalfScaleGaussian:*:WeightedAverage:*:NonLinearFilter:*"
 
   vision-arithmetic:
+    runs-on: ubuntu-22.04
     needs: build
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
       - name: Run Vision Arithmetic Tests
         run: |
           cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 180 ./bin/vx_test_conformance --filter="vxMultiply:*:vxAddSub:*:vxBinOp8u:*:vxuAddSub:*:vxuMultiply:*:vxuConvertDepth:*:vxuBinOp8u:*:vxNot:*"
 
   vision-color:
+    runs-on: ubuntu-22.04
     needs: build
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
       - name: Run Vision Color/Channel Tests
         run: |
           cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 120 ./bin/vx_test_conformance --filter="ColorConvert:*:ChannelExtract:*:ChannelCombine:*"
 
   vision-features:
+    runs-on: ubuntu-22.04
     needs: build
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
       - name: Run Vision Feature Tests
         run: |
           cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="HarrisCorners:*:FastCorners:*:vxCanny:*:Histogram:*"
 
   graph-topology:
+    runs-on: ubuntu-22.04
     needs: build
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Build CTS
+          sudo apt-get install -y build-essential cmake ninja-build libgtest-dev libopencv-dev python3 python3-pip
+      - name: Install Rust
         run: |
-          mkdir -p OpenVX-cts/build
-          cd OpenVX-cts/build
-          cmake ..
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      - name: Build rustVX
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+      - name: Build OpenVX CTS
+        run: |
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON
           make -j$(nproc)
       - name: Run Graph Topology Tests
         run: |
           cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 180 ./bin/vx_test_conformance --filter="Graph.Node:*:Graph.Verify:*:Graph.Process:*:Graph.Delay:*:Graph.Age:*"
