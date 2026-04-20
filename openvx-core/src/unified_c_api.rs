@@ -822,6 +822,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.custom_convolution", vec![2]),
                 ("org.khronos.openvx.sobel_3x3", vec![1, 2]),  // [input, grad_x, grad_y]
                 ("org.khronos.openvx.laplacian_reconstruct", vec![2]),
+                ("org.khronos.openvx.convertdepth", vec![1]),  // [input, output, policy, shift]
                 ("org.khronos.openvx.non_linear_filter", vec![3]),  // [input, matrix, border, output]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![3]),  // [plane1, plane2, plane3/plane4, output]
@@ -832,7 +833,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.remap", vec![3]),
                 ("org.khronos.openvx.mean_stddev", vec![2, 3]),  // [input, mean, stddev]
                 ("org.khronos.openvx.weighted_average", vec![3]),
-                ("org.khronos.openvx.convertdepth", vec![3]),  // [input, policy_scalar, shift_scalar, output]
+                ("org.khronos.openvx.convertdepth", vec![]),  // [input, output, policy_scalar, shift_scalar] - all required
                 ("org.khronos.openvx.halfscale_gaussian", vec![2]),
                 // 5-param kernels
                 ("org.khronos.openvx.canny_edge_detector", vec![4]),
@@ -2203,29 +2204,27 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         "org.khronos.openvx.convertdepth" => {
             if params.len() >= 4 {
                 let input = params[0] as vx_image;
-                // params[1] is policy (vx_enum wrapped as scalar in some contexts, or direct)
-                // params[2] is shift (vx_scalar)
-                let output = params[3] as vx_image;
-                // Read policy from param 1
-                let policy: vx_enum = if !params[1].is_null() {
-                    // Could be an enum value directly or a scalar
-                    // Try to read as scalar first
+                let output = params[1] as vx_image;
+                // params[2] is policy (vx_scalar)
+                // params[3] is shift (vx_scalar)
+                // Read policy from param 2
+                let policy: vx_enum = if !params[2].is_null() {
                     let mut val: i32 = 0;
                     let status = crate::c_api_data::vxCopyScalarData(
-                        params[1] as vx_scalar,
+                        params[2] as vx_scalar,
                         &mut val as *mut i32 as *mut c_void,
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == VX_SUCCESS { val } else { params[1] as vx_enum }
+                    if status == VX_SUCCESS { val } else { 0xA001i32 }
                 } else {
                     0xA001i32 // VX_CONVERT_POLICY_SATURATE default
                 };
-                // Read shift from param 2 (vx_scalar)
-                let shift: vx_int32 = if !params[2].is_null() {
+                // Read shift from param 3 (vx_scalar)
+                let shift: vx_int32 = if !params[3].is_null() {
                     let mut val: i32 = 0;
                     let status = crate::c_api_data::vxCopyScalarData(
-                        params[2] as vx_scalar,
+                        params[3] as vx_scalar,
                         &mut val as *mut i32 as *mut c_void,
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
