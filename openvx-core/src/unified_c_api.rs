@@ -832,13 +832,13 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.remap", vec![3]),
                 ("org.khronos.openvx.mean_stddev", vec![2, 3]),  // [input, mean, stddev]
                 ("org.khronos.openvx.weighted_average", vec![3]),
-                ("org.khronos.openvx.convertdepth", vec![3]),  // [input, policy_scalar, shift_scalar, output]
+                ("org.khronos.openvx.convertdepth", vec![1]),  // [input, output, policy_scalar, shift_scalar]
                 ("org.khronos.openvx.halfscale_gaussian", vec![2]),
                 // 5-param kernels
                 ("org.khronos.openvx.canny_edge_detector", vec![4]),
                 ("org.khronos.openvx.fast_corners", vec![2, 3, 4]),  // [input, thresh, corners, num_corners, strength]
                 // 6-param kernels
-                ("org.khronos.openvx.minmaxloc", vec![2, 3, 4, 5]),  // [input, mask, min, max, min_loc, max_loc]
+                ("org.khronos.openvx.minmaxloc", vec![1, 2, 3, 4, 5]),  // [input, min_val, max_val, min_loc, max_loc, num_min_max]
                 // 7-param kernels
                 ("org.khronos.openvx.multiply", vec![5]),  // [in1, in2, scale, overflow, rounding, output]
                 ("org.khronos.openvx.harris_corners", vec![6]),  // 7 params
@@ -2008,12 +2008,13 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         }
         // Channel Extract
         "org.khronos.openvx.channel_extract" => {
+            // Node params: [0]=input, [1]=channel_enum_scalar, [2]=output
             if params.len() >= 3 {
                 let input = params[0] as vx_image;
                 let output = params[2] as vx_image;
                 if !input.is_null() && !output.is_null() {
-                    // Get channel from params[1] if it's a scalar
-                    let channel = 0; // default to channel 0
+                    // Get channel from params[1] (scalar containing enum value)
+                    let channel = read_scalar_enum(params[1] as vx_scalar).unwrap_or(0);
                     crate::vxu_impl::vxu_channel_extract_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
@@ -2201,31 +2202,21 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         }
         // Convert Depth
         "org.khronos.openvx.convertdepth" => {
+            // Node params: [0]=input, [1]=output, [2]=policy_scalar, [3]=shift_scalar
             if params.len() >= 4 {
                 let input = params[0] as vx_image;
-                // params[1] is policy (vx_enum wrapped as scalar in some contexts, or direct)
-                // params[2] is shift (vx_scalar)
-                let output = params[3] as vx_image;
-                // Read policy from param 1
-                let policy: vx_enum = if !params[1].is_null() {
-                    // Could be an enum value directly or a scalar
-                    // Try to read as scalar first
-                    let mut val: i32 = 0;
-                    let status = crate::c_api_data::vxCopyScalarData(
-                        params[1] as vx_scalar,
-                        &mut val as *mut i32 as *mut c_void,
-                        0x11001, // VX_READ_ONLY
-                        0x0,     // VX_MEMORY_TYPE_HOST
-                    );
-                    if status == VX_SUCCESS { val } else { params[1] as vx_enum }
+                let output = params[1] as vx_image;
+                // Read policy from param 2 (scalar)
+                let policy: vx_enum = if !params[2].is_null() {
+                    read_scalar_enum(params[2] as vx_scalar).unwrap_or(0xA001i32 /* VX_CONVERT_POLICY_SATURATE */)
                 } else {
                     0xA001i32 // VX_CONVERT_POLICY_SATURATE default
                 };
-                // Read shift from param 2 (vx_scalar)
-                let shift: vx_int32 = if !params[2].is_null() {
+                // Read shift from param 3 (vx_scalar)
+                let shift: vx_int32 = if !params[3].is_null() {
                     let mut val: i32 = 0;
                     let status = crate::c_api_data::vxCopyScalarData(
-                        params[2] as vx_scalar,
+                        params[3] as vx_scalar,
                         &mut val as *mut i32 as *mut c_void,
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
