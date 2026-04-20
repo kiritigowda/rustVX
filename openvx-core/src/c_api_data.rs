@@ -425,6 +425,8 @@ pub struct VxCMatrixData {
     pub rows: vx_size,
     data: RwLock<Vec<u8>>,
     pub context: vx_context,
+    /// Pattern type (VX_PATTERN_BOX, etc.) or 0 for non-pattern matrices
+    pub pattern: vx_enum,
 }
 
 impl VxCMatrixData {
@@ -456,6 +458,12 @@ impl VxCMatrixData {
             result.push(f32::from_le_bytes(bytes));
         }
         Some(result)
+    }
+
+    /// Get matrix data as a slice of u8 values
+    pub fn as_u8_slice(&self) -> Option<Vec<u8>> {
+        let data = self.data.read().ok()?;
+        Some(data.clone())
     }
     
     /// Create a reference from a raw pointer
@@ -498,6 +506,7 @@ pub extern "C" fn vxCreateMatrix(
         rows,
         data: RwLock::new(vec![0u8; total_size]),
         context,
+        pattern: 0,
     });
 
     let matrix_ptr = Box::into_raw(matrix) as vx_matrix;
