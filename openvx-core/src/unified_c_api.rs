@@ -1137,6 +1137,35 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                     }
                     return status;
                 }
+                // Call node callback if one is registered
+                let callback_action: vx_enum = {
+                    if let Ok(nodes_map) = crate::c_api::NODES.lock() {
+                        if let Some(node_data) = nodes_map.get(node_id) {
+                            if let Ok(cb) = node_data.callback.lock() {
+                                // callback field is Option<vx_nodecomplete_f> where vx_nodecomplete_f = Option<fn...>
+                                // So cb is Option<Option<fn...>>
+                                if let Some(Some(cb_fn)) = *cb {
+                                    let action = unsafe { (cb_fn)(*node_id as vx_node) };
+                                    action as vx_enum
+                                } else {
+                                    0 // VX_ACTION_CONTINUE
+                                }
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                };
+                if callback_action == 0x1001 { // VX_ACTION_ABANDON = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_ACTION) + 1
+                    if let Ok(mut state) = g.state.lock() {
+                        *state = VxGraphState::VxGraphStateAbandoned;
+                    }
+                    return VX_ERROR_GRAPH_ABANDONED;
+                }
             }
             None => {
                 // Node not found - mark as abandoned
@@ -8611,11 +8640,21 @@ pub extern "C" fn vxGetImportReferenceByName(import: vx_import, name: *const vx_
 
 /// Retrieve node callback
 #[no_mangle]
-pub extern "C" fn vxRetrieveNodeCallback(node: vx_node, callback: *mut vx_nodecomplete_f, parameter: *mut *mut c_void) -> vx_status {
+pub extern "C" fn vxRetrieveNodeCallback(node: vx_node) -> vx_nodecomplete_f {
     if node.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
+        return None;
     }
-    VX_SUCCESS
+    let id = node as u64;
+    if let Ok(nodes) = crate::c_api::NODES.lock() {
+        if let Some(node_data) = nodes.get(&id) {
+            if let Ok(cb) = node_data.callback.lock() {
+                // callback field is Option<vx_nodecomplete_f> = Option<Option<fn...>>
+                // We need to flatten: if outer is Some(inner), return inner
+                return cb.flatten();
+            }
+        }
+    }
+    None
 }
 
 /// Half scale Gaussian node
