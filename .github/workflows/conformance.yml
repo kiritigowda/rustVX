@@ -14,151 +14,213 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - name: Build
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build rustVX
         run: cargo build --release
       - name: Build CTS
         run: |
+          mkdir -p OpenVX-cts/build
           cd OpenVX-cts/build
           cmake ..
           make -j$(nproc)
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts
-          path: |
-            target/release/libopenvx_ffi.so
-            target/release/libopenvx_core.so
-            OpenVX-cts/build/bin/vx_test_conformance
-          retention-days: 1
-
-  # Stage 1: Baseline smoke tests (fast, critical gate)
-  smoke-tests:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
       - name: Run Smoke Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          timeout 60 ./OpenVX-cts/build/bin/vx_test_conformance --filter="SmokeTest.*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 60 ./bin/vx_test_conformance --filter="SmokeTest.*"
 
-  # Stage 2: Baseline data tests
   baseline-data:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: build-artifacts
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Build CTS
+        run: |
+          mkdir -p OpenVX-cts/build
+          cd OpenVX-cts/build
+          cmake ..
+          make -j$(nproc)
       - name: Run Baseline Data Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          timeout 120 ./OpenVX-cts/build/bin/vx_test_conformance --filter="Scalar.*:Array.*:ObjectArray.*:GraphCallback.*:GraphDelay.*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 120 ./bin/vx_test_conformance --filter="Scalar.*:Array.*:ObjectArray.*:GraphCallback.*:GraphDelay.*"
 
-  # Stage 3: Vision - pixel operations (fast)
   vision-pixel:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: build-artifacts
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Build CTS
+        run: |
+          mkdir -p OpenVX-cts/build
+          cd OpenVX-cts/build
+          cmake ..
+          make -j$(nproc)
       - name: Run Vision Pixel Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          timeout 300 ./OpenVX-cts/build/bin/vx_test_conformance --filter="Scale:*:Remap:*:WarpPerspective:*:WarpAffine:*:Convolve:*:Threshold:*:LUT:*:SwapImageHandle:*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 300 ./bin/vx_test_conformance --filter="Scale:*:Remap:*:WarpPerspective:*:WarpAffine:*:Convolve:*:Threshold:*:LUT:*:SwapImageHandle:*"
 
-  # Stage 4: Vision - filters and morphology (fast)
   vision-filters:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: build-artifacts
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Build CTS
+        run: |
+          mkdir -p OpenVX-cts/build
+          cd OpenVX-cts/build
+          cmake ..
+          make -j$(nproc)
       - name: Run Vision Filter Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          timeout 180 ./OpenVX-cts/build/bin/vx_test_conformance --filter="Box3x3:*:Gaussian3x3:*:Median3x3:*:Dilate3x3:*:Erode3x3:*:Sobel3x3:*:Magnitude:*:Phase:*:HalfScaleGaussian:*:WeightedAverage:*:NonLinearFilter:*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 180 ./bin/vx_test_conformance --filter="Box3x3:*:Gaussian3x3:*:Median3x3:*:Dilate3x3:*:Erode3x3:*:Sobel3x3:*:Magnitude:*:Phase:*:HalfScaleGaussian:*:WeightedAverage:*:NonLinearFilter:*"
 
-  # Stage 5: Vision - arithmetic and VXU
   vision-arithmetic:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: build-artifacts
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Build CTS
+        run: |
+          mkdir -p OpenVX-cts/build
+          cd OpenVX-cts/build
+          cmake ..
+          make -j$(nproc)
       - name: Run Vision Arithmetic Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          timeout 180 ./OpenVX-cts/build/bin/vx_test_conformance --filter="vxMultiply:*:vxAddSub:*:vxBinOp8u:*:vxuAddSub:*:vxuMultiply:*:vxuConvertDepth:*:vxuBinOp8u:*:vxNot:*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 180 ./bin/vx_test_conformance --filter="vxMultiply:*:vxAddSub:*:vxBinOp8u:*:vxuAddSub:*:vxuMultiply:*:vxuConvertDepth:*:vxuBinOp8u:*:vxNot:*"
 
-  # Stage 6: Vision - color and channels
   vision-color:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: build-artifacts
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Build CTS
+        run: |
+          mkdir -p OpenVX-cts/build
+          cd OpenVX-cts/build
+          cmake ..
+          make -j$(nproc)
       - name: Run Vision Color/Channel Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          timeout 120 ./OpenVX-cts/build/bin/vx_test_conformance --filter="ColorConvert:*:ChannelExtract:*:ChannelCombine:*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 120 ./bin/vx_test_conformance --filter="ColorConvert:*:ChannelExtract:*:ChannelCombine:*"
 
-  # Stage 7: Vision - features (slow, may have hangs)
   vision-features:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: build-artifacts
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Build CTS
+        run: |
+          mkdir -p OpenVX-cts/build
+          cd OpenVX-cts/build
+          cmake ..
+          make -j$(nproc)
       - name: Run Vision Feature Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          # Skip known-hanging tests: GaussianPyramid, LaplacianPyramid, MinMaxLoc, Image
-          timeout 300 ./OpenVX-cts/build/bin/vx_test_conformance --filter="HarrisCorners:*:FastCorners:*:vxCanny:*:Histogram:*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 300 ./bin/vx_test_conformance --filter="HarrisCorners:*:FastCorners:*:vxCanny:*:Histogram:*"
 
-  # Stage 8: Graph topology (may hang on some tests)
   graph-topology:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: build-artifacts
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Build CTS
+        run: |
+          mkdir -p OpenVX-cts/build
+          cd OpenVX-cts/build
+          cmake ..
+          make -j$(nproc)
       - name: Run Graph Topology Tests
         run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          export LD_LIBRARY_PATH=$(pwd)/target/release
-          export VX_TEST_DATA_PATH=$(pwd)/OpenVX-cts/test_data
-          timeout 180 ./OpenVX-cts/build/bin/vx_test_conformance --filter="Graph.Node:*:Graph.Verify:*:Graph.Process:*:Graph.Delay:*:Graph.Age:*"
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=../../target/release
+          export VX_TEST_DATA_PATH=../test_data
+          timeout 180 ./bin/vx_test_conformance --filter="Graph.Node:*:Graph.Verify:*:Graph.Process:*:Graph.Delay:*:Graph.Age:*"
