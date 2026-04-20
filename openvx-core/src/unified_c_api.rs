@@ -2063,46 +2063,40 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         // Harris Corners
         "org.khronos.openvx.harris_corners" => {
             if params.len() >= 7 {
-                // Input (param 0) is REQUIRED
                 if params[0].is_null() {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
                 let input = params[0] as vx_image;
-                
-                // Corners (param 6) is OPTIONAL - can be NULL
-                let corners = if params[6].is_null() {
-                    std::ptr::null_mut() // Optional output not requested
-                } else {
-                    params[6] as vx_array
-                };
-                
-                // Validate required parameter (input)
-                if input.is_null() {
-                    return VX_ERROR_INVALID_PARAMETERS;
-                }
-                
-                // Note: corners (param 6) is OPTIONAL - can be NULL
-                // The implementation should handle NULL by not producing output
-                // Validate image before processing
-                let status = validate_image(input);
-                if status != VX_SUCCESS { 
-                    return status; 
-                }
-                
-                // Get optional scalar parameters (params 1-5) - validate if present
+
+                // Read scalar parameters
                 let strength_thresh = if params.len() > 1 && !params[1].is_null() { params[1] as vx_scalar } else { std::ptr::null_mut() };
                 let min_distance = if params.len() > 2 && !params[2].is_null() { params[2] as vx_scalar } else { std::ptr::null_mut() };
                 let sensitivity = if params.len() > 3 && !params[3].is_null() { params[3] as vx_scalar } else { std::ptr::null_mut() };
-                // Validate gradient_size and block_size parameters
-                if params.len() <= 4 {
-                    return VX_ERROR_INVALID_PARAMETERS;
-                }
-                if params.len() <= 5 {
-                    return VX_ERROR_INVALID_PARAMETERS;
-                }
-                let gradient_size = if !params[4].is_null() { params[4] as vx_enum } else { 3 };
-                let block_size = if !params[5].is_null() { params[5] as vx_enum } else { 3 };
-                
+
+                // gradient_size and block_size are enum values (vx_enum)
+                // In the graph, they are stored as scalars of type VX_TYPE_ENUM
+                let gradient_size: vx_enum = if params.len() > 4 && !params[4].is_null() {
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[4] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, 0x0
+                    );
+                    if status == VX_SUCCESS { val } else { 3 }
+                } else { 3 };
+                let block_size: vx_enum = if params.len() > 5 && !params[5].is_null() {
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[5] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, 0x0
+                    );
+                    if status == VX_SUCCESS { val } else { 3 }
+                } else { 3 };
+
+                let corners = if params.len() > 6 && !params[6].is_null() { params[6] as vx_array } else { std::ptr::null_mut() };
+                let num_corners = if params.len() > 7 && !params[7].is_null() { params[7] as vx_scalar } else { std::ptr::null_mut() };
+
                 crate::vxu_impl::vxu_harris_corners_impl(
                     unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                     input,
@@ -2112,7 +2106,7 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                     gradient_size,
                     block_size,
                     corners,
-                    std::ptr::null_mut() // num_corners
+                    num_corners
                 )
             } else {
                 VX_ERROR_INVALID_PARAMETERS
@@ -2180,10 +2174,45 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         "org.khronos.openvx.convertdepth" => {
             if params.len() >= 4 {
                 let input = params[0] as vx_image;
+                // params[1] is policy (vx_enum wrapped as scalar in some contexts, or direct)
+                // params[2] is shift (vx_scalar)
                 let output = params[3] as vx_image;
+                // Read policy from param 1
+                let policy: vx_enum = if !params[1].is_null() {
+                    // Could be an enum value directly or a scalar
+                    // Try to read as scalar first
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[1] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, // VX_READ_ONLY
+                        0x0,     // VX_MEMORY_TYPE_HOST
+                    );
+                    if status == VX_SUCCESS { val } else { params[1] as vx_enum }
+                } else {
+                    0xA001i32 // VX_CONVERT_POLICY_SATURATE default
+                };
+                // Read shift from param 2 (vx_scalar)
+                let shift: vx_int32 = if !params[2].is_null() {
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[2] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, // VX_READ_ONLY
+                        0x0,     // VX_MEMORY_TYPE_HOST
+                    );
+                    if status == VX_SUCCESS { val } else { 0 }
+                } else {
+                    0
+                };
                 if !input.is_null() && !output.is_null() {
-                    // stub - returns success for now
-                    VX_SUCCESS
+                    crate::vxu_impl::vxu_convert_depth_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        output,
+                        policy,
+                        shift
+                    )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
@@ -2262,6 +2291,38 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Half-Scale Gaussian
+        "org.khronos.openvx.halfscale_gaussian" => {
+            if params.len() >= 3 {
+                let input = params[0] as vx_image;
+                let output = params[1] as vx_image;
+                // Read kernel_size from params[2] (could be enum or scalar)
+                let kernel_size: vx_size = if !params[2].is_null() {
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[2] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, // VX_READ_ONLY
+                        0x0,     // VX_MEMORY_TYPE_HOST
+                    );
+                    if status == VX_SUCCESS { val as vx_size } else { 5 }
+                } else {
+                    5 // default
+                };
+                if !input.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_half_scale_gaussian_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        output,
+                        kernel_size
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -6544,8 +6605,8 @@ pub extern "C" fn vxHarrisCornersNode(
     strength_thresh: vx_scalar,
     min_distance: vx_scalar,
     sensitivity: vx_scalar,
-    _gradient_size: vx_enum,
-    _block_size: vx_enum,
+    gradient_size: vx_enum,
+    block_size: vx_enum,
     corners: vx_array,
     num_corners: vx_scalar,
 ) -> vx_node {
@@ -6553,54 +6614,93 @@ pub extern "C" fn vxHarrisCornersNode(
         return std::ptr::null_mut();
     }
 
-    // HarrisCorners has params: input, strength_thresh, min_distance, sensitivity, gradient_size, block_size, corners, num_corners
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
     }
 
-    // Create scalars for gradient_size and block_size
-    let mut gradient_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_gradient_size as *const _ as *const c_void);
-    let mut block_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_block_size as *const _ as *const c_void);
-    
-    if gradient_scalar.is_null() || block_scalar.is_null() {
-        // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut block_scalar); // leak: node needs scalar at exec time
+    let kernel = get_kernel_by_name(context, "org.khronos.openvx.harris_corners");
+    if kernel.is_null() {
         return std::ptr::null_mut();
     }
 
-    // Build params list
-    let mut params: Vec<vx_reference> = vec![
-        input as vx_reference,
-    ];
-    
+    let mut node = crate::c_api::vxCreateGenericNode(graph, kernel);
+    if node.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    // Params: 0=input, 1=strength_thresh, 2=min_distance, 3=sensitivity,
+    //         4=gradient_size, 5=block_size, 6=corners, 7=num_corners
+    let mut status: vx_status;
+
+    status = crate::c_api::vxSetParameterByIndex(node, 0, input as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+
     if !strength_thresh.is_null() {
-        params.push(strength_thresh as vx_reference);
+        status = crate::c_api::vxSetParameterByIndex(node, 1, strength_thresh as vx_reference);
+        if status != VX_SUCCESS {
+            crate::c_api::vxReleaseNode(&mut node as *mut _);
+            return std::ptr::null_mut();
+        }
     }
+
     if !min_distance.is_null() {
-        params.push(min_distance as vx_reference);
+        status = crate::c_api::vxSetParameterByIndex(node, 2, min_distance as vx_reference);
+        if status != VX_SUCCESS {
+            crate::c_api::vxReleaseNode(&mut node as *mut _);
+            return std::ptr::null_mut();
+        }
     }
+
     if !sensitivity.is_null() {
-        params.push(sensitivity as vx_reference);
+        status = crate::c_api::vxSetParameterByIndex(node, 3, sensitivity as vx_reference);
+        if status != VX_SUCCESS {
+            crate::c_api::vxReleaseNode(&mut node as *mut _);
+            return std::ptr::null_mut();
+        }
     }
-    
-    params.push(gradient_scalar as vx_reference);
-    params.push(block_scalar as vx_reference);
-    params.push(corners as vx_reference);
-    
+
+    // gradient_size and block_size are enum values, need to be wrapped in scalars
+    let mut gs_val = gradient_size;
+    let gs_scalar = vxCreateScalar(context, 0x0A, &mut gs_val as *mut vx_enum as *mut c_void);
+    if gs_scalar.is_null() {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    status = crate::c_api::vxSetParameterByIndex(node, 4, gs_scalar as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+
+    let mut bs_val = block_size;
+    let bs_scalar = vxCreateScalar(context, 0x0A, &mut bs_val as *mut vx_enum as *mut c_void);
+    if bs_scalar.is_null() {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    status = crate::c_api::vxSetParameterByIndex(node, 5, bs_scalar as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+
+    status = crate::c_api::vxSetParameterByIndex(node, 6, corners as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+
     if !num_corners.is_null() {
-        params.push(num_corners as vx_reference);
+        status = crate::c_api::vxSetParameterByIndex(node, 7, num_corners as vx_reference);
+        if status != VX_SUCCESS {
+            crate::c_api::vxReleaseNode(&mut node as *mut _);
+            return std::ptr::null_mut();
+        }
     }
-
-    let node = create_node_with_params(
-        graph,
-        "org.khronos.openvx.harris_corners",
-        &params,
-    );
-
-    // Release the scalars (node has reference now)
-    // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
-    // vxReleaseScalar(&mut block_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -7930,16 +8030,56 @@ pub extern "C" fn vxNotNode(graph: vx_graph, input: vx_image, output: vx_image) 
 
 /// Convert depth node
 #[no_mangle]
-pub extern "C" fn vxConvertDepthNode(graph: vx_graph, input: vx_image, output: vx_image, policy: vx_enum, shift: vx_int32) -> vx_node {
+pub extern "C" fn vxConvertDepthNode(graph: vx_graph, input: vx_image, output: vx_image, policy: vx_enum, shift: vx_scalar) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
     }
+    let kernel = get_kernel_by_name(context, "org.khronos.openvx.convertdepth");
+    if kernel.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut node = crate::c_api::vxCreateGenericNode(graph, kernel);
+    if node.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Kernel params: 0=input, 1=output, 2=policy_scalar, 3=shift_scalar
+    let mut status = crate::c_api::vxSetParameterByIndex(node, 0, input as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    status = crate::c_api::vxSetParameterByIndex(node, 1, output as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    // Create policy scalar
+    let mut policy_val = policy;
+    let policy_scalar = vxCreateScalar(context, 0x0A, &mut policy_val as *mut vx_enum as *mut c_void);
+    if policy_scalar.is_null() {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    status = crate::c_api::vxSetParameterByIndex(node, 2, policy_scalar as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    // shift is already a vx_scalar
+    if shift.is_null() {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    status = crate::c_api::vxSetParameterByIndex(node, 3, shift as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    node
 }
 
 /// Optical flow pyramid LK immediate mode
@@ -8270,12 +8410,41 @@ pub extern "C" fn vxHalfScaleGaussianNode(graph: vx_graph, input: vx_image, outp
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
     }
+    let kernel = get_kernel_by_name(context, "org.khronos.openvx.halfscale_gaussian");
+    if kernel.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut node = crate::c_api::vxCreateGenericNode(graph, kernel);
+    if node.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut status = crate::c_api::vxSetParameterByIndex(node, 0, input as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    status = crate::c_api::vxSetParameterByIndex(node, 1, output as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    // kernel_size parameter as a scalar
+    let mut ks_val = kernel_size as i32;
+    let ks_scalar = vxCreateScalar(context, 0x0A, &mut ks_val as *mut i32 as *mut c_void); // VX_TYPE_ENUM
+    if ks_scalar.is_null() {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    status = crate::c_api::vxSetParameterByIndex(node, 2, ks_scalar as vx_reference);
+    if status != VX_SUCCESS {
+        crate::c_api::vxReleaseNode(&mut node as *mut _);
+        return std::ptr::null_mut();
+    }
+    node
 }
 
 /// Immediate mode half scale Gaussian
@@ -8284,7 +8453,7 @@ pub extern "C" fn vxuHalfScaleGaussian(context: vx_context, input: vx_image, out
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    VX_SUCCESS
+    crate::vxu_impl::vxu_half_scale_gaussian_impl(context, input, output, kernel_size)
 }
 
 // ============================================================================
@@ -8297,7 +8466,7 @@ pub extern "C" fn vxuConvertDepth(context: vx_context, input: vx_image, output: 
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    VX_SUCCESS
+    crate::vxu_impl::vxu_convert_depth_impl(context, input, output, policy, shift)
 }
 
 /// Equalize histogram node
