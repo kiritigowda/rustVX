@@ -14,7 +14,7 @@ use crate::c_api::{
     VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
     VX_DF_IMAGE_S16, VX_DF_IMAGE_U16,  // Add S16/U16 format constants
 };
-use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage};
+use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage, vx_border_t};
 
 /// OpenVX enum constants for convert policy
 const VX_CONVERT_POLICY_WRAP: vx_enum = 0xA000;
@@ -4899,19 +4899,27 @@ pub fn vxu_equalize_histogram_impl(
 /// VXU Non-Linear Filter implementation
 pub fn vxu_non_linear_filter_impl(
     context: vx_context,
-    function: vx_enum,
     input: vx_image,
-    mask_size: vx_size,
+    function: vx_enum,
+    mask_data: &[u8],
+    mask_cols: usize,
+    mask_rows: usize,
+    origin_x: usize,
+    origin_y: usize,
     output: vx_image,
+    border: Option<vx_border_t>,
 ) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // mask_size should be 3, 5, etc.
-    let window_size = mask_size as isize;
-    let half = window_size / 2;
-
+    // VX_NONLINEAR_FILTER_MEDIAN = 40960
+    // VX_NONLINEAR_FILTER_MIN = 40961
+    // VX_NONLINEAR_FILTER_MAX = 40962
+    
+    // Convert border mode
+    let border_mode = crate::unified_c_api::border_from_vx(&border);
+    
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
@@ -4926,52 +4934,65 @@ pub fn vxu_non_linear_filter_impl(
         let width = src.width;
         let height = src.height;
         let dst_data = dst.data_mut();
-        let window_count = (window_size * window_size) as usize;
-        let mut window = vec![0u8; window_count];
 
-        // function: 0=min, 1=max, 2=median
         for y in 0..height {
             for x in 0..width {
-                // Fill window
-                let mut idx = 0;
-                for dy in -half..=half {
-                    for dx in -half..=half {
-                        let py = (y as isize + dy).max(0).min(height as isize - 1) as usize;
-                        let px = (x as isize + dx).max(0).min(width as isize - 1) as usize;
-                        window[idx] = src.get_pixel(px, py);
-                        idx += 1;
+                // Collect values within the mask
+                let mut values = Vec::new();
+                
+                for my in 0..mask_rows {
+                    for mx in 0..mask_cols {
+                        // Only include pixels where mask is non-zero
+                        if mask_data[my * mask_cols + mx] != 0 {
+                            let py = y as isize + my as isize - origin_y as isize;
+                            let px = x as isize + mx as isize - origin_x as isize;
+                            
+                            let pixel = match &border_mode {
+                                BorderMode::Replicate => {
+                                    let cy = py.max(0).min(height as isize - 1) as usize;
+                                    let cx = px.max(0).min(width as isize - 1) as usize;
+                                    src.get_pixel(cx, cy)
+                                }
+                                BorderMode::Constant(val) => {
+                                    if py < 0 || py >= height as isize || px < 0 || px >= width as isize {
+                                        *val
+                                    } else {
+                                        src.get_pixel(px as usize, py as usize)
+                                    }
+                                }
+                                BorderMode::Undefined => {
+                                    if py < 0 || py >= height as isize || px < 0 || px >= width as isize {
+                                        continue; // Skip out-of-bounds for undefined border
+                                    }
+                                    src.get_pixel(px as usize, py as usize)
+                                }
+                            };
+                            values.push(pixel);
+                        }
                     }
                 }
-
+                
+                if values.is_empty() {
+                    continue; // No valid pixels in mask
+                }
+                
                 let value = match function {
-                    0 => {
-                        // Min
-                        let mut min_val = 255u8;
-                        for v in &window {
-                            if *v < min_val {
-                                min_val = *v;
-                            }
-                        }
-                        min_val
+                    // VX_NONLINEAR_FILTER_MIN = 40961
+                    40961 => {
+                        values.iter().copied().min().unwrap_or(0)
                     }
-                    1 => {
-                        // Max
-                        let mut max_val = 0u8;
-                        for v in &window {
-                            if *v > max_val {
-                                max_val = *v;
-                            }
-                        }
-                        max_val
+                    // VX_NONLINEAR_FILTER_MAX = 40962
+                    40962 => {
+                        values.iter().copied().max().unwrap_or(0)
                     }
+                    // VX_NONLINEAR_FILTER_MEDIAN = 40960 (default)
                     _ => {
-                        // Median (default)
-                        window.sort_unstable();
-                        window[window_count / 2]
+                        values.sort_unstable();
+                        values[values.len() / 2]
                     }
                 };
 
-                let idx = y.saturating_mul(width).saturating_add(x);
+                let idx = y * width + x;
                 if let Some(p) = dst_data.get_mut(idx) {
                     *p = value;
                 }

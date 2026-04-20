@@ -1353,21 +1353,21 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     Some(result)
 }
 
-/// Dispatch execution to the appropriate VXU implementation based on kernel name
-    fn border_from_vx(border: &Option<vx_border_t>) -> crate::vxu_impl::BorderMode {
-        match border {
-            Some(b) => match b.mode {
-                0x0000C000 => crate::vxu_impl::BorderMode::Undefined, // VX_BORDER_UNDEFINED
-                0x0000C001 => { // VX_BORDER_CONSTANT
-                    let val = unsafe { b.constant_value.U8 };
-                    crate::vxu_impl::BorderMode::Constant(val)
-                },
-                0x0000C002 => crate::vxu_impl::BorderMode::Replicate, // VX_BORDER_REPLICATE
-                _ => crate::vxu_impl::BorderMode::Undefined,
+/// Convert vx_border_t to BorderMode for use in image processing
+pub fn border_from_vx(border: &Option<vx_border_t>) -> crate::vxu_impl::BorderMode {
+    match border {
+        Some(b) => match b.mode {
+            0x0000C000 => crate::vxu_impl::BorderMode::Undefined, // VX_BORDER_UNDEFINED
+            0x0000C001 => { // VX_BORDER_CONSTANT
+                let val = unsafe { b.constant_value.U8 };
+                crate::vxu_impl::BorderMode::Constant(val)
             },
-            None => crate::vxu_impl::BorderMode::Undefined,
-        }
+            0x0000C002 => crate::vxu_impl::BorderMode::Replicate, // VX_BORDER_REPLICATE
+            _ => crate::vxu_impl::BorderMode::Undefined,
+        },
+        None => crate::vxu_impl::BorderMode::Undefined,
     }
+}
 
 fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], border: Option<vx_border_t>) -> vx_status {
     match kernel_name {
@@ -2322,11 +2322,39 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         // Non Linear Filter
         "org.khronos.openvx.non_linear_filter" => {
             if params.len() >= 4 {
+                // params[0] = function (scalar enum)
+                // params[1] = input (image)
+                // params[2] = matrix (mask)
+                // params[3] = output (image)
                 let input = params[1] as vx_image;
+                let matrix = params[2] as vx_matrix;
                 let output = params[3] as vx_image;
-                if !input.is_null() && !output.is_null() {
-                    // stub - returns success for now
-                    VX_SUCCESS
+                
+                // Read function enum from scalar
+                let function = if !params[0].is_null() {
+                    read_scalar_enum(params[0] as vx_scalar).unwrap_or(0)
+                } else {
+                    0
+                };
+                
+                if !input.is_null() && !matrix.is_null() && !output.is_null() {
+                    // Read matrix data (mask)
+                    let m = unsafe { &*(matrix as *const crate::c_api_data::VxCMatrixData) };
+                    let mask_cols = m.columns;
+                    let mask_rows = m.rows;
+                    let mask_data = {
+                        match m.data.read() {
+                            Ok(d) => d.clone(),
+                            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                        }
+                    };
+                    let origin_x = m.origin_x;
+                    let origin_y = m.origin_y;
+                    
+                    let context = unsafe { crate::c_api::vxGetContext(input as vx_reference) };
+                    crate::vxu_impl::vxu_non_linear_filter_impl(
+                        context, input, function, &mask_data, mask_cols, mask_rows, origin_x, origin_y, output, border
+                    )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
@@ -3597,11 +3625,17 @@ pub extern "C" fn vxCopyScalar(
     unsafe {
         match usage {
             VX_READ_ONLY => {
-                let data = s.data.read().unwrap();
+                let data = match s.data.read() {
+                    Ok(d) => d,
+                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                };
                 std::ptr::copy_nonoverlapping(data.as_ptr(), user_ptr as *mut u8, data.len());
             }
             VX_WRITE_ONLY => {
-                let mut data = s.data.write().unwrap();
+                let mut data = match s.data.write() {
+                    Ok(d) => d,
+                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                };
                 std::ptr::copy_nonoverlapping(user_ptr as *const u8, data.as_mut_ptr(), data.len());
             }
             _ => return VX_ERROR_INVALID_PARAMETERS,
@@ -4157,12 +4191,16 @@ pub const VX_CHANNEL_Y: vx_enum = 0x00009014;  // VX_ENUM_BASE + 0x14
 pub const VX_CHANNEL_U: vx_enum = 0x00009015;  // VX_ENUM_BASE + 0x15
 pub const VX_CHANNEL_V: vx_enum = 0x00009016;  // VX_ENUM_BASE + 0x16
 
-// Matrix pattern types
-pub const VX_MATRIX_PATTERN_OTHER: vx_enum = 0;
-pub const VX_MATRIX_PATTERN_BOX: vx_enum = 1;
-pub const VX_MATRIX_PATTERN_GAUSSIAN: vx_enum = 2;
-pub const VX_MATRIX_PATTERN_CUSTOM: vx_enum = 3;
-pub const VX_MATRIX_PATTERN_PYRAMID_SCALE: vx_enum = 4;
+// Matrix pattern types (from OpenVX spec)
+// VX_PATTERN_BOX = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_PATTERN) + 0x0 = 94208
+// VX_PATTERN_CROSS = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_PATTERN) + 0x1 = 94209
+// VX_PATTERN_DISK = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_PATTERN) + 0x2 = 94210
+// VX_PATTERN_OTHER = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_PATTERN) + 0x3 = 94211
+pub const VX_MATRIX_PATTERN_OTHER: vx_enum = 94211;
+pub const VX_MATRIX_PATTERN_BOX: vx_enum = 94208;
+pub const VX_MATRIX_PATTERN_GAUSSIAN: vx_enum = 94212; // Not in spec, placeholder
+pub const VX_MATRIX_PATTERN_CUSTOM: vx_enum = 94213; // Not in spec, placeholder
+pub const VX_MATRIX_PATTERN_PYRAMID_SCALE: vx_enum = 94214; // Not in spec, placeholder
 
 // Pyramid attributes - calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_PYRAMID) + offset
 // VX_ATTRIBUTE_BASE(0x000, 0x809) = 0x00080900
@@ -4172,14 +4210,14 @@ pub const VX_PYRAMID_FORMAT: vx_enum = 0x00080902;
 pub const VX_PYRAMID_WIDTH: vx_enum = 0x00080903;
 pub const VX_PYRAMID_HEIGHT: vx_enum = 0x00080904;
 
-// Matrix attributes
-pub const VX_MATRIX_TYPE: vx_enum = 0x00;
-pub const VX_MATRIX_ROWS: vx_enum = 0x01;
-pub const VX_MATRIX_COLUMNS: vx_enum = 0x02;
-pub const VX_MATRIX_SIZE: vx_enum = 0x03;
-pub const VX_MATRIX_PATTERN: vx_enum = 0x04;
-pub const VX_MATRIX_ORIGIN: vx_enum = 0x05;
-pub const VX_MATRIX_ELEMENT_SIZE: vx_enum = 0x06;
+// Matrix attributes - VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_MATRIX) = 0x80b00
+pub const VX_MATRIX_TYPE: vx_enum = 0x80b00;
+pub const VX_MATRIX_ROWS: vx_enum = 0x80b01;
+pub const VX_MATRIX_COLUMNS: vx_enum = 0x80b02;
+pub const VX_MATRIX_SIZE: vx_enum = 0x80b03;
+pub const VX_MATRIX_ORIGIN: vx_enum = 0x80b04;
+pub const VX_MATRIX_PATTERN: vx_enum = 0x80b05;
+pub const VX_MATRIX_ELEMENT_SIZE: vx_enum = 0x80b06;
 
 // Convolution attributes
 pub const VX_CONVOLUTION_ROWS: vx_enum = 0x00;
@@ -4426,9 +4464,75 @@ pub extern "C" fn vxQueryMatrix(
     size: usize,
 ) -> i32 {
     if matrix.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+    
+    let m = unsafe { &*(matrix as *const crate::c_api_data::VxCMatrixData) };
+    
+    match attribute {
+        // VX_MATRIX_TYPE = 0x80b00
+        0x80b00 => {
+            if size < std::mem::size_of::<vx_enum>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            unsafe { *(ptr as *mut vx_enum) = m.data_type; }
+            VX_SUCCESS
+        }
+        // VX_MATRIX_ROWS = 0x80b01
+        0x80b01 => {
+            if size < std::mem::size_of::<vx_size>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            unsafe { *(ptr as *mut vx_size) = m.rows; }
+            VX_SUCCESS
+        }
+        // VX_MATRIX_COLUMNS = 0x80b02
+        0x80b02 => {
+            if size < std::mem::size_of::<vx_size>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            unsafe { *(ptr as *mut vx_size) = m.columns; }
+            VX_SUCCESS
+        }
+        // VX_MATRIX_SIZE = 0x80b03
+        0x80b03 => {
+            if size < std::mem::size_of::<vx_size>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            let elem_size = crate::c_api_data::VxCMatrixData::element_size(m.data_type);
+            unsafe { *(ptr as *mut vx_size) = m.columns * m.rows * elem_size; }
+            VX_SUCCESS
+        }
+        // VX_MATRIX_PATTERN = 0x80b05
+        0x80b05 => {
+            if size < std::mem::size_of::<vx_enum>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            unsafe { *(ptr as *mut vx_enum) = m.pattern; }
+            VX_SUCCESS
+        }
+        // VX_MATRIX_ORIGIN = 0x80b04
+        0x80b04 => {
+            if size < std::mem::size_of::<vx_coordinates2d_t>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            unsafe {
+                let origin = ptr as *mut vx_coordinates2d_t;
+                (*origin).x = m.origin_x as u32;
+                (*origin).y = m.origin_y as u32;
+            }
+            VX_SUCCESS
+        }
+        // VX_MATRIX_ELEMENT_SIZE = 0x80b06
+        0x80b06 => {
+            if size < std::mem::size_of::<vx_size>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            unsafe { *(ptr as *mut vx_size) = crate::c_api_data::VxCMatrixData::element_size(m.data_type); }
+            VX_SUCCESS
+        }
+        _ => VX_ERROR_NOT_SUPPORTED
+    }
 }
 
 #[no_mangle]
@@ -4439,9 +4543,26 @@ pub extern "C" fn vxSetMatrixAttribute(
     size: usize,
 ) -> i32 {
     if matrix.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+    
+    let m = unsafe { &mut *(matrix as *mut crate::c_api_data::VxCMatrixData) };
+    
+    match attribute {
+        // VX_MATRIX_ORIGIN = 0x80b04
+        0x80b04 => {
+            if size < std::mem::size_of::<vx_coordinates2d_t>() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+            unsafe {
+                let origin = ptr as *const vx_coordinates2d_t;
+                m.origin_x = (*origin).x as usize;
+                m.origin_y = (*origin).y as usize;
+            }
+            VX_SUCCESS
+        }
+        _ => VX_ERROR_NOT_SUPPORTED
+    }
 }
 
 #[no_mangle]
@@ -5613,7 +5734,69 @@ pub extern "C" fn vxCreateMatrixFromPattern(
     if context.is_null() || columns == 0 || rows == 0 {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+    
+    // Create matrix with VX_TYPE_UINT8 (0x003) data type
+    let matrix = crate::c_api_data::vxCreateMatrix(context, 0x003, columns, rows);
+    if matrix.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    // Set pattern and default origin (center)
+    let m = unsafe { &mut *(matrix as *mut crate::c_api_data::VxCMatrixData) };
+    m.pattern = pattern;
+    m.origin_x = columns / 2;
+    m.origin_y = rows / 2;
+    
+    // Fill matrix data with pattern
+    let mask_data = generate_pattern_data(pattern, columns, rows);
+    if let Ok(mut data) = m.data.write() {
+        data.copy_from_slice(&mask_data);
+    }
+    
+    matrix
+}
+
+/// Generate pattern data for a matrix
+fn generate_pattern_data(pattern: i32, cols: usize, rows: usize) -> Vec<u8> {
+    let mut data = vec![0u8; cols * rows];
+    match pattern {
+        // VX_PATTERN_BOX = 94208
+        94208 | 1 => {
+            for v in data.iter_mut() {
+                *v = 255;
+            }
+        }
+        // VX_PATTERN_CROSS = 94209
+        94209 | 2 => {
+            let center_y = rows / 2;
+            let center_x = cols / 2;
+            for y in 0..rows {
+                for x in 0..cols {
+                    if y == center_y || x == center_x {
+                        data[y * cols + x] = 255;
+                    }
+                }
+            }
+        }
+        // VX_PATTERN_DISK = 94210
+        94210 | 3 => {
+            let center_y = rows as f64 / 2.0;
+            let center_x = cols as f64 / 2.0;
+            let radius_y = rows as f64 / 2.0;
+            let radius_x = cols as f64 / 2.0;
+            for y in 0..rows {
+                for x in 0..cols {
+                    let dy = (y as f64 - center_y + 0.5) / radius_y;
+                    let dx = (x as f64 - center_x + 0.5) / radius_x;
+                    if dx * dx + dy * dy <= 1.0 {
+                        data[y * cols + x] = 255;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    data
 }
 
 /// Helper function to get or create a kernel by name
@@ -7723,25 +7906,21 @@ pub extern "C" fn vxNonLinearFilterNode(
     graph: vx_graph,
     function: vx_enum,
     input: vx_image,
-    mask_size: vx_size,
+    matrix: vx_matrix,
     output: vx_image,
 ) -> vx_node {
-    if graph.is_null() || input.is_null() || output.is_null() {
+    if graph.is_null() || input.is_null() || matrix.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
 
+    // Create a scalar for the function enum value
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
     }
-
-    // Create scalars for function and mask_size
-    let mut function_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &function as *const _ as *const c_void);
-    let mut mask_scalar = vxCreateScalar(context, VX_TYPE_SIZE, &mask_size as *const _ as *const c_void);
-
-    if function_scalar.is_null() || mask_scalar.is_null() {
-        // vxReleaseScalar(&mut function_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut mask_scalar); // leak: node needs scalar at exec time
+    
+    let function_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &function as *const _ as *const c_void);
+    if function_scalar.is_null() {
         return std::ptr::null_mut();
     }
 
@@ -7749,12 +7928,8 @@ pub extern "C" fn vxNonLinearFilterNode(
         graph,
         "org.khronos.openvx.non_linear_filter",
         &[function_scalar as vx_reference, input as vx_reference, 
-          mask_scalar as vx_reference, output as vx_reference],
+          matrix as vx_reference, output as vx_reference],
     );
-
-    // Release the scalars (node has reference now)
-    // vxReleaseScalar(&mut function_scalar); // leak: node needs scalar at exec time
-    // vxReleaseScalar(&mut mask_scalar); // leak: node needs scalar at exec time
 
     node
 }
@@ -7765,14 +7940,41 @@ pub extern "C" fn vxuNonLinearFilter(
     context: vx_context,
     function: vx_enum,
     input: vx_image,
-    mask_size: vx_size,
+    matrix: vx_matrix,
     output: vx_image,
 ) -> vx_status {
-    if context.is_null() || input.is_null() || output.is_null() {
+    if context.is_null() || input.is_null() || matrix.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // Stub implementation
-    VX_ERROR_NOT_IMPLEMENTED
+    
+    // Read matrix data (mask)
+    let m = unsafe { &*(matrix as *const crate::c_api_data::VxCMatrixData) };
+    let mask_cols = m.columns;
+    let mask_rows = m.rows;
+    let mask_data = {
+        match m.data.read() {
+            Ok(d) => d.clone(),
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        }
+    };
+    
+    // Determine border mode from context
+    let border = if let Ok(contexts) = CONTEXTS.lock() {
+        if let Some(ctx) = contexts.get(&(context as usize)) {
+            if let Ok(border_lock) = ctx.border_mode.read() {
+                Some(*border_lock)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    
+    // Call the implementation
+    crate::vxu_impl::vxu_non_linear_filter_impl(context, input, function, &mask_data, mask_cols, mask_rows, m.origin_x, m.origin_y, output, border)
 }
 
 /// Threshold node
@@ -8088,12 +8290,24 @@ pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, patter
     if context.is_null() {
         return std::ptr::null_mut();
     }
-    // Create a matrix with S32 type (6 = VX_TYPE_INT32)
-    let matrix = vxCreateMatrix(context, 0x006, cols, rows);
-    if !matrix.is_null() {
-        // Pattern and origin would be stored in the matrix data structure
-        // For now, just return the created matrix
+    // Create matrix with VX_TYPE_UINT8 (0x003) data type
+    let matrix = crate::c_api_data::vxCreateMatrix(context, 0x003, cols, rows);
+    if matrix.is_null() {
+        return std::ptr::null_mut();
     }
+    
+    // Set pattern and custom origin
+    let m = unsafe { &mut *(matrix as *mut crate::c_api_data::VxCMatrixData) };
+    m.pattern = pattern;
+    m.origin_x = origin_x;
+    m.origin_y = origin_y;
+    
+    // Fill matrix data with pattern
+    let mask_data = generate_pattern_data(pattern, cols, rows);
+    if let Ok(mut data) = m.data.write() {
+        data.copy_from_slice(&mask_data);
+    }
+    
     matrix
 }
 

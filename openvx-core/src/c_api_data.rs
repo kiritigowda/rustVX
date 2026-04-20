@@ -423,8 +423,15 @@ pub struct VxCMatrixData {
     pub data_type: vx_enum,
     pub columns: vx_size,
     pub rows: vx_size,
-    data: RwLock<Vec<u8>>,
+    pub data: RwLock<Vec<u8>>,
     pub context: vx_context,
+    /// Matrix pattern type (VX_PATTERN_BOX, VX_PATTERN_CROSS, etc.)
+    /// Stored as 0 for non-pattern matrices (VX_PATTERN_OTHER)
+    pub pattern: vx_enum,
+    /// Origin x coordinate (column offset of the center)
+    pub origin_x: vx_size,
+    /// Origin y coordinate (row offset of the center)
+    pub origin_y: vx_size,
 }
 
 impl VxCMatrixData {
@@ -498,6 +505,9 @@ pub extern "C" fn vxCreateMatrix(
         rows,
         data: RwLock::new(vec![0u8; total_size]),
         context,
+        pattern: 0, // VX_PATTERN_OTHER for manually created matrices
+        origin_x: columns / 2,
+        origin_y: rows / 2,
     });
 
     let matrix_ptr = Box::into_raw(matrix) as vx_matrix;
@@ -546,12 +556,18 @@ pub extern "C" fn vxCopyMatrix(
     unsafe {
         match usage {
             VX_READ_ONLY => {
-                let data = m.data.read().unwrap();
+                let data = match m.data.read() {
+                    Ok(d) => d,
+                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                };
                 let src = data.as_ptr() as *const c_void;
                 std::ptr::copy_nonoverlapping(src, user_ptr, data_size);
             }
             VX_WRITE_ONLY => {
-                let mut data = m.data.write().unwrap();
+                let mut data = match m.data.write() {
+                    Ok(d) => d,
+                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                };
                 let dst = data.as_mut_ptr() as *mut c_void;
                 std::ptr::copy_nonoverlapping(user_ptr, dst, data_size);
             }
