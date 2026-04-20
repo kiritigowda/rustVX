@@ -1861,7 +1861,9 @@ pub fn vxu_box3x3_impl_with_border(
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
         };
 
         // Check if source image has data - early check
@@ -1871,13 +1873,16 @@ pub fn vxu_box3x3_impl_with_border(
 
         let mut dst = match create_matching_image(output) {
             Some(img) => img,
-            None => return VX_ERROR_INVALID_PARAMETERS,
+            None => {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
         };
 
-        match box3x3(&src, &mut dst) {
+        let result = match box3x3(&src, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
-        }
+        };
+        result
     }
 }
 

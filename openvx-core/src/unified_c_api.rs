@@ -776,10 +776,9 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             
             // Check all nodes have required parameters
             for (node_id, params) in &node_params {
-                // All image parameters must be set (none can be null for required params)
-                // For now, just check that at least one param is set
-                let has_any_param = params.iter().any(|p| p.is_some());
-                if !has_any_param {
+                // Param 0 is always a required input for vision kernels
+                // If it's NULL/None, the graph is invalid
+                if params.is_empty() || params[0].is_none() || params[0] == Some(0) {
                     return VX_ERROR_INVALID_PARAMETERS;
                 }
             }
@@ -1358,16 +1357,11 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                 // Get the graph parameter's actual value
                 if let Ok(graph_id) = get_node_graph_id(node_id) {
                     if let Some(resolved_value) = resolve_graph_parameter(graph_id, graph_param_index) {
-                        eprintln!("DEBUG: execute_node: Resolved graph param {} for node {} param {} -> {:?}", 
-                                 idx, node_id, graph_param_index, resolved_value);
                         params.push(resolved_value as vx_reference);
                     } else {
-                        eprintln!("ERROR: execute_node: could not resolve graph parameter {} for node {} param {}", 
-                                 graph_param_index, node_id, idx);
                         return Some(VX_ERROR_INVALID_PARAMETERS);
                     }
                 } else {
-                    
                     return Some(VX_ERROR_INVALID_PARAMETERS);
                 }
             } else {
@@ -1405,22 +1399,20 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
             if params.len() >= 2 {
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
-                // Validate images before processing
-                let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
-                let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                let vstatus = validate_image(input);
+                if vstatus != VX_SUCCESS { return vstatus; }
+                let vstatus = validate_image(output);
+                if vstatus != VX_SUCCESS { return vstatus; }
                 
-                if !input.is_null() && !output.is_null() {
-                    crate::vxu_impl::vxu_box3x3_impl_with_border(
-                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
-                        input,
-                        output,
-                        border
-                    )
-                } else {
-                    VX_ERROR_INVALID_PARAMETERS
+                let result = crate::vxu_impl::vxu_box3x3_impl_with_border(
+                    unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                    input,
+                    output,
+                    border
+                );
+                if result != VX_SUCCESS {
                 }
+                result
             } else {
                 VX_ERROR_INVALID_PARAMETERS
             }
@@ -2768,43 +2760,12 @@ pub extern "C" fn vxQueryContext(
                 // vx_uint32 is expected per spec
                 if size == std::mem::size_of::<vx_uint32>() {
                     // Return count of references for this context
-                    let context_id = context as u64;
+                    // Count the number of entries in REFERENCE_COUNTS
+                    // The CTS subtracts base_references and (kernels - base_kernels) from this
                     let mut count = 0u32;
-                    let mut counted_ids = std::collections::HashSet::new();
-
-                    // Count graphs for this context
-                    if let Ok(graphs) = GRAPHS_DATA.lock() {
-                        for (id, graph) in graphs.iter() {
-                            if graph.context_id == context_id {
-                                counted_ids.insert(*id);
-                                count += 1;
-                            }
-                        }
+                    if let Ok(ref_counts) = REFERENCE_COUNTS.lock() {
+                        count = ref_counts.len() as u32;
                     }
-
-                    // Count graphs in c_api registry (avoid duplicates)
-                    if let Ok(c_api_graphs) = crate::c_api::GRAPHS.lock() {
-                        for (id, graph) in c_api_graphs.iter() {
-                            if graph.context_id == context_id as u32 && !counted_ids.contains(id) {
-                                counted_ids.insert(*id);
-                                count += 1;
-                            }
-                        }
-                    }
-
-                    // Count nodes for this context's graphs
-                    if let Ok(nodes) = crate::c_api::NODES.lock() {
-                        for (_, node) in nodes.iter() {
-                            if !counted_ids.contains(&node.id) && node.context_id == context_id as u32 {
-                                counted_ids.insert(node.id);
-                                count += 1;
-                            }
-                        }
-                    }
-
-                    // NOTE: We intentionally do NOT count kernels here.
-                    // The test framework handles kernel reference counting separately
-                    // and has special logic to subtract (kernels - base_kernels) from the total.
 
                     *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS

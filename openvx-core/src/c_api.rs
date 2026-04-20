@@ -741,6 +741,75 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                     };
                     
                     for node_id in graph_nodes {
+                        // Release node's parameter references (decrement their ref counts)
+                        // For internally-created scalars, also release them fully
+                        if let Ok(nodes) = NODES.lock() {
+                            if let Some(node_data) = nodes.get(&node_id) {
+                                if let Ok(params) = node_data.parameters.lock() {
+                                    for param_val in params.iter() {
+                                        if let Some(val) = param_val {
+                                            if *val != 0 {
+                                                let val_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                                                    types.get(&(*val as usize)).copied()
+                                                } else { None };
+                                                if val_type == Some(VX_TYPE_SCALAR) {
+                                                    // Scalars created by convenience functions
+                                                    // have count=2 (creation + param ref).
+                                                    // Decrement twice to fully free them.
+                                                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                                                        if let Some(cnt) = counts.get_mut(&(*val as usize)) {
+                                                            let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                                            if current >= 2 {
+                                                                cnt.store(current - 2, std::sync::atomic::Ordering::SeqCst);
+                                                                if current - 2 == 0 {
+                                                                    // Fully freed - remove from registries and free memory
+                                                                    let addr = *val as usize;
+                                                                    drop(counts);
+                                                                    if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
+                                                                        counts2.remove(&addr);
+                                                                    }
+                                                                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                                                        types.remove(&addr);
+                                                                    }
+                                                                    // Free the memory
+                                                                    let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
+                                                                }
+                                                            } else if current == 1 {
+                                                                // Only one ref - remove and free
+                                                                let addr = *val as usize;
+                                                                drop(counts);
+                                                                if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
+                                                                    counts2.remove(&addr);
+                                                                }
+                                                                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                                                    types.remove(&addr);
+                                                                }
+                                                                let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // For images/arrays, just decrement the parameter reference
+                                                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                                                        if let Some(cnt) = counts.get_mut(&(*val as usize)) {
+                                                            let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                                            if current > 1 {
+                                                                cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                                                            } else {
+                                                                counts.remove(&(*val as usize));
+                                                                if let Ok(mut types2) = REFERENCE_TYPES.lock() {
+                                                                    types2.remove(&(*val as usize));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // Remove node from registries
                         if let Ok(mut nodes_mut) = NODES.lock() {
                             nodes_mut.remove(&node_id);
@@ -963,6 +1032,15 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
                 // Do NOT remove parameter entries here - vxReleaseParameter will handle them
                 // Only clean up the node's parameter value storage (not the handles)
                 
+                // Note: Node does NOT release parameter values - application owns them
+                // The application calls vxReleaseScalar, vxReleaseImage, etc. on its own objects
+                // Node parameters are just references/borrowed objects
+                //
+                // Exception: scalars created by convenience functions (vxAddNode, etc.)
+                // are internal and should be released when the graph is freed.
+                // We don't release them here because the graph cleanup will handle it.
+                //
+
                 // Remove from graph's node list BEFORE removing node
                 // Remove from c_api graph registry
                 if let Ok(graphs) = GRAPHS.lock() {
@@ -1625,6 +1703,11 @@ pub extern "C" fn vxQueryParameter(
                             // Get the reference value from the parameter
                             if let Ok(value) = param_data.value.lock() {
                                 let ref_ptr = value.unwrap_or(0) as vx_reference;
+                                // Per OpenVX spec, querying VX_PARAMETER_REF increments the ref count
+                                // The caller must release with the appropriate vxRelease* function
+                                if !ref_ptr.is_null() {
+                                    crate::c_api::vxRetainReference(ref_ptr);
+                                }
                                 let ptr_u8 = ptr as *mut u8;
                                 std::ptr::copy_nonoverlapping(
                                     &ref_ptr as *const _ as *const u8,
@@ -1682,6 +1765,10 @@ pub extern "C" fn vxQueryParameter(
                             // Get the reference value from the parameter
                             if let Ok(value) = param_data.value.lock() {
                                 let ref_ptr = value.unwrap_or(0) as vx_reference;
+                                // Per OpenVX spec, querying VX_PARAMETER_REF increments the ref count
+                                if !ref_ptr.is_null() {
+                                    crate::c_api::vxRetainReference(ref_ptr);
+                                }
                                 let ptr_u8 = ptr as *mut u8;
                                 std::ptr::copy_nonoverlapping(
                                     &ref_ptr as *const _ as *const u8,
@@ -1739,7 +1826,10 @@ pub extern "C" fn vxSetParameterByIndex(
         return VX_ERROR_INVALID_REFERENCE;
     }
     // Check if trying to set NULL for required parameters
-    // For now, hardcode based on kernel enum - param 0 is typically required input
+    // Param 0 is always a required input for vision kernels
+    if value.is_null() && index == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
     let id = node as u64;
     
     // Store node data before dropping the lock
@@ -1823,12 +1913,19 @@ pub extern "C" fn vxSetParameterByReference(
     }
     let id = param as u64;
     
-    // Extract node_id and index from param_id
-    // param_id = (node_id << 32) | index
-    let node_id = id >> 32;
-    let index = (id & 0xFFFFFFFF) as u32;
+    // Look up node_id and index from the PARAMETERS registry
+    let (node_id, index) = if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
+        if let Some(param_data) = params.get(&id) {
+            (param_data.node_id, param_data.index)
+        } else {
+            // Fallback: try to extract from ID encoding
+            (id >> 32, (id & 0xFFFFFFFF) as u32)
+        }
+    } else {
+        (id >> 32, (id & 0xFFFFFFFF) as u32)
+    };
     
-    // Try unified_c_api::PARAMETERS first
+    // Update parameter value in unified PARAMETERS registry
     if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
             if let Ok(mut val) = param_data.value.lock() {
