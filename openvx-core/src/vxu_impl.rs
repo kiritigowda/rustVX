@@ -12,7 +12,7 @@ use crate::c_api::{
     vx_enum, vx_df_image, vx_uint32, vx_size, vx_char,
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
-    VX_DF_IMAGE_S16, VX_DF_IMAGE_U16,  // Add S16/U16 format constants
+    VX_DF_IMAGE_S16, VX_DF_IMAGE_U16, VX_DF_IMAGE_U8,  // Add S16/U16/U8 format constants
 };
 use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage};
 
@@ -2697,13 +2697,13 @@ pub fn vxu_warp_perspective_impl(
 pub fn vxu_harris_corners_impl(
     context: vx_context,
     input: vx_image,
-    _strength_thresh: vx_scalar,
-    _min_distance: vx_scalar,
-    _sensitivity: vx_scalar,
-    _gradient_size: vx_enum,
-    _block_size: vx_enum,
-    _corners: vx_array,
-    _num_corners: vx_scalar,
+    strength_thresh: vx_scalar,
+    min_distance: vx_scalar,
+    sensitivity: vx_scalar,
+    gradient_size: vx_enum,
+    block_size: vx_enum,
+    corners: vx_array,
+    num_corners: vx_scalar,
 ) -> vx_status {
     // Validate all required parameters with null checks
     if context.is_null() {
@@ -2713,6 +2713,44 @@ pub fn vxu_harris_corners_impl(
         return VX_ERROR_INVALID_REFERENCE;
     }
 
+    // Read scalar parameters
+    let threshold: f32 = if !strength_thresh.is_null() {
+        let mut val: f32 = 0.0;
+        let status = crate::c_api_data::vxCopyScalarData(
+            strength_thresh,
+            &mut val as *mut f32 as *mut c_void,
+            0x11001, 0x0
+        );
+        if status == VX_SUCCESS { val } else { 0.001 }
+    } else { 0.001 };
+
+    let min_dist: f32 = if !min_distance.is_null() {
+        let mut val: f32 = 0.0;
+        let status = crate::c_api_data::vxCopyScalarData(
+            min_distance,
+            &mut val as *mut f32 as *mut c_void,
+            0x11001, 0x0
+        );
+        if status == VX_SUCCESS { val } else { 3.0 }
+    } else { 3.0 };
+
+    let k: f32 = if !sensitivity.is_null() {
+        let mut val: f32 = 0.0;
+        let status = crate::c_api_data::vxCopyScalarData(
+            sensitivity,
+            &mut val as *mut f32 as *mut c_void,
+            0x11001, 0x0
+        );
+        if status == VX_SUCCESS { val } else { 0.04 }
+    } else { 0.04 };
+
+    let gs = gradient_size as usize;
+    let bs = block_size as usize;
+    // Valid gradient sizes: 3, 5, 7
+    let gs = if gs == 3 || gs == 5 || gs == 7 { gs } else { 3 };
+    // Valid block sizes: 3, 5, 7
+    let bs = if bs == 3 || bs == 5 || bs == 7 { bs } else { 3 };
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
@@ -2721,19 +2759,236 @@ pub fn vxu_harris_corners_impl(
             }
         };
 
-        // Default parameters
-        let k = 0.04f32;
-        let threshold = 100.0f32;
-        let min_distance = 10usize;
+        let width = src.width();
+        let height = src.height();
 
-        match harris_corners(&src, k, threshold, min_distance) {
-            Ok(_corners) => {
-                // In a full implementation, would write to array/scalar outputs
-                VX_SUCCESS
+        // Scale factor for gradient normalization: 1 / (2^(gradient_size-1) * block_size * 255)
+        let scale = 1.0 / ((1i32 << (gs - 1)) as f32 * bs as f32 * 255.0);
+
+        // Compute gradients using Sobel with appropriate kernel size
+        let grad_x = compute_sobel(&src, width, height, gs, true);  // horizontal gradient
+        let grad_y = compute_sobel(&src, width, height, gs, false); // vertical gradient
+
+        // Compute structure tensor sums and Harris response for each pixel
+        let half_block = bs / 2;
+        let mut responses = vec![0.0f32; width * height];
+
+        for y in half_block..height - half_block {
+            for x in half_block..width - half_block {
+                let mut ixx: f64 = 0.0;
+                let mut iyy: f64 = 0.0;
+                let mut ixy: f64 = 0.0;
+
+                // Sum over blockSize x blockSize window
+                for by in 0..bs {
+                    for bx in 0..bs {
+                        let py = y + by - half_block;
+                        let px = x + bx - half_block;
+                        if px < width && py < height {
+                            let ix = grad_x[py * width + px];
+                            let iy = grad_y[py * width + px];
+                            ixx += (ix as f64) * (ix as f64);
+                            iyy += (iy as f64) * (iy as f64);
+                            ixy += (ix as f64) * (iy as f64);
+                        }
+                    }
+                }
+
+                // Harris response: R = det(M) - k * trace(M)^2
+                // det(M) = ixx * iyy - ixy^2
+                // trace(M) = ixx + iyy
+                // Scale factor applied: each gradient is scaled by `scale`
+                // So ixx becomes scale^2 * sum(Ix^2), etc.
+                let det = ixx * iyy - ixy * ixy;
+                let trace = ixx + iyy;
+                let response = ((scale as f64) * (scale as f64) * det - (k as f64) * (scale as f64) * (scale as f64) * trace * trace) as f32;
+                responses[y * width + x] = response;
             }
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        }
+
+        // Non-maximum suppression with min_distance
+        let mut corner_list: Vec<(i32, i32, f32)> = Vec::new();
+        let min_dist_sq = (min_dist * min_dist) as f32;
+
+        // First, collect all corners above threshold
+        let mut candidates: Vec<(usize, usize, f32)> = Vec::new();
+        for y in half_block..height - half_block {
+            for x in half_block..width - half_block {
+                let r = responses[y * width + x];
+                if r > threshold {
+                    // Check if local maximum in 3x3 neighborhood
+                    let mut is_max = true;
+                    for dy in -1i32..=1 {
+                        for dx in -1i32..=1 {
+                            if dx == 0 && dy == 0 { continue; }
+                            let nx = (x as i32 + dx) as usize;
+                            let ny = (y as i32 + dy) as usize;
+                            if nx < width && ny < height {
+                                if responses[ny * width + nx] > r {
+                                    is_max = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !is_max { break; }
+                    }
+                    if is_max {
+                        candidates.push((x, y, r));
+                    }
+                }
+            }
+        }
+
+        // Sort candidates by strength (descending)
+        candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Non-maximum suppression: remove candidates too close to stronger ones
+        for &(x, y, r) in &candidates {
+            let mut too_close = false;
+            for &(cx, cy, _cr) in &corner_list {
+                let dx = x as f32 - cx as f32;
+                let dy = y as f32 - cy as f32;
+                if dx * dx + dy * dy < min_dist_sq {
+                    too_close = true;
+                    break;
+                }
+            }
+            if !too_close {
+                corner_list.push((x as i32, y as i32, r));
+            }
+        }
+
+        // Write corners to output array
+        if !corners.is_null() {
+            let arr = &*(corners as *const crate::unified_c_api::VxCArray);
+            let mut arr_data = match arr.items.write() {
+                Ok(d) => d,
+                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+            };
+
+            let keypoint_size = std::mem::size_of::<vx_keypoint_t>();
+            let output_size = corner_list.len() * keypoint_size;
+            if arr_data.len() < output_size {
+                arr_data.resize(output_size, 0);
+            }
+
+            for (i, &(x, y, strength)) in corner_list.iter().enumerate() {
+                let offset = i * keypoint_size;
+                if offset + keypoint_size <= arr_data.len() {
+                    let kp = vx_keypoint_t {
+                        x: x as f32,
+                        y: y as f32,
+                        strength,
+                        scale: 0.0,
+                        orientation: 0.0,
+                        error: 0.0,
+                    };
+                    let kp_ptr = arr_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
+                    *kp_ptr = kp;
+                }
+            }
+            // Zero out remaining data
+            for i in corner_list.len() * keypoint_size..arr_data.len().min(output_size + keypoint_size) {
+                arr_data[i] = 0;
+            }
+        }
+
+        // Write num_corners to scalar
+        if !num_corners.is_null() {
+            let num = corner_list.len() as usize;
+            crate::c_api_data::vxCopyScalarData(
+                num_corners,
+                &num as *const usize as *mut c_void,
+                0x11002, // VX_WRITE_ONLY
+                0x0
+            );
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// Compute Sobel gradients with the given kernel size
+/// Returns gradient values scaled by the OpenVX normalization factor
+fn compute_sobel(image: &Image, width: usize, height: usize, kernel_size: usize, is_x: bool) -> Vec<i16> {
+    let mut result = vec![0i16; width * height];
+    let half = kernel_size / 2;
+
+    // Sobel kernels for different sizes
+    // 3x3: Gx = [[-1,0,1],[-2,0,2],[-1,0,1]] / 8 (2^(3-1) = 4, but spec uses 8)
+    // 5x5 and 7x7: use the spec-defined kernels
+    let kernel: Vec<i32> = match kernel_size {
+        3 => {
+            if is_x {
+                vec![-1, 0, 1, -2, 0, 2, -1, 0, 1]
+            } else {
+                vec![-1, -2, -1, 0, 0, 0, 1, 2, 1]
+            }
+        }
+        5 => {
+            // 5x5 Sobel kernels from OpenVX spec
+            if is_x {
+                vec![-1, -2, 0, 2, 1,
+                     -4, -8, 0, 8, 4,
+                     -6, -12, 0, 12, 6,
+                     -4, -8, 0, 8, 4,
+                     -1, -2, 0, 2, 1]
+            } else {
+                vec![-1, -4, -6, -4, -1,
+                     -2, -8, -12, -8, -2,
+                      0,  0,  0,  0,  0,
+                      2,  8,  12,  8,  2,
+                      1,  4,  6,  4, 1]
+            }
+        }
+        7 => {
+            // 7x7 Sobel kernels
+            if is_x {
+                vec![-1, -4, -5, 0, 5, 4, 1,
+                     -6, -24, -30, 0, 30, 24, 6,
+                     -15, -60, -75, 0, 75, 60, 15,
+                     -20, -80, -100, 0, 100, 80, 20,
+                     -15, -60, -75, 0, 75, 60, 15,
+                     -6, -24, -30, 0, 30, 24, 6,
+                     -1, -4, -5, 0, 5, 4, 1]
+            } else {
+                vec![-1, -6, -15, -20, -15, -6, -1,
+                     -4, -24, -60, -80, -60, -24, -4,
+                     -5, -30, -75, -100, -75, -30, -5,
+                      0,  0,  0,  0,  0,  0,  0,
+                      5,  30,  75,  100, 75, 30,  5,
+                      4,  24,  60,  80,  60,  24,  4,
+                      1,  6,  15,  20,  15,  6,  1]
+            }
+        }
+        _ => {
+            // Default to 3x3
+            if is_x {
+                vec![-1, 0, 1, -2, 0, 2, -1, 0, 1]
+            } else {
+                vec![-1, -2, -1, 0, 0, 0, 1, 2, 1]
+            }
+        }
+    };
+
+    for y in half..height - half {
+        for x in half..width - half {
+            let mut sum: i32 = 0;
+            for ky in 0..kernel_size {
+                for kx in 0..kernel_size {
+                    let px = x + kx - half;
+                    let py = y + ky - half;
+                    let pixel = image.get_pixel(px, py) as i32;
+                    sum += pixel * kernel[ky * kernel_size + kx];
+                }
+            }
+            // Divide by 2^(kernel_size-1) for normalization as per OpenVX spec
+            let shift = (kernel_size - 1) as u32; // divide by 2^shift
+            result[y * width + x] = (sum >> shift) as i16;
         }
     }
+
+    result
 }
 
 pub fn vxu_fast_corners_impl(
@@ -5357,5 +5612,250 @@ pub fn vxu_optical_flow_pyr_lk_impl(
         }
 
         VX_SUCCESS
+    }
+}
+
+/// VXU Convert Depth Implementation
+/// Converts between image depth formats (U8 <-> S16, etc.)
+/// Reference: OpenVX 1.3 spec, section on vxConvertDepth
+pub fn vxu_convert_depth_impl(
+    context: vx_context,
+    input: vx_image,
+    output: vx_image,
+    policy: vx_enum,
+    shift: i32,
+) -> vx_status {
+    if context.is_null() || input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let (src_width, src_height, src_format) = match get_image_info(input) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let (dst_width, dst_height, dst_format) = match get_image_info(output) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Validate dimensions match
+        if src_width != dst_width || src_height != dst_height {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let src = match c_image_to_rust(input) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        let width = src_width as usize;
+        let height = src_height as usize;
+
+        // Determine source and destination format
+        let src_is_u8 = src_format == VX_DF_IMAGE_U8;
+        let src_is_s16 = src_format == VX_DF_IMAGE_S16;
+        let dst_is_u8 = dst_format == VX_DF_IMAGE_U8;
+        let dst_is_s16 = dst_format == VX_DF_IMAGE_S16;
+
+        // Create output image data
+        let dst_fmt = match df_image_to_format(dst_format) {
+            Some(f) => f,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut dst = match Image::new(width, height, dst_fmt) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Clamp shift to valid range
+        let shift = shift.clamp(-16, 16);
+
+        if src_is_u8 && dst_is_s16 {
+            // U8 -> S16 conversion
+            if shift < 0 {
+                // Right shift (unsigned)
+                for y in 0..height {
+                    for x in 0..width {
+                        let val = src.get_pixel(x, y) as u32;
+                        dst.set_pixel_s16(x, y, (val >> (-shift)) as i16);
+                    }
+                }
+            } else {
+                // Left shift
+                for y in 0..height {
+                    for x in 0..width {
+                        let val = src.get_pixel(x, y) as u32;
+                        dst.set_pixel_s16(x, y, (val << shift) as i16);
+                    }
+                }
+            }
+        } else if src_is_s16 && dst_is_u8 {
+            // S16 -> U8 conversion
+            if policy == VX_CONVERT_POLICY_WRAP {
+                if shift < 0 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let val = src.get_pixel_s16(x, y);
+                            dst.set_pixel(x, y, (val << (-shift)) as u8);
+                        }
+                    }
+                } else {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let val = src.get_pixel_s16(x, y);
+                            dst.set_pixel(x, y, (val >> shift) as u8);
+                        }
+                    }
+                }
+            } else {
+                // VX_CONVERT_POLICY_SATURATE
+                if shift < 0 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let val = src.get_pixel_s16(x, y);
+                            let v = (val as i32) << (-shift);
+                            dst.set_pixel(x, y, v.clamp(0, 255) as u8);
+                        }
+                    }
+                } else {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let val = src.get_pixel_s16(x, y);
+                            let v = (val as i32) >> shift;
+                            dst.set_pixel(x, y, v.clamp(0, 255) as u8);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Unsupported conversion format pair
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        copy_rust_to_c_image(&dst, output)
+    }
+}
+
+/// VXU Half-Scale Gaussian Implementation
+/// Downscale image by 2 with Gaussian 5x5 blur before subsampling
+/// Reference: OpenVX 1.3 spec
+pub fn vxu_half_scale_gaussian_impl(
+    context: vx_context,
+    input: vx_image,
+    output: vx_image,
+    kernel_size: vx_size,
+) -> vx_status {
+    if context.is_null() || input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let (src_width, src_height, src_format) = match get_image_info(input) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let (dst_width, dst_height, dst_format) = match get_image_info(output) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Output should be roughly half the input size
+        let expected_w = (src_width as usize + 1) / 2;
+        let expected_h = (src_height as usize + 1) / 2;
+        if dst_width as usize != expected_w || dst_height as usize != expected_h {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let src = match c_image_to_rust(input) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        let width = src_width as usize;
+        let height = src_height as usize;
+
+        let dst_fmt = match df_image_to_format(dst_format) {
+            Some(f) => f,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut dst = match Image::new(dst_width as usize, dst_height as usize, dst_fmt) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Gaussian 5x5 kernel (separable: [1,4,6,4,1]/16)
+        // For 3x3, use [1,2,1]/4
+        // For 1, no blur - just subsample
+        if kernel_size == 1 {
+            // No Gaussian blur - just subsample
+            let out_w = dst_width as usize;
+            let out_h = dst_height as usize;
+            for dy in 0..out_h {
+                for dx in 0..out_w {
+                    let sy = dy * 2; // subsample source y
+                    let sx = dx * 2; // subsample source x
+                    dst.set_pixel(dx, dy, src.get_pixel(sx.min(width - 1), sy.min(height - 1)));
+                }
+            }
+        } else if kernel_size == 3 {
+            // Gaussian 3x3 kernel
+            // Separable: [1,2,1]/4
+            // First pass: horizontal blur
+            let mut blurred = vec![0u8; width * height];
+            for y in 0..height {
+                for x in 0..width {
+                    let v0 = src.get_pixel(x.saturating_sub(1), y) as i32;
+                    let v1 = src.get_pixel(x, y) as i32;
+                    let v2 = src.get_pixel((x + 1).min(width - 1), y) as i32;
+                    blurred[y * width + x] = ((v0 + 2 * v1 + v2 + 2) / 4) as u8;
+                }
+            }
+            // Second pass: vertical blur + subsample
+            let out_w = dst_width as usize;
+            let out_h = dst_height as usize;
+            for dy in 0..out_h {
+                for dx in 0..out_w {
+                    let sy = dy * 2; // subsample
+                    let v0 = blurred[sy.saturating_sub(1).min(height - 1) * width + dx * 2] as i32;
+                    let v1 = blurred[sy * width + dx * 2] as i32;
+                    let v2 = blurred[(sy + 1).min(height - 1) * width + dx * 2] as i32;
+                    dst.set_pixel(dx, dy, ((v0 + 2 * v1 + v2 + 2) / 4) as u8);
+                }
+            }
+        } else {
+            // kernel_size == 5 or default
+            // Gaussian 5x5 kernel
+            // Separable: [1,4,6,4,1]/16
+            // First pass: horizontal blur
+            let mut blurred = vec![0u8; width * height];
+            for y in 0..height {
+                for x in 0..width {
+                    let v0 = src.get_pixel(x.saturating_sub(2), y) as i32;
+                    let v1 = src.get_pixel(x.saturating_sub(1), y) as i32;
+                    let v2 = src.get_pixel(x, y) as i32;
+                    let v3 = src.get_pixel((x + 1).min(width - 1), y) as i32;
+                    let v4 = src.get_pixel((x + 2).min(width - 1), y) as i32;
+                    blurred[y * width + x] = ((v0 + 4 * v1 + 6 * v2 + 4 * v3 + v4 + 8) / 16) as u8;
+                }
+            }
+            // Second pass: vertical blur + subsample
+            let out_w = dst_width as usize;
+            let out_h = dst_height as usize;
+            for dy in 0..out_h {
+                for dx in 0..out_w {
+                    let sy = dy * 2; // subsample source y
+                    let sx = dx * 2; // subsample source x
+                    let v0 = blurred[sy.saturating_sub(2).min(height - 1) * width + sx] as i32;
+                    let v1 = blurred[sy.saturating_sub(1).min(height - 1) * width + sx] as i32;
+                    let v2 = blurred[sy * width + sx] as i32;
+                    let v3 = blurred[(sy + 1).min(height - 1) * width + sx] as i32;
+                    let v4 = blurred[(sy + 2).min(height - 1) * width + sx] as i32;
+                    dst.set_pixel(dx, dy, ((v0 + 4 * v1 + 6 * v2 + 4 * v3 + v4 + 8) / 16) as u8);
+                }
+            }
+        }
+
+        copy_rust_to_c_image(&dst, output)
     }
 }
