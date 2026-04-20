@@ -29,14 +29,8 @@ jobs:
           cd OpenVX-cts/build
           cmake ..
           make -j$(nproc)
-      - name: Run Smoke Tests
-        run: |
-          cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=../../target/release
-          export VX_TEST_DATA_PATH=../test_data
-          timeout 60 ./bin/vx_test_conformance --filter="SmokeTest.*"
 
-  baseline-data:
+  baseline:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -56,12 +50,12 @@ jobs:
           cd OpenVX-cts/build
           cmake ..
           make -j$(nproc)
-      - name: Run Baseline Data Tests
+      - name: Run All Baseline Tests
         run: |
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=../../target/release
           export VX_TEST_DATA_PATH=../test_data
-          timeout 120 ./bin/vx_test_conformance --filter="Scalar.*:Array.*:ObjectArray.*:GraphCallback.*:GraphDelay.*"
+          timeout 120 ./bin/vx_test_conformance --filter="SmokeTest.*:Scalar.*:Array.*:ObjectArray.*:GraphCallback.*:GraphDelay.*"
 
   vision-pixel:
     needs: build
