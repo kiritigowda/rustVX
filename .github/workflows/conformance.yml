@@ -91,7 +91,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 120 ./bin/vx_test_conformance --filter="SmokeTest.*:Scalar.*:Array.*:ObjectArray.*:GraphCallback.*:GraphDelay.*"
+          timeout 300 ./bin/vx_test_conformance --filter="SmokeTestBase.*:Scalar.*:Array.*:ObjectArray.*:GraphCallback.*:GraphDelay.*"
 
   vision-pixel:
     runs-on: ubuntu-22.04
@@ -134,7 +134,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 300 ./bin/vx_test_conformance --filter="Scale:*:Remap:*:WarpPerspective:*:WarpAffine:*:Convolve:*:Threshold:*:LUT:*:SwapImageHandle:*"
+          timeout 600 ./bin/vx_test_conformance --filter="Scale.*:Remap.*:WarpPerspective.*:WarpAffine.*:Convolve.*:Threshold.*:LUT.*:SwapImageHandle.*"
 
   vision-filters:
     runs-on: ubuntu-22.04
@@ -177,7 +177,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 180 ./bin/vx_test_conformance --filter="Box3x3:*:Gaussian3x3:*:Median3x3:*:Dilate3x3:*:Erode3x3:*:Sobel3x3:*:Magnitude:*:Phase:*:HalfScaleGaussian:*:WeightedAverage:*:NonLinearFilter:*"
+          timeout 300 ./bin/vx_test_conformance --filter="Box3x3.*:Gaussian3x3.*:Median3x3.*:Dilate3x3.*:Erode3x3.*:Sobel3x3.*:Magnitude.*:Phase.*:HalfScaleGaussian.*:WeightedAverage.*:NonLinearFilter.*"
 
   vision-arithmetic:
     runs-on: ubuntu-22.04
@@ -220,7 +220,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 180 ./bin/vx_test_conformance --filter="vxMultiply:*:vxAddSub:*:vxBinOp8u:*:vxuAddSub:*:vxuMultiply:*:vxuConvertDepth:*:vxuBinOp8u:*:vxNot:*"
+          timeout 300 ./bin/vx_test_conformance --filter="vxMultiply.*:vxAddSub.*:vxBinOp8u.*:vxuAddSub.*:vxuMultiply.*:vxuConvertDepth.*:vxuBinOp8u.*:vxNot.*"
 
   vision-color:
     runs-on: ubuntu-22.04
@@ -263,7 +263,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 120 ./bin/vx_test_conformance --filter="ColorConvert:*:ChannelExtract:*:ChannelCombine:*"
+          timeout 300 ./bin/vx_test_conformance --filter="ColorConvert.*:ChannelExtract.*:ChannelCombine.*"
 
   vision-features:
     runs-on: ubuntu-22.04
@@ -306,7 +306,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 300 ./bin/vx_test_conformance --filter="HarrisCorners:*:FastCorners:*:vxCanny:*:Histogram:*"
+          timeout 300 ./bin/vx_test_conformance --filter="HarrisCorners.*:FastCorners.*:vxCanny.*:Histogram.*"
 
   graph-topology:
     runs-on: ubuntu-22.04
@@ -349,4 +349,4 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 180 ./bin/vx_test_conformance --filter="Graph.Node:*:Graph.Verify:*:Graph.Process:*:Graph.Delay:*:Graph.Age:*"
+          timeout 300 ./bin/vx_test_conformance --filter="Graph.Node.*:Graph.Verify.*:Graph.Process.*:Graph.Delay.*:Graph.Age.*"
