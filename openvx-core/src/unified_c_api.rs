@@ -753,13 +753,16 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 
     if let Ok(graphs) = GRAPHS_DATA.lock() {
         if let Some(g) = graphs.get(&graph_id) {
-            let nodes = g.nodes.read().unwrap();
+            let nodes_vec: Vec<u64> = {
+                let nodes = g.nodes.read().unwrap();
+                nodes.clone()
+            }; // read lock dropped here
 
             // Collect all parameter references to analyze connections
             // Also get kernel name for each node to determine param directions
             let mut node_params: Vec<(u64, Vec<Option<u64>>)> = Vec::new();
             let mut node_kernel_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
-            for node_id in nodes.iter() {
+            for node_id in nodes_vec.iter() {
                 if let Ok(nodes_data) = crate::c_api::NODES.lock() {
                     if let Some(node_data) = nodes_data.get(node_id) {
                         if let Ok(params) = node_data.parameters.lock() {
@@ -976,6 +979,82 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 if !visited.contains(node_id) {
                     if has_cycle(*node_id, &node_to_outputs, &image_to_consumers, &param_to_producer, &mut visited, &mut rec_stack) {
                         return VX_ERROR_INVALID_GRAPH;
+                    }
+                }
+            }
+
+            // Topological sort of nodes for correct execution order (Kahn's algorithm)
+            // Nodes must execute in data-flow order: if A produces an image that B consumes, A runs first
+            
+            {
+                // Count in-degree for each node (how many nodes feed into it)
+                let mut in_degree: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+                for (node_id, _) in &node_params {
+                    in_degree.insert(*node_id, 0);
+                }
+                for (node_id, params) in &node_params {
+                    for param_opt in params.iter() {
+                        if let Some(param_ref) = param_opt {
+                            // If this param is an output of another node, increment our in-degree
+                            if let Some(&producer) = param_to_producer.get(param_ref) {
+                                if producer != *node_id {
+                                    // producer feeds into this node
+                                    if let Some(deg) = in_degree.get_mut(node_id) {
+                                        *deg += 1;
+                                    }
+                                    
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Kahn's algorithm: repeatedly take nodes with in-degree 0
+                let mut queue: Vec<u64> = Vec::new();
+                for (node_id, deg) in &in_degree {
+                    
+                    if *deg == 0 {
+                        queue.push(*node_id);
+                    }
+                }
+                
+
+                let mut topo_order: Vec<u64> = Vec::with_capacity(node_params.len());
+                
+while !queue.is_empty() {
+                    let node_id = queue.pop().unwrap();
+                    
+                    topo_order.push(node_id);
+
+                    // For each node that this node feeds, decrement in-degree
+                    if let Some(outputs) = node_to_outputs.get(&node_id) {
+                        for output_img in outputs {
+                            if let Some(consumers) = image_to_consumers.get(output_img) {
+                                for consumer_id in consumers {
+                                    if *consumer_id != node_id {
+                                        if let Some(deg) = in_degree.get_mut(consumer_id) {
+                                            if *deg > 0 {
+                                                *deg -= 1;
+                                                if *deg == 0 {
+                                                    queue.push(*consumer_id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Kahn's algorithm with stack gives correct topological order
+                // No need to reverse
+
+                // Update the graph's node list
+                if topo_order.len() == node_params.len() {
+                    
+                    if let Ok(mut nodes_list) = g.nodes.write() {
+                        *nodes_list = topo_order;
                     }
                 }
             }
