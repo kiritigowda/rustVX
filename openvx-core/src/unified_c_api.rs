@@ -927,10 +927,13 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             }
 
             // Detect cycles using DFS following data flow: producer -> output image -> consumer
+            // Note: Delay-based feedback patterns are NOT cycles. A node consuming from delay slot -1
+            // and producing to delay slot 0 is valid temporal filtering, not a circular dependency.
             fn has_cycle(
                 node_id: u64,
                 node_to_outputs: &std::collections::HashMap<u64, Vec<u64>>,
                 image_to_consumers: &std::collections::HashMap<u64, Vec<u64>>,
+                image_to_producer: &std::collections::HashMap<u64, u64>,
                 visited: &mut std::collections::HashSet<u64>,
                 rec_stack: &mut std::collections::HashSet<u64>,
             ) -> bool {
@@ -949,7 +952,12 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     for output_img in outputs {
                         if let Some(consumers) = image_to_consumers.get(output_img) {
                             for consumer_id in consumers {
-                                if has_cycle(*consumer_id, node_to_outputs, image_to_consumers, visited, rec_stack) {
+                                // Skip self-references: if the consumer is the same node
+                                // that produced the image, that's not a cycle (common with delays)
+                                if *consumer_id == node_id {
+                                    continue;
+                                }
+                                if has_cycle(*consumer_id, node_to_outputs, image_to_consumers, image_to_producer, visited, rec_stack) {
                                     return true;
                                 }
                             }
@@ -966,7 +974,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 
             for (node_id, _) in &node_params {
                 if !visited.contains(node_id) {
-                    if has_cycle(*node_id, &node_to_outputs, &image_to_consumers, &mut visited, &mut rec_stack) {
+                    if has_cycle(*node_id, &node_to_outputs, &image_to_consumers, &param_to_producer, &mut visited, &mut rec_stack) {
                         return VX_ERROR_INVALID_GRAPH;
                     }
                 }
@@ -4287,8 +4295,8 @@ pub const VX_OBJECT_ARRAY_ITEMTYPE: vx_enum = 0x81300;
 pub const VX_OBJECT_ARRAY_NUMITEMS: vx_enum = 0x81301;
 
 // Delay attributes
-pub const VX_DELAY_TYPE: vx_enum = 0x00;
-pub const VX_DELAY_SLOTS: vx_enum = 0x01;
+pub const VX_DELAY_TYPE: vx_enum = 0x80600;
+pub const VX_DELAY_SLOTS: vx_enum = 0x80601;
 
 // Tensor attributes
 pub const VX_TENSOR_NUMBER_OF_DIMS: vx_enum = 0x00;
@@ -5662,9 +5670,37 @@ pub extern "C" fn vxCreateDelay(
         ref_type
     };
 
+    // Create copies of the exemplar for all slots
+    // Per OpenVX spec, each slot is a NEW data object of the same type as the exemplar.
+    let mut slot_refs: Vec<usize> = Vec::with_capacity(count);
+    for i in 0..count {
+        if i == 0 {
+            // Slot 0 gets the exemplar reference (already has ref count 1 from creation)
+            // We need to increment ref count since the delay now also owns it
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(count) = counts.get(&(exemplar as usize)) {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            slot_refs.push(exemplar as usize);
+        } else {
+            // Create a new copy for other slots
+            let copy = create_object_like_exemplar(context, exemplar, ref_type);
+            if copy.is_null() {
+                // Failed to create copy, clean up already created slots
+                for &addr in &slot_refs {
+                    let mut r = addr as vx_reference;
+                    let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                }
+                return std::ptr::null_mut();
+            }
+            slot_refs.push(copy as usize);
+        }
+    }
+
     // Create delay structure
     let delay = Box::new(VxCDelay {
-        slots: vec![0usize; count],  // Initialize with 0 (null)
+        slots: slot_refs,
         slot_count: count,
         current_index: 0,
         ref_type,
@@ -5675,7 +5711,6 @@ pub extern "C" fn vxCreateDelay(
     let delay_ptr = Box::into_raw(delay) as usize;
     let delay_ref = delay_ptr as vx_delay;
 
-    // Register in delay registry
     if let Ok(mut delays) = DELAYS.lock() {
         delays.insert(delay_ptr, unsafe { Arc::new((*(delay_ptr as *mut VxCDelay)).clone()) });
     }
@@ -5688,9 +5723,6 @@ pub extern "C" fn vxCreateDelay(
         if let Ok(mut types) = REFERENCE_TYPES.lock() {
             types.insert(delay_ptr, VX_TYPE_DELAY);
         }
-
-        let delay_data = &mut *(delay_ptr as *mut VxCDelay);
-        delay_data.slots[0] = exemplar as usize;
     }
 
     delay_ref
@@ -5804,13 +5836,9 @@ pub extern "C" fn vxAgeDelay(delay: vx_delay) -> vx_status {
     let delay_data = unsafe { &mut *(delay as *mut VxCDelay) };
 
     // Move current index forward (current becomes -1, -1 becomes -2, etc.)
-    // This effectively ages the delay
+    // This effectively ages the delay. The slot objects are NOT destroyed or nullified;
+    // only the logical index mapping changes.
     delay_data.current_index = (delay_data.current_index + 1) % delay_data.slot_count;
-
-    // The new current slot (index 0) should be cleared/null
-    // In a full implementation, this would be cloned from the exemplar
-    let new_idx = delay_data.current_index;
-    delay_data.slots[new_idx] = 0usize;
 
     VX_SUCCESS
 }
@@ -5851,8 +5879,16 @@ pub extern "C" fn vxReleaseDelay(delay: *mut vx_delay) -> vx_status {
                 false
             };
 
-            // If reference count reached zero, free the delay
+            // If reference count reached zero, free the delay and release slot objects
             if count_reached_zero {
+                let delay_data = &mut *(inner_delay as *mut VxCDelay);
+                for slot in delay_data.slots.iter_mut() {
+                    if *slot != 0 {
+                        let mut r = *slot as vx_reference;
+                        let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                        *slot = 0;
+                    }
+                }
                 let _ = Box::from_raw(inner_delay as *mut VxCDelay);
             }
 
