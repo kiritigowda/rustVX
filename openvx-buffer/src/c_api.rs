@@ -32,7 +32,7 @@ pub struct VxCArray {
     num_items: RwLock<vx_size>,
     data: RwLock<Vec<u8>>,
     context: vx_context,
-    mapped_ranges: RwLock<HashMap<vx_map_id, (vx_size, vx_size, Vec<u8>)>>,
+    mapped_ranges: RwLock<HashMap<vx_map_id, (vx_size, vx_size, Box<[u8]>)>>,
     is_virtual: bool,
 }
 
@@ -422,26 +422,38 @@ pub extern "C" fn vxMapArrayRange(
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
-    // Allocate stable heap buffer
-    let mut mapped_data: Vec<u8> = vec![0u8; range_size];
+    // Allocate stable heap memory for mapped range
+    // Using Box<[u8]> ensures the heap pointer stays valid
+    // even if the HashMap moves the Box struct (pointer doesn't change)
+    let range_size = end.checked_sub(start)
+        .and_then(|len| len.checked_mul(array.item_size))
+        .unwrap_or(0);
+    if range_size == 0 && start < end {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    let offset = start.checked_mul(array.item_size).unwrap_or(0);
+    if offset.saturating_add(range_size) > data.len() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let mut mapped_box = vec![0u8; range_size].into_boxed_slice();
     unsafe {
         std::ptr::copy_nonoverlapping(
             data.as_ptr().add(offset),
-            mapped_data.as_mut_ptr(),
+            mapped_box.as_mut_ptr(),
             range_size,
         );
     }
 
     let id = ARRAY_ID_COUNTER.fetch_add(1, Ordering::SeqCst) as vx_map_id;
 
-    // Get pointer - this stays valid as long as the Vec isn't dropped
-    // The Vec is moved into mapped_ranges HashMap which keeps it alive
-    // until vxUnmapArrayRange removes it
-    let data_ptr = mapped_data.as_mut_ptr();
+    // Get the raw pointer BEFORE moving the Box into the HashMap
+    // Must use as_mut_ptr() to get *mut u8 for the C void* return
+    let data_ptr = mapped_box.as_mut_ptr();
 
     {
         let mut mapped = array.mapped_ranges.write().unwrap();
-        mapped.insert(id, (start, end, mapped_data));
+        mapped.insert(id, (start, end, mapped_box));
     }
 
     unsafe {
