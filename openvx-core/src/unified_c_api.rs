@@ -1124,16 +1124,8 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
         }
     };
 
-    // For each node, check each parameter
-    // When a parameter was originally set via vxGetReferenceFromDelay(delay, logical_idx),
-    // the physical slot index = (current_index_at_bind_time + logical_idx) % slot_count.
-    // At bind time, current_index is always 0 (delay hasn't been aged yet).
-    // So: physical_idx = logical_idx (when current_index was 0).
-    // After aging, current_index changes. To re-resolve:
-    // new_addr = slots[(current_index + physical_idx) % slot_count]
-    //
-    // because the DELAYS registry has a stale clone. The raw pointer is the source of truth.
-    let mut updated = 0usize;
+    // First pass: resolve direct delay slot references in node parameters
+    // using DELAY_NODE_PARAMS which maps (node_id, param_idx) -> (delay_addr, logical_idx)
     if let Ok(nodes) = crate::c_api::NODES.lock() {
         for node_id in &node_ids {
             if let Some(node_data) = nodes.get(node_id) {
@@ -1142,100 +1134,70 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
                     Err(_) => continue,
                 };
 
-                for param_idx in 0..params.len() {
-                    if let Some(param_val) = params[param_idx] {
-                        let param_addr = param_val as usize;
-                        if param_addr == 0 {
-                            continue;
-                        }
-
-                        // Check if this parameter value is a delay slot object
-                        let slot_info = if let Ok(slot_objs) = DELAY_SLOT_OBJECTS.lock() {
-                            slot_objs.get(&param_addr).copied()
-                        } else {
-                            None
-                        };
-
-                        if let Some((delay_addr, physical_idx)) = slot_info {
-                            // Found a delay slot reference
-                            // Read current_index and slots directly from the delay struct
-                            // (the DELAYS registry has a stale clone)
-                            let delay_data = unsafe { &*(delay_addr as *const VxCDelay) };
-                            let current_index = delay_data.current_index;
-                            let slot_count = delay_data.slot_count;
-                            let slots = &delay_data.slots;
-
-                            // Re-resolve: new object at this logical index
-                            // physical_idx is the original logical index (bind time current_index = 0)
-                            let new_physical_idx = (current_index + physical_idx) % slot_count;
-                            let new_addr = slots[new_physical_idx];
-
-                            // Update the parameter
-                            if new_addr != 0 && new_addr != param_addr {
-
-                                params[param_idx] = Some(new_addr as u64);
-                                updated += 1;
+                let delay_param_entries: Vec<(u32, usize, i32)> = {
+                    if let Ok(delay_params) = DELAY_NODE_PARAMS.lock() {
+                        let mut entries = Vec::new();
+                        for ((nid, pidx), (delay_addr, logical_idx)) in delay_params.iter() {
+                            if *nid == *node_id {
+                                entries.push((*pidx, *delay_addr, *logical_idx));
                             }
                         }
+                        entries
+                    } else {
+                        continue;
                     }
-                }
-            }
-        }
-    }
-
-    // Second pass: resolve pyramid level images from delay slot pyramids
-    // When a pyramid delay slot changes, level images extracted via vxGetPyramidLevel
-    // also need to be updated in node parameters.
-    if let Ok(nodes) = crate::c_api::NODES.lock() {
-        for node_id in &node_ids {
-            if let Some(node_data) = nodes.get(node_id) {
-                let mut params = match node_data.parameters.lock() {
-                    Ok(p) => p,
-                    Err(_) => continue,
                 };
 
-                for param_idx in 0..params.len() {
-                    if let Some(param_val) = params[param_idx] {
-                        let param_addr = param_val as usize;
-                        if param_addr == 0 { continue; }
+                for (param_idx, delay_addr, logical_idx) in delay_param_entries {
+                    if (param_idx as usize) >= params.len() {
+                        continue;
+                    }
 
-                        // Check if this parameter is a pyramid level image
-                        let level_info = if let Ok(level_imgs) = PYRAMID_LEVEL_IMAGES.lock() {
-                            level_imgs.get(&param_addr).copied()
-                        } else {
-                            None
-                        };
+                    let delay_data = unsafe { &*(delay_addr as *const VxCDelay) };
+                    let current_index = delay_data.current_index as i32;
+                    let slot_count = delay_data.slot_count as i32;
 
-                        if let Some((pyr_addr, level)) = level_info {
-                            // This image came from a pyramid — check if that pyramid is a delay slot
-                            let slot_info = if let Ok(slot_objs) = DELAY_SLOT_OBJECTS.lock() {
-                                slot_objs.get(&pyr_addr).copied()
-                            } else {
-                                None
-                            };
+                    let mut new_phys = (current_index + logical_idx) % slot_count;
+                    if new_phys < 0 {
+                        new_phys += slot_count;
+                    }
+                    let new_phys = new_phys as usize;
 
-                            if let Some((delay_addr, physical_idx)) = slot_info {
-                                let delay_data = unsafe { &*(delay_addr as *const VxCDelay) };
-                                let new_physical_idx = (delay_data.current_index + physical_idx) % delay_data.slot_count;
-                                let new_pyr_addr = delay_data.slots[new_physical_idx];
+                    if new_phys >= delay_data.slots.len() {
+                        continue;
+                    }
+                    let new_addr = delay_data.slots[new_phys];
+                    if new_addr == 0 { continue; }
 
-                                if new_pyr_addr != 0 && new_pyr_addr != pyr_addr {
-                                    // Get the new level image from the new pyramid
-                                    extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
-                                    extern "C" { fn vxGetPyramidLevel(pyramid: vx_pyramid, level: vx_uint32) -> vx_image; }
-                                    let mut num_levels: vx_size = 0;
-                                    unsafe {
-                                        vxQueryPyramid(new_pyr_addr as vx_pyramid, 0x80900, &mut num_levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                    let old_addr = params[param_idx as usize].map(|v| v as usize).unwrap_or(0);
+
+                    if new_addr != old_addr {
+                        // Retain new, release old
+                        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                            if let Some(cnt) = counts.get(&new_addr) {
+                                cnt.fetch_add(1, Ordering::SeqCst);
+                            }
+                            if old_addr != 0 {
+                                if let Some(cnt) = counts.get(&old_addr) {
+                                    let cur = cnt.load(Ordering::SeqCst);
+                                    if cur > 1 {
+                                        cnt.store(cur - 1, Ordering::SeqCst);
                                     }
-                                    if (level as usize) < num_levels {
-                                        let new_img = unsafe { vxGetPyramidLevel(new_pyr_addr as vx_pyramid, level as u32) };
-                                        if !new_img.is_null() {
-                                            params[param_idx] = Some(new_img as u64);
-                                            // Register the new level image
-                                            if let Ok(mut li) = PYRAMID_LEVEL_IMAGES.lock() {
-                                                li.insert(new_img as usize, (new_pyr_addr, level));
-                                            }
+                                }
+                            }
+                        }
+                        params[param_idx as usize] = Some(new_addr as u64);
+
+                        // Also update ParameterData.value
+                        if let Ok(unified_params) = crate::unified_c_api::PARAMETERS.lock() {
+                            for (_, pd) in unified_params.iter() {
+                                if let Ok(val) = pd.value.lock() {
+                                    if *val == Some(old_addr as u64) {
+                                        drop(val);
+                                        if let Ok(mut v) = pd.value.lock() {
+                                            *v = Some(new_addr as u64);
                                         }
+                                        break;
                                     }
                                 }
                             }
@@ -1245,9 +1207,111 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
             }
         }
     }
-}
 
-/// Process graph - execute nodes in topological order
+    // Second pass: resolve pyramid level images that are delay slot references
+    // using DELAY_PYRAMID_LEVEL which maps (node_id, param_idx) -> (delay_addr, logical_idx, level)
+    if let Ok(nodes) = crate::c_api::NODES.lock() {
+        for node_id in &node_ids {
+            if let Some(node_data) = nodes.get(node_id) {
+                let mut params = match node_data.parameters.lock() {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+
+                let pyr_level_entries: Vec<(u32, usize, i32, usize)> = {
+                    if let Ok(delay_pyr_level) = DELAY_PYRAMID_LEVEL.lock() {
+                        let mut entries = Vec::new();
+                        for ((nid, pidx), (delay_addr, logical_idx, level)) in delay_pyr_level.iter() {
+                            if *nid == *node_id {
+                                entries.push((*pidx, *delay_addr, *logical_idx, *level));
+                            }
+                        }
+                        entries
+                    } else {
+                        continue;
+                    }
+                };
+
+                for (param_idx, delay_addr, logical_idx, level) in pyr_level_entries {
+                    if (param_idx as usize) >= params.len() {
+                        continue;
+                    }
+
+                    let delay_data = unsafe { &*(delay_addr as *const VxCDelay) };
+                    let current_index = delay_data.current_index as i32;
+                    let slot_count = delay_data.slot_count as i32;
+
+                    // Compute which physical slot the pyramid is now at
+                    let mut new_phys = (current_index + logical_idx) % slot_count;
+                    if new_phys < 0 {
+                        new_phys += slot_count;
+                    }
+                    let new_phys = new_phys as usize;
+
+                    if new_phys >= delay_data.slots.len() {
+                        continue;
+                    }
+                    let new_pyr_addr = delay_data.slots[new_phys];
+
+                    // Get the old pyramid to compare
+                    let old_addr = params[param_idx as usize].map(|v| v as usize).unwrap_or(0);
+
+                    // Check if the level image's parent pyramid has changed
+                    let old_pyr_addr = {
+                        if let Ok(level_imgs) = PYRAMID_LEVEL_IMAGES.lock() {
+                            level_imgs.get(&old_addr).map(|&(pyr, _)| pyr).unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    };
+
+                    if new_pyr_addr != 0 && new_pyr_addr != old_pyr_addr {
+                        extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
+                        extern "C" { fn vxGetPyramidLevel(pyramid: vx_pyramid, level: vx_uint32) -> vx_image; }
+                        let mut num_levels: vx_size = 0;
+                        unsafe {
+                            vxQueryPyramid(new_pyr_addr as vx_pyramid, 0x80900, &mut num_levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                        }
+                        if level < num_levels as usize {
+                            let new_img = unsafe { vxGetPyramidLevel(new_pyr_addr as vx_pyramid, level as u32) };
+                            if !new_img.is_null() {
+                                // vxGetPyramidLevel already retained
+                                // Release old
+                                if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                                    if let Some(cnt) = counts.get(&old_addr) {
+                                        let cur = cnt.load(Ordering::SeqCst);
+                                        if cur > 1 {
+                                            cnt.store(cur - 1, Ordering::SeqCst);
+                                        }
+                                    }
+                                }
+                                params[param_idx as usize] = Some(new_img as u64);
+
+                                // Also update ParameterData.value
+                                if let Ok(unified_params) = crate::unified_c_api::PARAMETERS.lock() {
+                                    for (_, pd) in unified_params.iter() {
+                                        if let Ok(val) = pd.value.lock() {
+                                            if *val == Some(old_addr as u64) {
+                                                drop(val);
+                                                if let Ok(mut v) = pd.value.lock() {
+                                                    *v = Some(new_img as u64);
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Ok(mut li) = PYRAMID_LEVEL_IMAGES.lock() {
+                                    li.insert(new_img as usize, (new_pyr_addr, level));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}/// Process graph - execute nodes in topological order
 #[no_mangle]
 pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
@@ -3358,7 +3422,25 @@ static DELAYS: Lazy<Mutex<HashMap<usize, Arc<VxCDelay>>>> = Lazy::new(|| {
 
 // Maps: slot_object_addr -> (delay_addr, physical_slot_index)
 // Used to re-resolve delay slot references in node parameters after aging
-static DELAY_SLOT_OBJECTS: Lazy<Mutex<HashMap<usize, (usize, usize)>>> = Lazy::new(|| {
+pub static DELAY_SLOT_OBJECTS: Lazy<Mutex<HashMap<usize, (usize, usize)>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Maps: reference_addr -> (delay_addr, logical_idx)
+// Used to track which references came from which delay slot
+pub static DELAY_SLOT_LOGICAL: Lazy<Mutex<HashMap<usize, (usize, i32)>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Maps: (node_addr, param_idx) -> (delay_addr, logical_idx)
+// Used to resolve delay parameters after aging.
+pub static DELAY_NODE_PARAMS: Lazy<Mutex<HashMap<(u64, u32), (usize, i32)>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Maps: (node_addr, param_idx) -> (delay_addr, logical_idx, level_index)
+// Used for pyramid level images that are delay slot references
+pub static DELAY_PYRAMID_LEVEL: Lazy<Mutex<HashMap<(u64, u32), (usize, i32, usize)>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -5408,6 +5490,17 @@ fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exem
                 vxQueryThreshold(exemplar as vx_threshold, 0x80A00, &mut thresh_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
                 vxCreateThreshold(context, thresh_type, VX_TYPE_INT8) as vx_reference
             }
+            VX_TYPE_OBJECT_ARRAY => {
+                let mut item_type: vx_enum = 0;
+                let mut num_items: vx_size = 0;
+                vxQueryObjectArray(exemplar as vx_object_array, VX_OBJECT_ARRAY_ITEMTYPE, &mut item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                vxQueryObjectArray(exemplar as vx_object_array, VX_OBJECT_ARRAY_NUMITEMS, &mut num_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let item0 = vxGetObjectArrayItem(exemplar as vx_object_array, 0);
+                let new_array = vxCreateObjectArray(context, item0, num_items);
+                let mut item_ref = item0 as vx_reference;
+                vxReleaseReference(&mut item_ref as *mut vx_reference);
+                new_array as vx_reference
+            }
             _ => std::ptr::null_mut(),
         }
     }
@@ -5988,30 +6081,20 @@ pub extern "C" fn vxCreateDelay(
 
     // Create copies of the exemplar for all slots
     // Per OpenVX spec, each slot is a NEW data object of the same type as the exemplar.
+    // The exemplar is only used as a template, not as a slot object directly.
     let mut slot_refs: Vec<usize> = Vec::with_capacity(count);
     for i in 0..count {
-        if i == 0 {
-            // Slot 0 gets the exemplar reference (already has ref count 1 from creation)
-            // We need to increment ref count since the delay now also owns it
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                if let Some(count) = counts.get(&(exemplar as usize)) {
-                    count.fetch_add(1, Ordering::SeqCst);
-                }
+        // ALL slots get a NEW copy, including slot 0
+        let copy = create_object_like_exemplar(context, exemplar, ref_type);
+        if copy.is_null() {
+            // Failed to create copy, clean up already created slots
+            for &addr in &slot_refs {
+                let mut r = addr as vx_reference;
+                let _ = vxReleaseReference(&mut r as *mut vx_reference);
             }
-            slot_refs.push(exemplar as usize);
-        } else {
-            // Create a new copy for other slots
-            let copy = create_object_like_exemplar(context, exemplar, ref_type);
-            if copy.is_null() {
-                // Failed to create copy, clean up already created slots
-                for &addr in &slot_refs {
-                    let mut r = addr as vx_reference;
-                    let _ = vxReleaseReference(&mut r as *mut vx_reference);
-                }
-                return std::ptr::null_mut();
-            }
-            slot_refs.push(copy as usize);
+            return std::ptr::null_mut();
         }
+        slot_refs.push(copy as usize);
     }
 
     // Create delay structure
@@ -6118,7 +6201,14 @@ pub extern "C" fn vxGetReferenceFromDelay(
 
     let slot_idx = slot_idx as usize;
     if slot_idx < delay_data.slots.len() {
-        delay_data.slots[slot_idx] as vx_reference
+        let result = delay_data.slots[slot_idx] as vx_reference;
+        // Register this reference as coming from this delay slot with logical index
+        if !result.is_null() {
+            if let Ok(mut slot_logical) = DELAY_SLOT_LOGICAL.lock() {
+                slot_logical.insert(result as usize, (delay as usize, index));
+            }
+        }
+        result
     } else {
         std::ptr::null_mut()
     }
@@ -6167,6 +6257,15 @@ pub extern "C" fn vxAgeDelay(delay: vx_delay) -> vx_status {
     // This effectively ages the delay. The slot objects are NOT destroyed or nullified;
     // only the logical index mapping changes.
     delay_data.current_index = (delay_data.current_index + 1) % delay_data.slot_count;
+
+    // Resolve delay parameters for all graphs after aging
+    if let Ok(graphs) = GRAPHS_DATA.lock() {
+        let graph_ids: Vec<u64> = graphs.keys().copied().collect();
+        drop(graphs);
+        for graph_id in graph_ids {
+            resolve_delay_params_for_graph(graph_id);
+        }
+    }
 
     VX_SUCCESS
 }

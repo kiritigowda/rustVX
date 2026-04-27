@@ -2188,7 +2188,18 @@ pub extern "C" fn vxGetPyramidLevel(pyramid: vx_pyramid, index: vx_uint32) -> vx
         }
 
         // Return the level image (not a copy, just the reference)
+        // Per OpenVX spec, this returns a reference that the caller can release.
+        // Increment ref count so the image isn't freed when the pyramid is destroyed first.
         let img = pyramid_data.levels.get(idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+        
+        if !img.is_null() {
+            // Increment ref count for the returned reference
+            if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&(img as usize)) {
+                    cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
         
         // Register for delay parameter resolution
         if !img.is_null() {

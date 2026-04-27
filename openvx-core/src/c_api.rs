@@ -1923,6 +1923,33 @@ pub extern "C" fn vxSetParameterByIndex(
         kernel_id,
     );
     
+    // Check if the value is a delay slot reference and register it for delay parameter resolution
+    if !value.is_null() {
+        let value_addr = value as usize;
+        // Direct delay slot reference
+        if let Ok(slot_logical) = crate::unified_c_api::DELAY_SLOT_LOGICAL.lock() {
+            if let Some(&(delay_addr, logical_idx)) = slot_logical.get(&value_addr) {
+                if let Ok(mut delay_params) = crate::unified_c_api::DELAY_NODE_PARAMS.lock() {
+                    delay_params.insert((id, index), (delay_addr, logical_idx));
+                }
+            }
+        }
+        // Pyramid level image from a delay slot pyramid
+        if let Ok(level_imgs) = crate::unified_c_api::PYRAMID_LEVEL_IMAGES.lock() {
+            if let Some(&(pyr_addr, level)) = level_imgs.get(&value_addr) {
+                // Check if the pyramid is a delay slot
+                if let Ok(slot_logical) = crate::unified_c_api::DELAY_SLOT_LOGICAL.lock() {
+                    if let Some(&(delay_addr, logical_idx)) = slot_logical.get(&pyr_addr) {
+                        // Register as a delay-related pyramid level image
+                        if let Ok(mut delay_pyr_level) = crate::unified_c_api::DELAY_PYRAMID_LEVEL.lock() {
+                            delay_pyr_level.insert((id, index), (delay_addr, logical_idx, level));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     VX_SUCCESS
 }
 
