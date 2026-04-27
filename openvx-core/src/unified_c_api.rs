@@ -6505,7 +6505,7 @@ pub extern "C" fn vxMeanStdDevNode(
         return std::ptr::null_mut();
     }
 
-    let kernel = get_kernel_by_name(context, "org.khronos.openvx.meanstddev");
+    let kernel = get_kernel_by_name(context, "org.khronos.openvx.mean_stddev");
     if kernel.is_null() {
         return std::ptr::null_mut();
     }
@@ -8207,15 +8207,7 @@ pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, data_type: vx_enum, pt
 /// Not node
 #[no_mangle]
 pub extern "C" fn vxNotNode(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
-    if graph.is_null() || input.is_null() || output.is_null() {
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
-    }
+    create_node_with_params(graph, "org.khronos.openvx.not", &[input as vx_reference, output as vx_reference])
 }
 
 /// Convert depth node
@@ -8684,15 +8676,7 @@ pub extern "C" fn vxuConvertDepth(context: vx_context, input: vx_image, output: 
 /// Equalize histogram node
 #[no_mangle]
 pub extern "C" fn vxEqualizeHistNode(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
-    if graph.is_null() || input.is_null() || output.is_null() {
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        let node = vxCreateGenericNode(graph, std::ptr::null_mut());
-        vxSetParameterByIndex(node, 0, input as vx_reference);
-        vxSetParameterByIndex(node, 1, output as vx_reference);
-        node
-    }
+    create_node_with_params(graph, "org.khronos.openvx.equalize_histogram", &[input as vx_reference, output as vx_reference])
 }
 
 /// Equalize histogram immediate mode

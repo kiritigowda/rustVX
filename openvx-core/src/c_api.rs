@@ -307,7 +307,7 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.histogram", 0x09, 2),
         ("org.khronos.openvx.equalize_histogram", 0x0A, 2),
         ("org.khronos.openvx.integral_image", 0x0E, 2),
-        ("org.khronos.openvx.mean_stddev", 0x0C, 4),
+        ("org.khronos.openvx.mean_stddev", 0x0C, 3),
         ("org.khronos.openvx.minmaxloc", 0x19, 6),
         // Additional operations
         ("org.khronos.openvx.absdiff", 0x0B, 3),
@@ -325,6 +325,8 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.non_linear_filter", 0x2C, 4),
         // OpenVX 1.0.2 addition
         ("org.khronos.openvx.weighted_average", 0x40, 4),
+        // OpenVX 1.1 extensions
+        ("org.khronos.openvx.sobel_5x5", 0x30, 3),
     ];
     
     if let Ok(mut kernels) = KERNELS.lock() {
@@ -909,7 +911,21 @@ pub extern "C" fn vxQueryNode(
                                 std::mem::size_of::<crate::unified_c_api::vx_perf_t>(),
                             );
                             return VX_SUCCESS;
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
                         }
+                    }
+                    VX_NODE_BORDER => {
+                        if size < std::mem::size_of::<crate::unified_c_api::vx_border_t>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let border = node_data.border_mode.lock().unwrap();
+                        std::ptr::copy_nonoverlapping(
+                            &*border as *const crate::unified_c_api::vx_border_t as *const u8,
+                            ptr as *mut u8,
+                            std::mem::size_of::<crate::unified_c_api::vx_border_t>(),
+                        );
+                        return VX_SUCCESS;
                     }
                     _ => {}
                 }
@@ -1211,6 +1227,16 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
                 if let Ok(mut graph_nodes) = g.nodes.lock() {
                     graph_nodes.push(id);
                 }
+            }
+        }
+    }
+
+    // Reset graph state to UNVERIFIED since a node was added
+    {
+        if let Ok(graphs_data) = GRAPHS_DATA.lock() {
+            if let Some(g) = graphs_data.get(&graph_id) {
+                let mut state = g.state.lock().unwrap();
+                *state = crate::unified_c_api::VxGraphState::VxGraphStateUnverified;
             }
         }
     }
