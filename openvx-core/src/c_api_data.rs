@@ -1084,8 +1084,8 @@ pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
 // VX_ATTRIBUTE_BASE(VX_ID_KHRONOS=0, VX_TYPE_THRESHOLD=0x80A) = 0x80A00
 // VX_THRESHOLD_INPUT_FORMAT = 0x80A00 + 7 = 0x80A07
 // VX_THRESHOLD_OUTPUT_FORMAT = 0x80A00 + 8 = 0x80A08
-pub const VX_THRESHOLD_TYPE: vx_enum = 0x00;
-pub const VX_THRESHOLD_DATA_TYPE: vx_enum = 0x01;
+pub const VX_THRESHOLD_TYPE: vx_enum = 0x80A00;
+pub const VX_THRESHOLD_DATA_TYPE: vx_enum = 0x80A06;
 pub const VX_THRESHOLD_INPUT_FORMAT: vx_enum = 0x80A07;
 pub const VX_THRESHOLD_OUTPUT_FORMAT: vx_enum = 0x80A08;
 

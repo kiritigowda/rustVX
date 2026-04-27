@@ -4236,9 +4236,9 @@ pub const VX_MATRIX_PATTERN_PYRAMID_SCALE: vx_enum = 94214; // Not in spec, plac
 // VX_ATTRIBUTE_BASE(0x000, 0x809) = 0x00080900
 pub const VX_PYRAMID_LEVELS: vx_enum = 0x00080900;
 pub const VX_PYRAMID_SCALE: vx_enum = 0x00080901;
-pub const VX_PYRAMID_FORMAT: vx_enum = 0x00080902;
-pub const VX_PYRAMID_WIDTH: vx_enum = 0x00080903;
-pub const VX_PYRAMID_HEIGHT: vx_enum = 0x00080904;
+pub const VX_PYRAMID_FORMAT: vx_enum = 0x00080904;
+pub const VX_PYRAMID_WIDTH: vx_enum = 0x00080902;
+pub const VX_PYRAMID_HEIGHT: vx_enum = 0x00080903;
 
 // Matrix attributes - VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_MATRIX) = 0x80b00
 pub const VX_MATRIX_TYPE: vx_enum = 0x80b00;
@@ -4262,13 +4262,13 @@ pub const VX_LUT_SIZE: vx_enum = 0x80702;
 pub const VX_LUT_OFFSET: vx_enum = 0x80703;
 
 // Distribution attributes
-pub const VX_DISTRIBUTION_BINS: vx_enum = 0x00;
-pub const VX_DISTRIBUTION_OFFSET: vx_enum = 0x01;
-pub const VX_DISTRIBUTION_RANGE: vx_enum = 0x02;
-pub const VX_DISTRIBUTION_SIZE: vx_enum = 0x03;
+pub const VX_DISTRIBUTION_BINS: vx_enum = 0x80803;
+pub const VX_DISTRIBUTION_OFFSET: vx_enum = 0x80801;
+pub const VX_DISTRIBUTION_RANGE: vx_enum = 0x80802;
+pub const VX_DISTRIBUTION_SIZE: vx_enum = 0x80800;
 
 // Threshold attributes
-pub const VX_THRESHOLD_TYPE: vx_enum = 0x00;
+pub const VX_THRESHOLD_TYPE: vx_enum = 0x80A00;
 pub const VX_THRESHOLD_DATA_TYPE: vx_enum = 0x01;
 
 // Threshold types
@@ -4277,10 +4277,10 @@ pub const VX_THRESHOLD_TYPE_BINARY: vx_enum = 0x0B000;
 pub const VX_THRESHOLD_TYPE_RANGE: vx_enum = 0x0B001;
 
 // Remap attributes
-pub const VX_REMAP_SOURCE_WIDTH: vx_enum = 0x00;
-pub const VX_REMAP_SOURCE_HEIGHT: vx_enum = 0x01;
-pub const VX_REMAP_DESTINATION_WIDTH: vx_enum = 0x02;
-pub const VX_REMAP_DESTINATION_HEIGHT: vx_enum = 0x03;
+pub const VX_REMAP_SOURCE_WIDTH: vx_enum = 0x81000;
+pub const VX_REMAP_SOURCE_HEIGHT: vx_enum = 0x81001;
+pub const VX_REMAP_DESTINATION_WIDTH: vx_enum = 0x81002;
+pub const VX_REMAP_DESTINATION_HEIGHT: vx_enum = 0x81003;
 
 // Object array attributes
 pub const VX_OBJECT_ARRAY_ITEMTYPE: vx_enum = 0x81300;
@@ -4674,35 +4674,42 @@ pub extern "C" fn vxQueryDistribution(
     size: usize,
 ) -> i32 {
     if distribution.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
 
     unsafe {
         let dist = &*(distribution as *const VxCDistribution);
         match attribute {
-            VX_DISTRIBUTION_BINS => {
-                if size >= std::mem::size_of::<usize>() {
-                    *(ptr as *mut usize) = dist.bins;
-                    return 0;
+            0x80803 | VX_DISTRIBUTION_BINS => {
+                if size >= std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = dist.bins;
+                    return VX_SUCCESS;
                 }
             }
-            VX_DISTRIBUTION_OFFSET => {
-                if size >= std::mem::size_of::<u32>() {
-                    *(ptr as *mut u32) = dist.offset;
-                    return 0;
+            0x80801 | VX_DISTRIBUTION_OFFSET => {
+                if size >= std::mem::size_of::<vx_int32>() {
+                    *(ptr as *mut vx_int32) = dist.offset as vx_int32;
+                    return VX_SUCCESS;
                 }
             }
-            VX_DISTRIBUTION_RANGE => {
-                if size >= std::mem::size_of::<u32>() {
-                    *(ptr as *mut u32) = dist.range;
-                    return 0;
+            0x80802 | VX_DISTRIBUTION_RANGE => {
+                if size >= std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = dist.range;
+                    return VX_SUCCESS;
+                }
+            }
+            0x80800 => {
+                // VX_DISTRIBUTION_SIZE (window size)
+                if size >= std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = dist.bins;
+                    return VX_SUCCESS;
                 }
             }
             _ => {}
         }
     }
 
-    -30
+    VX_ERROR_NOT_SUPPORTED
 }
 
 #[no_mangle]
@@ -4874,9 +4881,41 @@ pub extern "C" fn vxQueryRemap(
     size: usize,
 ) -> i32 {
     if remap.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+    // VX_REMAP constants: base=0x81000
+    // SOURCE_WIDTH=0x81000, SOURCE_HEIGHT=0x81001, DST_WIDTH=0x81002, DST_HEIGHT=0x81003
+    unsafe {
+        let r = &*(remap as *const VxCRemap);
+        match attribute {
+            0x81000 => {
+                if size >= std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = r.src_width;
+                    return VX_SUCCESS;
+                }
+            }
+            0x81001 => {
+                if size >= std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = r.src_height;
+                    return VX_SUCCESS;
+                }
+            }
+            0x81002 => {
+                if size >= std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = r.dst_width;
+                    return VX_SUCCESS;
+                }
+            }
+            0x81003 => {
+                if size >= std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = r.dst_height;
+                    return VX_SUCCESS;
+                }
+            }
+            _ => {}
+        }
+    }
+    VX_ERROR_NOT_SUPPORTED
 }
 
 #[no_mangle]
@@ -4991,10 +5030,10 @@ fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exem
                 // Use FFI symbols directly
                 extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
                 extern "C" { fn vxCreatePyramid(ctx: vx_context, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid; }
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000000, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000001, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000002, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000003, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80900, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80902, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80903, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80904, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
                 vxCreatePyramid(context, levels, scale, width, height, format) as vx_reference
             }
             VX_TYPE_SCALAR => {
@@ -5006,10 +5045,10 @@ fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exem
                 let mut data_type: vx_enum = 0;
                 let mut rows: vx_size = 0;
                 let mut cols: vx_size = 0;
-                // VX_MATRIX_TYPE=0x0B000000, ROWS=0x0B000001, COLS=0x0B000002
-                vxQueryMatrix(exemplar as vx_matrix, 0x0B000000, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                vxQueryMatrix(exemplar as vx_matrix, 0x0B000001, &mut rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
-                vxQueryMatrix(exemplar as vx_matrix, 0x0B000002, &mut cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                // VX_MATRIX_TYPE=0x80B00, ROWS=0x80B01, COLS=0x80B02
+                vxQueryMatrix(exemplar as vx_matrix, 0x80B00, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                vxQueryMatrix(exemplar as vx_matrix, 0x80B01, &mut rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                vxQueryMatrix(exemplar as vx_matrix, 0x80B02, &mut cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
                 crate::c_api_data::vxCreateMatrix(context, data_type, cols, rows) as vx_reference
             }
             VX_TYPE_DISTRIBUTION => {
@@ -5026,23 +5065,23 @@ fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exem
                 let mut src_height: vx_uint32 = 0;
                 let mut dst_width: vx_uint32 = 0;
                 let mut dst_height: vx_uint32 = 0;
-                // VX_REMAP_SOURCE_WIDTH=0x1000000, etc.
-                vxQueryRemap(exemplar as vx_remap, 0x1000000, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryRemap(exemplar as vx_remap, 0x1000001, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryRemap(exemplar as vx_remap, 0x1000002, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryRemap(exemplar as vx_remap, 0x1000003, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                // VX_REMAP_SOURCE_WIDTH=0x81000, etc.
+                vxQueryRemap(exemplar as vx_remap, 0x81000, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                vxQueryRemap(exemplar as vx_remap, 0x81001, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                vxQueryRemap(exemplar as vx_remap, 0x81002, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                vxQueryRemap(exemplar as vx_remap, 0x81003, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
                 vxCreateRemap(context, src_width, src_height, dst_width, dst_height) as vx_reference
             }
             VX_TYPE_LUT => {
                 let mut data_type: vx_enum = 0;
                 let mut count: vx_size = 0;
-                vxQueryLUT(exemplar as vx_lut, 0x0D000000, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                vxQueryLUT(exemplar as vx_lut, 0x0D000001, &mut count as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                vxQueryLUT(exemplar as vx_lut, 0x80700, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                vxQueryLUT(exemplar as vx_lut, 0x80701, &mut count as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
                 vxCreateLUT(context, data_type, count) as vx_reference
             }
             VX_TYPE_THRESHOLD => {
                 let mut thresh_type: vx_enum = 0;
-                vxQueryThreshold(exemplar as vx_threshold, 0x0E000000, &mut thresh_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                vxQueryThreshold(exemplar as vx_threshold, 0x80A00, &mut thresh_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
                 vxCreateThreshold(context, thresh_type, VX_TYPE_INT8) as vx_reference
             }
             _ => std::ptr::null_mut(),
@@ -5214,10 +5253,10 @@ fn create_virtual_object_like_exemplar(context: vx_context, graph: vx_graph, exe
                 let scale: vx_float32 = 0.5;
                 extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
                 extern "C" { fn vxCreateVirtualPyramid(graph: vx_graph, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid; }
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000000, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000001, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000002, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x0A000003, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80900, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80902, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80903, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80904, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
                 vxCreateVirtualPyramid(graph, levels, scale, width, height, format) as vx_reference
             }
             _ => create_object_like_exemplar(context, exemplar, exemplar_type),
