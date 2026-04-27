@@ -791,16 +791,68 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                                         }
                                                     }
                                                 } else {
-                                                    // For images/arrays, just decrement the parameter reference
+                                                    // For non-scalar types, just decrement the parameter reference
                                                     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                                                         if let Some(cnt) = counts.get_mut(&(*val as usize)) {
                                                             let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                                             if current > 1 {
                                                                 cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
                                                             } else {
-                                                                counts.remove(&(*val as usize));
-                                                                if let Ok(mut types2) = REFERENCE_TYPES.lock() {
-                                                                    types2.remove(&(*val as usize));
+                                                                // Ref count will reach 0 - need type-specific cleanup
+                                                                // Collect the address and type, then release after dropping locks
+                                                                let addr = *val as usize;
+                                                                let ref_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                                                                    types.get(&addr).copied()
+                                                                } else {
+                                                                    None
+                                                                };
+                                                                drop(counts);
+                                                                // Remove from registries first
+                                                                if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
+                                                                    counts2.remove(&addr);
+                                                                }
+                                                                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                                                    types.remove(&addr);
+                                                                }
+                                                                // Type-specific cleanup
+                                                                match ref_type {
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_PYRAMID => {
+                                                                        extern "C" { fn vxReleasePyramid(pyramid: *mut crate::unified_c_api::vx_pyramid) -> vx_status; }
+                                                                        let mut pyr = addr as crate::unified_c_api::vx_pyramid;
+                                                                        unsafe { vxReleasePyramid(&mut pyr); }
+                                                                    }
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_IMAGE => {
+                                                                        extern "C" { fn vxReleaseImage(image: *mut crate::unified_c_api::vx_image) -> vx_status; }
+                                                                        let mut img = addr as crate::unified_c_api::vx_image;
+                                                                        unsafe { vxReleaseImage(&mut img); }
+                                                                    }
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_OBJECT_ARRAY => {
+                                                                        let mut arr = addr as crate::unified_c_api::vx_object_array;
+                                                                        crate::unified_c_api::vxReleaseObjectArray(&mut arr);
+                                                                    }
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_DELAY => {
+                                                                        let mut d = addr as crate::unified_c_api::vx_delay;
+                                                                        crate::unified_c_api::vxReleaseDelay(&mut d);
+                                                                    }
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_DISTRIBUTION => {
+                                                                        let mut d = addr as crate::unified_c_api::vx_distribution;
+                                                                        crate::unified_c_api::vxReleaseDistribution(&mut d);
+                                                                    }
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_REMAP => {
+                                                                        let mut r = addr as crate::unified_c_api::vx_remap;
+                                                                        crate::unified_c_api::vxReleaseRemap(&mut r);
+                                                                    }
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_LUT => {
+                                                                        let mut l = addr as crate::unified_c_api::vx_lut;
+                                                                        crate::c_api_data::vxReleaseLUT(&mut l);
+                                                                    }
+                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_MATRIX => {
+                                                                        let mut m = addr as crate::unified_c_api::vx_matrix;
+                                                                        crate::c_api_data::vxReleaseMatrix(&mut m);
+                                                                    }
+                                                                    _ => {
+                                                                        // Unknown type - just remove from registries (already done above)
+                                                                    }
                                                                 }
                                                             }
                                                         }

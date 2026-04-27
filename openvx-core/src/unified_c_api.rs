@@ -3500,6 +3500,7 @@ pub static REFERENCE_COUNTS: Lazy<Mutex<HashMap<usize, AtomicUsize>>> = Lazy::ne
     Mutex::new(HashMap::new())
 });
 
+
 // Reference type storage - maps address to type enum
 pub static REFERENCE_TYPES: Lazy<Mutex<HashMap<usize, vx_enum>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
@@ -9669,3 +9670,5 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
 
     VX_SUCCESS
 }
+
+
