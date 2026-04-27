@@ -1023,7 +1023,87 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
     VX_ERROR_INVALID_GRAPH
 }
 
-/// Process graph - execute nodes in topological order
+/// Re-resolve delay slot references in node parameters before graph execution.
+/// After vxAgeDelay rotates the circular buffer, node parameters that were set via
+/// vxGetReferenceFromDelay still point to the old physical slot object. This function
+/// updates them to point to the current logical slot object.
+fn resolve_delay_params_for_graph(graph_id: u64) {
+    // Get all nodes in this graph
+    let node_ids: Vec<u64> = {
+        if let Ok(graphs) = GRAPHS_DATA.lock() {
+            if let Some(g) = graphs.get(&graph_id) {
+                if let Ok(nodes) = g.nodes.read() {
+                    nodes.clone()
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else {
+            return;
+        }
+    };
+
+    // For each node, check each parameter
+    // When a parameter was originally set via vxGetReferenceFromDelay(delay, logical_idx),
+    // the physical slot index = (current_index_at_bind_time + logical_idx) % slot_count.
+    // At bind time, current_index is always 0 (delay hasn't been aged yet).
+    // So: physical_idx = logical_idx (when current_index was 0).
+    // After aging, current_index changes. To re-resolve:
+    // new_addr = slots[(current_index + physical_idx) % slot_count]
+    //
+    // because the DELAYS registry has a stale clone. The raw pointer is the source of truth.
+    let mut updated = 0usize;
+    if let Ok(nodes) = crate::c_api::NODES.lock() {
+        for node_id in &node_ids {
+            if let Some(node_data) = nodes.get(node_id) {
+                let mut params = match node_data.parameters.lock() {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+
+                for param_idx in 0..params.len() {
+                    if let Some(param_val) = params[param_idx] {
+                        let param_addr = param_val as usize;
+                        if param_addr == 0 {
+                            continue;
+                        }
+
+                        // Check if this parameter value is a delay slot object
+                        let slot_info = if let Ok(slot_objs) = DELAY_SLOT_OBJECTS.lock() {
+                            slot_objs.get(&param_addr).copied()
+                        } else {
+                            None
+                        };
+
+                        if let Some((delay_addr, physical_idx)) = slot_info {
+                            // Found a delay slot reference
+                            // Read current_index and slots directly from the delay struct
+                            // (the DELAYS registry has a stale clone)
+                            let delay_data = unsafe { &*(delay_addr as *const VxCDelay) };
+                            let current_index = delay_data.current_index;
+                            let slot_count = delay_data.slot_count;
+                            let slots = &delay_data.slots;
+
+                            // Re-resolve: new object at this logical index
+                            // physical_idx is the original logical index (bind time current_index = 0)
+                            let new_physical_idx = (current_index + physical_idx) % slot_count;
+                            let new_addr = slots[new_physical_idx];
+
+                            // Update the parameter
+                            if new_addr != 0 && new_addr != param_addr {
+
+                                params[param_idx] = Some(new_addr as u64);
+                                updated += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}/// Process graph - execute nodes in topological order
 #[no_mangle]
 pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
@@ -1090,6 +1170,12 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
             return verify_status;
         }
     }
+
+    // Re-resolve delay slot references in node parameters
+    // After vxAgeDelay rotates the circular buffer, node parameters that
+    // were set via vxGetReferenceFromDelay still point to the old physical
+    // slot object. Update them to point to the current logical slot object.
+    resolve_delay_params_for_graph(graph_id);
 
     // Set state to running
     if let Ok(mut state) = g.state.lock() {
@@ -3123,6 +3209,12 @@ static OBJECT_ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCObjectArray>>>> = Lazy::n
 
 // Delay registry
 static DELAYS: Lazy<Mutex<HashMap<usize, Arc<VxCDelay>>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Maps: slot_object_addr -> (delay_addr, physical_slot_index)
+// Used to re-resolve delay slot references in node parameters after aging
+static DELAY_SLOT_OBJECTS: Lazy<Mutex<HashMap<usize, (usize, usize)>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -5722,6 +5814,18 @@ pub extern "C" fn vxCreateDelay(
         }
         if let Ok(mut types) = REFERENCE_TYPES.lock() {
             types.insert(delay_ptr, VX_TYPE_DELAY);
+        }
+    }
+
+    // Register each slot object in DELAY_SLOT_OBJECTS for delay parameter resolution
+    {
+        let delay_data = unsafe { &*(delay_ptr as *const VxCDelay) };
+        if let Ok(mut slot_objs) = DELAY_SLOT_OBJECTS.lock() {
+            for (physical_idx, &slot_addr) in delay_data.slots.iter().enumerate() {
+                if slot_addr != 0 {
+                    slot_objs.insert(slot_addr, (delay_ptr, physical_idx));
+                }
+            }
         }
     }
 
