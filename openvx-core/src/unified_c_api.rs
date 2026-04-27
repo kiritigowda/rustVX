@@ -8150,35 +8150,82 @@ pub extern "C" fn vxSetImmediateModeTarget(context: vx_context, target_enum: vx_
 }
 
 /// Create scalar with size
+/// Uses VxCScalarData layout (same as vxCreateScalar) so vxQueryReference
+/// can find it in REFERENCE_TYPES and vxCopyScalarWithSize / vxReleaseScalar work.
 #[no_mangle]
 pub extern "C" fn vxCreateScalarWithSize(context: vx_context, data_type: vx_enum, ptr: *const c_void, size: vx_size) -> vx_scalar {
     if context.is_null() || ptr.is_null() {
         return std::ptr::null_mut();
     }
+
+    let data_size = if size > 0 { size as usize } else { crate::c_api_data::VxCScalarData::type_size(data_type) };
+
+    let mut data = vec![0u8; data_size];
     unsafe {
-        let data_size = if size > 0 { size as usize } else { 4 };
-        if data_size > isize::MAX as usize {
-            return std::ptr::null_mut();
-        }
-        let layout = match std::alloc::Layout::from_size_align(data_size, 8) {
-            Ok(l) => l,
-            Err(_) => return std::ptr::null_mut(),
-        };
-        let data_ptr = std::alloc::alloc(layout);
-        if data_ptr.is_null() {
-            return std::ptr::null_mut();
-        }
-        std::ptr::copy_nonoverlapping(ptr as *const u8, data_ptr, data_size);
-        data_ptr as vx_scalar
+        std::ptr::copy_nonoverlapping(ptr as *const u8, data.as_mut_ptr(), data_size);
     }
+
+    let scalar = Box::new(crate::c_api_data::VxCScalarData {
+        data_type,
+        data,
+        context,
+    });
+
+    let scalar_ptr = Box::into_raw(scalar) as vx_scalar;
+
+    // Register in reference counting and type registries
+    unsafe {
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(scalar_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(scalar_ptr as usize, VX_TYPE_SCALAR);
+        }
+    }
+
+    scalar_ptr
 }
 
-/// Copy scalar with size
+/// Copy scalar data with explicit size
+/// C API signature: vxCopyScalarWithSize(vx_scalar, vx_size, void*, vx_enum usage, vx_enum user_mem_type)
 #[no_mangle]
-pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, data_type: vx_enum, ptr: *mut c_void, size: vx_size, usage: vx_enum) -> vx_status {
-    if scalar.is_null() || ptr.is_null() {
+pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, size: vx_size, user_ptr: *mut c_void, usage: vx_enum, user_mem_type: vx_enum) -> vx_status {
+    if scalar.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
+    if user_ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != VX_MEMORY_TYPE_HOST && user_mem_type != 0x0 {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        let copy_len = if size > 0 { size as usize } else { s.data.len() };
+        // Clamp copy length to actual data size to avoid buffer overread
+        let copy_len = copy_len.min(s.data.len());
+
+        match usage {
+            0x11001 | 0x1 => {
+                // VX_READ_ONLY — copy from scalar to user memory
+                std::ptr::copy_nonoverlapping(s.data.as_ptr(), user_ptr as *mut u8, copy_len);
+            }
+            0x11002 | 0x2 => {
+                // VX_WRITE_ONLY — copy from user memory to scalar
+                let s_mut = &mut *(scalar as *mut crate::c_api_data::VxCScalarData);
+                std::ptr::copy_nonoverlapping(user_ptr as *const u8, s_mut.data.as_mut_ptr(), copy_len);
+            }
+            0x11003 | 0x3 => {
+                // VX_READ_AND_WRITE — read from scalar, then write back
+                std::ptr::copy_nonoverlapping(s.data.as_ptr(), user_ptr as *mut u8, copy_len);
+                let s_mut = &mut *(scalar as *mut crate::c_api_data::VxCScalarData);
+                std::ptr::copy_nonoverlapping(user_ptr as *const u8, s_mut.data.as_mut_ptr(), copy_len);
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+
     VX_SUCCESS
 }
 
