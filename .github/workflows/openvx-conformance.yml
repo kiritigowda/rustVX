@@ -106,7 +106,7 @@ jobs:
           -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
           -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
           -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
-          -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_core.so;${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+          -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
           -DOPENVX_CONFORMANCE_VISION=ON \
           2>&1 || {
           echo "CMAKE FAILED!"
