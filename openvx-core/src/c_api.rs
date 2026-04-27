@@ -2150,8 +2150,14 @@ pub const VX_TYPE_INT64: vx_enum = 0x008;
 pub const VX_TYPE_FLOAT32: vx_enum = 0x00A;
 pub const VX_TYPE_FLOAT64: vx_enum = 0x00B;
 pub const VX_TYPE_BOOL: vx_enum = 0x010;
-pub const VX_TYPE_ENUM: vx_enum = 0x011;
-pub const VX_TYPE_SIZE: vx_enum = 0x012;
+pub const VX_TYPE_ENUM: vx_enum = 0x00C;
+pub const VX_TYPE_SIZE: vx_enum = 0x00D;
+pub const VX_TYPE_CHAR: vx_enum = 0x001;
+pub const VX_TYPE_DF_IMAGE: vx_enum = 0x00E;
+pub const VX_TYPE_RECTANGLE: vx_enum = 0x020;
+pub const VX_TYPE_KEYPOINT: vx_enum = 0x021;
+pub const VX_TYPE_COORDINATES2D: vx_enum = 0x022;
+pub const VX_TYPE_COORDINATES3D: vx_enum = 0x023;
 
 // ============================================================================
 // Attribute Constants
@@ -2298,6 +2304,30 @@ pub struct vx_rectangle_t {
     pub start_y: vx_uint32,
     pub end_x: vx_uint32,
     pub end_y: vx_uint32,
+}
+
+#[repr(C)]
+pub struct vx_keypoint_t {
+    pub x: vx_int32,
+    pub y: vx_int32,
+    pub strength: vx_float32,
+    pub scale: vx_float32,
+    pub orientation: vx_float32,
+    pub tracking_status: vx_int32,
+    pub error: vx_float32,
+}
+
+#[repr(C)]
+pub struct vx_coordinates2d_t {
+    pub x: vx_uint32,
+    pub y: vx_uint32,
+}
+
+#[repr(C)]
+pub struct vx_coordinates3d_t {
+    pub x: vx_uint32,
+    pub y: vx_uint32,
+    pub z: vx_uint32,
 }
 
 /// Image patch addressing structure

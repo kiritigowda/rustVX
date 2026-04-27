@@ -72,10 +72,12 @@ pub struct VxCScalarData {
 impl VxCScalarData {
     pub fn type_size(data_type: vx_enum) -> usize {
         match data_type {
-            0x003 | 0x002 => 1, // VX_TYPE_UINT8 | VX_TYPE_INT8
+            0x001 | 0x003 | 0x002 => 1, // VX_TYPE_CHAR | VX_TYPE_UINT8 | VX_TYPE_INT8
             0x005 | 0x004 => 2, // VX_TYPE_UINT16 | VX_TYPE_INT16
-            0x007 | 0x006 | 0x00A => 4, // VX_TYPE_UINT32 | VX_TYPE_INT32 | VX_TYPE_FLOAT32
-            0x009 | 0x008 | 0x00B => 8, // VX_TYPE_UINT64 | VX_TYPE_INT64 | VX_TYPE_FLOAT64
+            0x007 | 0x006 | 0x00A | 0x00C => 4, // VX_TYPE_UINT32 | VX_TYPE_INT32 | VX_TYPE_FLOAT32 | VX_TYPE_ENUM
+            0x009 | 0x008 | 0x00B | 0x00D => 8, // VX_TYPE_UINT64 | VX_TYPE_INT64 | VX_TYPE_FLOAT64 | VX_TYPE_SIZE
+            0x00E => 4, // VX_TYPE_DF_IMAGE
+            0x010 => 4, // VX_TYPE_BOOL
             0x020 => 16, // VX_TYPE_RECTANGLE
             0x021 => 28, // VX_TYPE_KEYPOINT
             0x022 => 8,  // VX_TYPE_COORDINATES2D

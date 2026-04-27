@@ -7808,32 +7808,31 @@ pub extern "C" fn vxuAbsDiff(
     context: vx_context,
     in1: vx_image,
     in2: vx_image,
-    output: vx_image,
+    out: vx_image,
 ) -> vx_status {
-    crate::vxu_impl::vxu_abs_diff_impl(context, in1, in2, output)
-}
-
-/// Copy array range
-#[no_mangle]
-pub extern "C" fn vxCopyArrayRange(
-    arr: vx_array,
-    range_start: vx_size,
-    range_end: vx_size,
-    user_stride: vx_size,
-    user_ptr: *mut c_void,
-    usage: vx_enum,
-    user_mem_type: vx_enum,
-) -> vx_status {
-    if arr.is_null() {
+    if context.is_null() || in1.is_null() || in2.is_null() || out.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    if user_ptr.is_null() {
-        return VX_ERROR_INVALID_PARAMETERS;
+    let graph = crate::c_api::vxCreateGraph(context);
+    if graph.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    if user_mem_type != VX_MEMORY_TYPE_HOST {
-        return VX_ERROR_NOT_IMPLEMENTED;
+    let node = vxAbsDiffNode(graph, in1, in2, out);
+    if node.is_null() {
+        let mut g = graph;
+        crate::c_api::vxReleaseGraph(std::ptr::addr_of_mut!(g));
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    VX_SUCCESS
+    let status = vxVerifyGraph(graph);
+    if status != VX_SUCCESS {
+        let mut g = graph;
+        unsafe { crate::c_api::vxReleaseGraph(&mut g as *mut _ as *mut vx_graph); }
+        return status;
+    }
+    let status = vxProcessGraph(graph);
+    let mut g = graph;
+    unsafe { crate::c_api::vxReleaseGraph(&mut g as *mut _ as *mut vx_graph); }
+    status
 }
 
 /// Register user struct with auto-generated name

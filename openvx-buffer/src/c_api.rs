@@ -10,10 +10,15 @@ use openvx_core::c_api::{
     vx_reference,
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_NOT_IMPLEMENTED,
-    VX_TYPE_UINT8, VX_TYPE_INT8, VX_TYPE_UINT16, VX_TYPE_INT16,
+    VX_TYPE_CHAR, VX_TYPE_UINT8, VX_TYPE_INT8, VX_TYPE_UINT16, VX_TYPE_INT16,
     VX_TYPE_UINT32, VX_TYPE_INT32, VX_TYPE_FLOAT32, VX_TYPE_FLOAT64,
+    VX_TYPE_INT64, VX_TYPE_UINT64,
+    VX_TYPE_BOOL, VX_TYPE_ENUM, VX_TYPE_SIZE, VX_TYPE_DF_IMAGE,
+    VX_TYPE_RECTANGLE, VX_TYPE_KEYPOINT, VX_TYPE_COORDINATES2D, VX_TYPE_COORDINATES3D,
     VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
     VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
+    vx_bool, vx_df_image, vx_rectangle_t, vx_keypoint_t, vx_coordinates2d_t, vx_coordinates3d_t,
+    VX_READ_ONLY, VX_WRITE_ONLY,
 };
 use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS};
 use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
@@ -46,10 +51,16 @@ impl VxCArray {
         }
         
         match item_type {
-            VX_TYPE_UINT8 | VX_TYPE_INT8 => 1,
+            VX_TYPE_CHAR | VX_TYPE_UINT8 | VX_TYPE_INT8 => 1,
             VX_TYPE_UINT16 | VX_TYPE_INT16 => 2,
-            VX_TYPE_UINT32 | VX_TYPE_INT32 | VX_TYPE_FLOAT32 => 4,
-            VX_TYPE_FLOAT64 => 8,
+            VX_TYPE_UINT32 | VX_TYPE_INT32 | VX_TYPE_FLOAT32 | VX_TYPE_ENUM => 4,
+            VX_TYPE_UINT64 | VX_TYPE_INT64 | VX_TYPE_FLOAT64 | VX_TYPE_SIZE => 8,
+            VX_TYPE_BOOL => std::mem::size_of::<vx_bool>(),
+            VX_TYPE_DF_IMAGE => std::mem::size_of::<vx_df_image>(),
+            VX_TYPE_RECTANGLE => std::mem::size_of::<vx_rectangle_t>(),
+            VX_TYPE_KEYPOINT => std::mem::size_of::<vx_keypoint_t>(),
+            VX_TYPE_COORDINATES2D => std::mem::size_of::<vx_coordinates2d_t>(),
+            VX_TYPE_COORDINATES3D => std::mem::size_of::<vx_coordinates3d_t>(),
             _ => 1,
         }
     }
@@ -410,8 +421,9 @@ pub extern "C" fn vxMapArrayRange(
     if offset.saturating_add(range_size) > data.len() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    let mut mapped_data = vec![0u8; range_size];
-    
+
+    // Allocate stable heap buffer
+    let mut mapped_data: Vec<u8> = vec![0u8; range_size];
     unsafe {
         std::ptr::copy_nonoverlapping(
             data.as_ptr().add(offset),
@@ -422,12 +434,13 @@ pub extern "C" fn vxMapArrayRange(
 
     let id = ARRAY_ID_COUNTER.fetch_add(1, Ordering::SeqCst) as vx_map_id;
 
-    // Get pointer BEFORE moving data into HashMap
+    // Get pointer - this stays valid as long as the Vec isn't dropped
+    // The Vec is moved into mapped_ranges HashMap which keeps it alive
+    // until vxUnmapArrayRange removes it
     let data_ptr = mapped_data.as_mut_ptr();
 
     {
         let mut mapped = array.mapped_ranges.write().unwrap();
-        // Store data in HashMap - ownership transferred
         mapped.insert(id, (start, end, mapped_data));
     }
 
@@ -470,5 +483,88 @@ pub extern "C" fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_stat
         // data Vec is automatically dropped when it goes out of scope
     }
 
+    VX_SUCCESS
+}
+
+/// Copy array range data
+#[no_mangle]
+pub extern "C" fn vxCopyArrayRange(
+    arr: vx_array,
+    range_start: vx_size,
+    range_end: vx_size,
+    user_stride: vx_size,
+    user_ptr: *mut c_void,
+    usage: vx_enum,
+    user_mem_type: vx_enum,
+) -> vx_status {
+    if arr.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if user_ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if user_mem_type != VX_MEMORY_TYPE_HOST && user_mem_type != 0x0 {
+        return VX_ERROR_NOT_IMPLEMENTED;
+    }
+
+    // Use map/unmap approach
+    let mut map_id: vx_map_id = 0;
+    let mut stride: vx_size = 0;
+    let mut ptr: *mut c_void = std::ptr::null_mut();
+
+    let map_usage = match usage {
+        VX_READ_ONLY | 0x1 => VX_READ_ONLY,
+        VX_WRITE_ONLY | 0x2 => VX_WRITE_ONLY,
+        _ => return VX_ERROR_INVALID_PARAMETERS,
+    };
+
+    let status = vxMapArrayRange(
+        arr, range_start, range_end,
+        &mut map_id, &mut stride, &mut ptr,
+        map_usage, VX_MEMORY_TYPE_HOST, 0,
+    );
+    if status != VX_SUCCESS {
+        return status;
+    }
+
+    let array = unsafe { &*(arr as *const VxCArray) };
+    let item_size = array.item_size;
+    let count = range_end - range_start;
+
+    unsafe {
+        match usage {
+            VX_READ_ONLY | 0x1 => {
+                if user_stride == item_size || user_stride == 0 {
+                    let copy_size = count * item_size;
+                    std::ptr::copy_nonoverlapping(ptr as *const u8, user_ptr as *mut u8, copy_size);
+                } else {
+                    for i in 0..count {
+                        std::ptr::copy_nonoverlapping(
+                            (ptr as *const u8).add(i * stride),
+                            (user_ptr as *mut u8).add(i * user_stride),
+                            item_size,
+                        );
+                    }
+                }
+            }
+            VX_WRITE_ONLY | 0x2 => {
+                if user_stride == item_size || user_stride == 0 {
+                    let copy_size = count * item_size;
+                    std::ptr::copy_nonoverlapping(user_ptr as *const u8, ptr as *mut u8, copy_size);
+                } else {
+                    for i in 0..count {
+                        std::ptr::copy_nonoverlapping(
+                            (user_ptr as *const u8).add(i * user_stride),
+                            (ptr as *mut u8).add(i * stride),
+                            item_size,
+                        );
+                    }
+                }
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+
+    vxUnmapArrayRange(arr, map_id);
     VX_SUCCESS
 }
