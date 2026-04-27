@@ -1182,7 +1182,72 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
             }
         }
     }
-}/// Process graph - execute nodes in topological order
+
+    // Second pass: resolve pyramid level images from delay slot pyramids
+    // When a pyramid delay slot changes, level images extracted via vxGetPyramidLevel
+    // also need to be updated in node parameters.
+    if let Ok(nodes) = crate::c_api::NODES.lock() {
+        for node_id in &node_ids {
+            if let Some(node_data) = nodes.get(node_id) {
+                let mut params = match node_data.parameters.lock() {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+
+                for param_idx in 0..params.len() {
+                    if let Some(param_val) = params[param_idx] {
+                        let param_addr = param_val as usize;
+                        if param_addr == 0 { continue; }
+
+                        // Check if this parameter is a pyramid level image
+                        let level_info = if let Ok(level_imgs) = PYRAMID_LEVEL_IMAGES.lock() {
+                            level_imgs.get(&param_addr).copied()
+                        } else {
+                            None
+                        };
+
+                        if let Some((pyr_addr, level)) = level_info {
+                            // This image came from a pyramid — check if that pyramid is a delay slot
+                            let slot_info = if let Ok(slot_objs) = DELAY_SLOT_OBJECTS.lock() {
+                                slot_objs.get(&pyr_addr).copied()
+                            } else {
+                                None
+                            };
+
+                            if let Some((delay_addr, physical_idx)) = slot_info {
+                                let delay_data = unsafe { &*(delay_addr as *const VxCDelay) };
+                                let new_physical_idx = (delay_data.current_index + physical_idx) % delay_data.slot_count;
+                                let new_pyr_addr = delay_data.slots[new_physical_idx];
+
+                                if new_pyr_addr != 0 && new_pyr_addr != pyr_addr {
+                                    // Get the new level image from the new pyramid
+                                    extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
+                                    extern "C" { fn vxGetPyramidLevel(pyramid: vx_pyramid, level: vx_uint32) -> vx_image; }
+                                    let mut num_levels: vx_size = 0;
+                                    unsafe {
+                                        vxQueryPyramid(new_pyr_addr as vx_pyramid, 0x80900, &mut num_levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                                    }
+                                    if (level as usize) < num_levels {
+                                        let new_img = unsafe { vxGetPyramidLevel(new_pyr_addr as vx_pyramid, level as u32) };
+                                        if !new_img.is_null() {
+                                            params[param_idx] = Some(new_img as u64);
+                                            // Register the new level image
+                                            if let Ok(mut li) = PYRAMID_LEVEL_IMAGES.lock() {
+                                                li.insert(new_img as usize, (new_pyr_addr, level));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Process graph - execute nodes in topological order
 #[no_mangle]
 pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
@@ -3297,6 +3362,21 @@ static DELAY_SLOT_OBJECTS: Lazy<Mutex<HashMap<usize, (usize, usize)>>> = Lazy::n
     Mutex::new(HashMap::new())
 });
 
+// Maps: level_image_addr -> (pyramid_addr, level_index)
+// Used to re-resolve pyramid level images when delay slots change
+pub static PYRAMID_LEVEL_IMAGES: Lazy<Mutex<HashMap<usize, (usize, usize)>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+/// Register a pyramid level image for delay parameter resolution
+#[no_mangle]
+pub extern "C" fn vxRegisterPyramidLevelImage(image: vx_image, pyramid: vx_pyramid, level: vx_uint32) {
+    if image.is_null() || pyramid.is_null() { return; }
+    if let Ok(mut li) = PYRAMID_LEVEL_IMAGES.lock() {
+        li.insert(image as usize, (pyramid as usize, level as usize));
+    }
+}
+
 // Tensor registry
 static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
@@ -3683,7 +3763,72 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
             }
 
             if !found_and_released {
-                // Remove from unified registries
+                // Check reference type and call type-specific release
+                let ref_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                    types.get(&addr).copied()
+                } else {
+                    None
+                };
+
+                match ref_type {
+                    Some(t) if t == VX_TYPE_PYRAMID => {
+                        extern "C" { fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status; }
+                        let mut pyr = addr as vx_pyramid;
+                        unsafe { vxReleasePyramid(&mut pyr); }
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_OBJECT_ARRAY => {
+                        let mut arr = addr as vx_object_array;
+                        vxReleaseObjectArray(&mut arr);
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_DELAY => {
+                        let mut d = addr as vx_delay;
+                        vxReleaseDelay(&mut d);
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_IMAGE => {
+                        extern "C" { fn vxReleaseImage(image: *mut vx_image) -> vx_status; }
+                        let mut img = addr as vx_image;
+                        unsafe { vxReleaseImage(&mut img); }
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_SCALAR => {
+                        let mut s = addr as vx_scalar;
+                        crate::c_api_data::vxReleaseScalar(&mut s);
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_MATRIX => {
+                        let mut m = addr as vx_matrix;
+                        crate::c_api_data::vxReleaseMatrix(&mut m);
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_DISTRIBUTION => {
+                        let mut d = addr as vx_distribution;
+                        vxReleaseDistribution(&mut d);
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_REMAP => {
+                        let mut r = addr as vx_remap;
+                        vxReleaseRemap(&mut r);
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_LUT => {
+                        let mut l = addr as vx_lut;
+                        crate::c_api_data::vxReleaseLUT(&mut l);
+                        found_and_released = true;
+                    }
+                    Some(t) if t == VX_TYPE_THRESHOLD => {
+                        let mut th = addr as vx_threshold;
+                        crate::c_api_data::vxReleaseThreshold(&mut th);
+                        found_and_released = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            if !found_and_released {
+                // Remove from unified registries as last resort
                 if let Ok(mut graphs_data) = GRAPHS_DATA.lock() {
                     graphs_data.remove(&addr_u64);
                 }

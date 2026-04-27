@@ -2188,7 +2188,15 @@ pub extern "C" fn vxGetPyramidLevel(pyramid: vx_pyramid, index: vx_uint32) -> vx
         }
 
         // Return the level image (not a copy, just the reference)
-        pyramid_data.levels.get(idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut())
+        let img = pyramid_data.levels.get(idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+        
+        // Register for delay parameter resolution
+        if !img.is_null() {
+            extern "C" { fn vxRegisterPyramidLevelImage(image: vx_image, pyramid: vx_pyramid, level: vx_uint32); }
+            unsafe { vxRegisterPyramidLevelImage(img, pyramid, index); }
+        }
+        
+        img
     }
 }
 
