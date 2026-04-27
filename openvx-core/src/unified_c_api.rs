@@ -3669,29 +3669,8 @@ pub extern "C" fn vxCopyScalar(
         return VX_ERROR_NOT_IMPLEMENTED;
     }
 
-    let s = unsafe { &*(scalar as *const VxCScalar) };
-    
-    unsafe {
-        match usage {
-            VX_READ_ONLY => {
-                let data = match s.data.read() {
-                    Ok(d) => d,
-                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
-                };
-                std::ptr::copy_nonoverlapping(data.as_ptr(), user_ptr as *mut u8, data.len());
-            }
-            VX_WRITE_ONLY => {
-                let mut data = match s.data.write() {
-                    Ok(d) => d,
-                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
-                };
-                std::ptr::copy_nonoverlapping(user_ptr as *const u8, data.as_mut_ptr(), data.len());
-            }
-            _ => return VX_ERROR_INVALID_PARAMETERS,
-        }
-    }
-
-    VX_SUCCESS
+    // Use VxCScalarData since that's what vxCreateScalar creates
+    crate::c_api_data::vxCopyScalarData(scalar, user_ptr, usage, user_mem_type)
 }
 
 // ============================================================================

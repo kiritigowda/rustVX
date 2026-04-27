@@ -151,7 +151,8 @@ pub extern "C" fn vxCopyScalarData(
     if user_ptr.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    if user_mem_type != 0x0 { // VX_MEMORY_TYPE_HOST
+    if user_mem_type != VX_MEMORY_TYPE_HOST && user_mem_type != 0x0 {
+        // Also accept 0x0 for legacy compatibility
         return VX_ERROR_NOT_IMPLEMENTED;
     }
 
