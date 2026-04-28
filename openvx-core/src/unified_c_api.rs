@@ -253,6 +253,44 @@ impl VxCImage {
         }
     }
 
+    /// Get the stride_x (bytes per "pixel" in a plane) for a specific plane.
+    /// For NV12/NV21 plane 1, this is 2 (interleaved UV pair).
+    /// For IYUV planes and Y plane, this is 1.
+    /// For packed formats, this is bytes_per_pixel.
+    pub fn plane_stride_x(format: u32, plane_index: usize) -> usize {
+        match format {
+            0x3231564E | 0x3132564E => {
+                // NV12/NV21: plane 0 (Y) = 1 byte, plane 1 (UV) = 2 bytes (interleaved)
+                if plane_index == 1 { 2 } else { 1 }
+            }
+            0x56555949 | 0x34555659 | 0x34565559 => {
+                // IYUV, YUV4: all planes are single-byte per pixel
+                1
+            }
+            _ => Self::bytes_per_pixel(format),
+        }
+    }
+
+    /// Get the row stride (stride_y in bytes) for a specific plane in the internal buffer.
+    /// For NV12/NV21 plane 1, this equals the full image width (width bytes per row of UV pairs).
+    /// For IYUV planes, this equals the plane width.
+    pub fn plane_row_stride(width: u32, height: u32, format: u32, plane_index: usize) -> usize {
+        let (pw, _ph) = Self::plane_dimensions(width, height, format, plane_index);
+        let stride_x = Self::plane_stride_x(format, plane_index);
+        match format {
+            0x3231564E | 0x3132564E => {
+                // NV12/NV21: plane 1 row stride is the full image width
+                // (width/2 UV pairs × 2 bytes each = width bytes per row)
+                if plane_index == 1 {
+                    width as usize
+                } else {
+                    pw as usize * stride_x
+                }
+            }
+            _ => pw as usize * stride_x,
+        }
+    }
+
     pub fn calculate_size(width: u32, height: u32, format: u32) -> usize {
         // Validate dimensions to prevent overflow
         if width == 0 || height == 0 {
@@ -8544,8 +8582,13 @@ pub extern "C" fn vxFormatImagePatchAddress1d(
     }
     unsafe {
         let address = &*addr;
-        let stride = address.stride_y as isize;
-        (ptr as *mut u8).offset((index as isize) * stride) as *mut c_void
+        let dim_x = if address.dim_x == 0 { 1 } else { address.dim_x };
+        let stride_y = address.stride_y as isize;
+        let stride_x = address.stride_x as isize;
+        let y = index / dim_x;
+        let x = index % dim_x;
+        let offset = (y as isize) * stride_y + (x as isize) * stride_x;
+        (ptr as *mut u8).offset(offset) as *mut c_void
     }
 }
 

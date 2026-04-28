@@ -1010,9 +1010,13 @@ pub extern "C" fn vxMapImagePatch(
             let ext_stride_x = if (plane_index as usize) < effective_stride_x.len() {
                 effective_stride_x[plane_index as usize]
             } else {
-                // For planar formats, stride_x is typically 1 byte per pixel
+                // For planar formats, stride_x varies per plane (e.g., NV12 UV plane = 2)
                 // For packed formats, it's bytes_per_pixel
-                if is_planar { 1 } else { VxCImage::bytes_per_pixel(img.format) as vx_int32 }
+                if is_planar {
+                    VxCImage::plane_stride_x(img.format, plane_index as usize) as vx_int32
+                } else {
+                    VxCImage::bytes_per_pixel(img.format) as vx_int32
+                }
             };
 
             // Calculate the byte offset to the start of the patch in the plane
@@ -1053,12 +1057,16 @@ pub extern "C" fn vxMapImagePatch(
         // For regular (internal memory) images, copy the data to a separate buffer
         // Calculate stride and offset based on format and plane
         let bpp = if is_planar {
-            1usize // For planar formats, each plane is 1 byte per pixel (luma/chroma)
+            VxCImage::plane_stride_x(img.format, plane_index as usize)
         } else {
             VxCImage::bytes_per_pixel(img.format)
         };
 
-        let stride_y = plane_width * bpp;
+        let stride_y = if is_planar {
+            VxCImage::plane_row_stride(img.width, img.height, img.format, plane_index as usize)
+        } else {
+            plane_width * bpp
+        };
         let plane_offset = if is_planar {
             VxCImage::plane_offset(img.width, img.height, img.format, plane_index as usize)
         } else {
@@ -1150,7 +1158,11 @@ pub extern "C" fn vxUnmapImagePatch(
             // If write access, copy data back
             if usage == VX_WRITE_ONLY || usage == VX_READ_AND_WRITE {
                 let is_planar = VxCImage::is_planar_format(img.format);
-                let bpp = if is_planar { 1 } else { VxCImage::bytes_per_pixel(img.format) };
+                let bpp = if is_planar {
+                    VxCImage::plane_stride_x(img.format, plane_index as usize)
+                } else {
+                    VxCImage::bytes_per_pixel(img.format)
+                };
                 let width = mapped_width as usize;
                 let mapped_stride = width * bpp;
                 let height = if mapped_stride > 0 { patch_data.len() / mapped_stride } else { 0 };
@@ -1258,7 +1270,7 @@ pub extern "C" fn vxCopyImagePatch(
             let ext_bpp = if (plane_index as usize) < img.external_stride_x.len() && img.external_stride_x[plane_index as usize] > 0 {
                 img.external_stride_x[plane_index as usize] as usize
             } else if is_planar {
-                1usize
+                VxCImage::plane_stride_x(img.format, plane_index as usize)
             } else {
                 VxCImage::bytes_per_pixel(img.format)
             };
@@ -1270,9 +1282,9 @@ pub extern "C" fn vxCopyImagePatch(
             // No plane_offset for external memory - each plane has its own pointer
             (ext_bpp, ext_stride_y, 0usize)
         } else if is_planar {
-            // For planar formats, each plane is 1 byte per pixel (luma/chroma)
-            let bpp = 1usize;
-            let stride_y = plane_width * bpp;
+            // For planar formats, bpp varies per plane (e.g., NV12 UV plane = 2 bytes per pixel)
+            let bpp = VxCImage::plane_stride_x(img.format, plane_index as usize);
+            let stride_y = VxCImage::plane_row_stride(img.width, img.height, img.format, plane_index as usize);
             let plane_offset = VxCImage::plane_offset(img.width, img.height, img.format, plane_index as usize);
             (bpp, stride_y, plane_offset)
         } else {
@@ -1679,7 +1691,11 @@ pub extern "C" fn vxCreateImageFromROI(
                 let ext_stride_x = if plane_idx < source_img.external_stride_x.len() {
                     source_img.external_stride_x[plane_idx]
                 } else {
-                    if is_planar { 1 } else { VxCImage::bytes_per_pixel(source_img.format) as i32 }
+                    if is_planar {
+                        VxCImage::plane_stride_x(source_img.format, plane_idx) as i32
+                    } else {
+                        VxCImage::bytes_per_pixel(source_img.format) as i32
+                    }
                 };
 
                 roi_external_strides.push(ext_stride_y);
@@ -1705,9 +1721,18 @@ pub extern "C" fn vxCreateImageFromROI(
                 // For internal memory, we still share the parent's Arc<RwLock<Vec<u8>>
                 // The offset is stored separately and used during map operations
                 roi_external_ptrs.push(std::ptr::null_mut());
-                let bpp = if is_planar { 1i32 } else { VxCImage::bytes_per_pixel(source_img.format) as i32 };
+                let bpp = if is_planar {
+                    VxCImage::plane_stride_x(source_img.format, plane_idx) as i32
+                } else {
+                    VxCImage::bytes_per_pixel(source_img.format) as i32
+                };
+                let row_stride = if is_planar {
+                    VxCImage::plane_row_stride(source_img.width, source_img.height, source_img.format, plane_idx) as i32
+                } else {
+                    plane_width as i32 * bpp
+                };
                 roi_external_stride_x.push(bpp);
-                roi_external_strides.push(plane_width as i32 * bpp);
+                roi_external_strides.push(row_stride);
             }
         }
 
