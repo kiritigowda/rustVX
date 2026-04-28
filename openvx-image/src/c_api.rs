@@ -80,6 +80,7 @@ pub extern "C" fn vxCreateImage(
         external_dim_y: Vec::new(),
         roi_offsets: Vec::new(),
         is_from_handle: false,
+        valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height }),
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -205,6 +206,7 @@ pub extern "C" fn vxCreateVirtualImage(
         external_dim_y: Vec::new(),
         roi_offsets: Vec::new(),
         is_from_handle: false,
+        valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: store_width, end_y: store_height }),
     });
 
     let image_ptr = Box::into_raw(image) as vx_image;
@@ -339,6 +341,7 @@ pub extern "C" fn vxCreateImageFromHandle(
             external_dim_y,
             roi_offsets: Vec::new(),
             is_from_handle: true,
+            valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height }),
         });
 
         let image_ptr = Box::into_raw(image) as vx_image;
@@ -570,6 +573,7 @@ pub extern "C" fn vxCreateUniformImage(
         external_dim_y: Vec::new(),
         roi_offsets: Vec::new(),
         is_from_handle: false,
+        valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height }),
     });
 
     // Convert to raw pointer
@@ -698,6 +702,7 @@ pub extern "C" fn vxCreateImageFromChannel(
         external_dim_y: Vec::new(),
         roi_offsets: Vec::new(),
         is_from_handle: false,
+        valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: output_width, end_y: output_height }),
         });
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
@@ -1485,11 +1490,18 @@ pub extern "C" fn vxGetValidRegionImage(
     let img = unsafe { &*(image as *const VxCImage) };
 
     unsafe {
-        // Return full image as valid region
-        (*rect).start_x = 0;
-        (*rect).start_y = 0;
-        (*rect).end_x = img.width;
-        (*rect).end_y = img.height;
+        if let Ok(vr) = img.valid_rect.read() {
+            (*rect).start_x = vr.start_x;
+            (*rect).start_y = vr.start_y;
+            (*rect).end_x = vr.end_x;
+            (*rect).end_y = vr.end_y;
+        } else {
+            // Fallback to full image region
+            (*rect).start_x = 0;
+            (*rect).start_y = 0;
+            (*rect).end_x = img.width;
+            (*rect).end_y = img.height;
+        }
     }
 
     VX_SUCCESS
@@ -1498,10 +1510,20 @@ pub extern "C" fn vxGetValidRegionImage(
 /// Set image valid rectangle
 #[no_mangle]
 pub extern "C" fn vxSetImageValidRectangle(
-    _image: vx_image,
-    _rect: *const vx_rectangle_t,
+    image: vx_image,
+    rect: *const vx_rectangle_t,
 ) -> vx_status {
-    // Stub - valid rectangle tracking not implemented
+    if image.is_null() || rect.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    let img = unsafe { &*(image as *const VxCImage) };
+    let new_rect = unsafe { &*rect };
+    if let Ok(mut vr) = img.valid_rect.write() {
+        vr.start_x = new_rect.start_x;
+        vr.start_y = new_rect.start_y;
+        vr.end_x = new_rect.end_x;
+        vr.end_y = new_rect.end_y;
+    }
     VX_SUCCESS
 }
 
@@ -1846,6 +1868,7 @@ pub extern "C" fn vxCreateImageFromROI(
             external_dim_y: roi_external_dim_y,
             roi_offsets,
             is_from_handle: false, // ROI images should NOT support vxSwapImageHandle
+            valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: roi_width, end_y: roi_height }),
         });
 
         let image_ptr = Box::into_raw(roi_image) as vx_image;
