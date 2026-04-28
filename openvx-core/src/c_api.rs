@@ -2314,8 +2314,8 @@ pub const VX_DF_IMAGE_UYVY: vx_df_image = 0x59565955u32;
 pub const VX_DF_IMAGE_YUYV: vx_df_image = 0x56595559u32;
 // Format: 'IYUV' = 0x56555949
 pub const VX_DF_IMAGE_IYUV: vx_df_image = 0x56555949u32;
-// Format: 'YUV4' = 0x34555659
-pub const VX_DF_IMAGE_YUV4: vx_df_image = 0x34555659u32;
+// Format: 'YUV4' = 0x34565559
+pub const VX_DF_IMAGE_YUV4: vx_df_image = 0x34565559u32;
 // Same as U8
 pub const VX_DF_IMAGE_GRAYSCALE: vx_df_image = 0x38303055u32;
 
@@ -2337,7 +2337,21 @@ pub const VX_IMAGE_RANGE: vx_enum = 0x80F05;
 pub const VX_IMAGE_MEMORY_TYPE: vx_enum = 0x80F07;
 pub const VX_IMAGE_IS_UNIFORM: vx_enum = 0x80F08;
 pub const VX_IMAGE_UNIFORM_VALUE: vx_enum = 0x80F09;
+pub const VX_IMAGE_SIZE: vx_enum = 0x80F06;
 pub const VX_IMAGE_IS_VIRTUAL: vx_enum = 0x80F0A;
+
+// Color space enum values
+pub const VX_COLOR_SPACE_NONE: vx_enum = 0x6000;
+pub const VX_COLOR_SPACE_BT601_525: vx_enum = 0x6001;
+pub const VX_COLOR_SPACE_BT601_625: vx_enum = 0x6002;
+pub const VX_COLOR_SPACE_BT709: vx_enum = 0x6003;
+pub const VX_COLOR_SPACE_BT2020: vx_enum = 0x6004;
+pub const VX_COLOR_SPACE_DEFAULT: vx_enum = VX_COLOR_SPACE_NONE;
+
+// Channel range enum values
+pub const VX_CHANNEL_RANGE_FULL: vx_enum = 0x7000;
+pub const VX_CHANNEL_RANGE_RESTRICTED: vx_enum = 0x7001;
+pub const VX_CHANNEL_RANGE_YUV_RESTRICTED: vx_enum = 0x7002;
 
 // ============================================================================
 // Array Attributes

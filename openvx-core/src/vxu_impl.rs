@@ -218,7 +218,7 @@ fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
         0x3231564E => Some(ImageFormat::NV12), // VX_DF_IMAGE_NV12 ('NV12')
         0x3132564E => Some(ImageFormat::NV21), // VX_DF_IMAGE_NV21 ('NV21')
         0x56555949 => Some(ImageFormat::IYUV), // VX_DF_IMAGE_IYUV ('IYUV')
-        0x34555659 => Some(ImageFormat::YUV4), // VX_DF_IMAGE_YUV4 ('YUV4')
+        0x34565559 => Some(ImageFormat::YUV4), // VX_DF_IMAGE_YUV4 ('YUV4')
         0x34565559 => Some(ImageFormat::YUV4), // Alternative YUV4 format code
         0x56595559 => Some(ImageFormat::YUYV), // VX_DF_IMAGE_YUYV ('YUYV')
         0x59565955 => Some(ImageFormat::UYVY), // VX_DF_IMAGE_UYVY ('UYVY')
@@ -1690,7 +1690,7 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x34555659 => { // VX_DF_IMAGE_YUV4
+            0x34565559 => { // VX_DF_IMAGE_YUV4
                 // Planar: Three full-size planes
                 let y_size = width * height;
                 // Y plane

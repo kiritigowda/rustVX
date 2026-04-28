@@ -34,7 +34,7 @@ const VX_DF_IMAGE_RGBX: u32 = 0x21010400;
 const VX_DF_IMAGE_NV12: u32 = 0x3231564E;
 const VX_DF_IMAGE_NV21: u32 = 0x3132564E;
 const VX_DF_IMAGE_IYUV: u32 = 0x56555949;
-const VX_DF_IMAGE_YUV4: u32 = 0x34555659;
+const VX_DF_IMAGE_YUV4: u32 = 0x34565559;
 const VX_DF_IMAGE_UYVY: u32 = 0x59565955;
 const VX_DF_IMAGE_YUYV: u32 = 0x56595559;
 
@@ -149,7 +149,7 @@ pub extern "C" fn ct_channels(format: vx_df_image) -> i32 {
         0x3231564E | 0x3132564E => 3, // VX_DF_IMAGE_NV12, VX_DF_IMAGE_NV21
         0x56555949 => 3, // VX_DF_IMAGE_IYUV
         0x59565955 | 0x56595559 => 2, // VX_DF_IMAGE_UYVY, VX_DF_IMAGE_YUYV
-        0x34555659 => 3, // VX_DF_IMAGE_YUV4
+        0x34565559 => 3, // VX_DF_IMAGE_YUV4
         _ => 1,
     }
 }
@@ -178,7 +178,7 @@ pub extern "C" fn ct_image_bits_per_pixel(format: vx_df_image) -> u32 {
         0x3231564E | 0x3132564E => 12, // VX_DF_IMAGE_NV12, VX_DF_IMAGE_NV21 (average)
         0x56555949 => 12, // VX_DF_IMAGE_IYUV (average)
         0x59565955 | 0x56595559 => 16, // VX_DF_IMAGE_UYVY, VX_DF_IMAGE_YUYV
-        0x34555659 => 24, // VX_DF_IMAGE_YUV4
+        0x34565559 => 24, // VX_DF_IMAGE_YUV4
         _ => 8,
     }
 }
@@ -189,7 +189,7 @@ pub extern "C" fn ct_get_num_planes(format: vx_df_image) -> u32 {
     match format as u32 {
         0x3231564E | 0x3132564E => 2, // NV12, NV21
         0x56555949 => 3, // IYUV
-        0x34555659 => 3, // YUV4
+        0x34565559 => 3, // YUV4
         _ => 1,
     }
 }
@@ -228,13 +228,13 @@ pub extern "C" fn ct_image_get_plane_base(img: CT_Image, plane: i32) -> *mut u8 
                 let uv_size = (image.stride / 2) * (image.height / 2);
                 (y_size + 2 * uv_size) as usize
             }
-            (0x34555659, 0) => 0, // YUV4 Y plane
-            (0x34555659, 1) => {
+            (0x34565559, 0) => 0, // YUV4 Y plane
+            (0x34565559, 1) => {
                 // YUV4 U plane
                 let plane_size = image.stride * image.height;
                 plane_size as usize
             }
-            (0x34555659, 2) => {
+            (0x34565559, 2) => {
                 // YUV4 V plane
                 let plane_size = image.stride * image.height;
                 (2 * plane_size) as usize
@@ -666,7 +666,7 @@ pub extern "C" fn ct_image_to_vx_image(
             0x56555949 => VX_DF_IMAGE_IYUV,
             0x59565955 => VX_DF_IMAGE_UYVY,
             0x56595559 => VX_DF_IMAGE_YUYV,
-            0x34555659 => VX_DF_IMAGE_YUV4,
+            0x34565559 => VX_DF_IMAGE_YUV4,
             _ => return std::ptr::null_mut(),
         };
         

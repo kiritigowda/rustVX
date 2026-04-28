@@ -121,7 +121,7 @@ impl VxCImage {
             0x3231564E | 0x3132564E => 1, // VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 (luma only per-pixel)
             0x56555949 => 1, // VX_DF_IMAGE_IYUV (Y plane only per-pixel)
             0x59565955 | 0x56595559 => 2, // VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV
-            0x34555659 | 0x34565559 => 3, // VX_DF_IMAGE_YUV4
+            0x34565559 | 0x34565559 => 3, // VX_DF_IMAGE_YUV4
             _ => 1,
         }
     }
@@ -136,14 +136,14 @@ impl VxCImage {
             0x3231564E | 0x3132564E => 3, // VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21
             0x56555949 => 3, // VX_DF_IMAGE_IYUV
             0x59565955 | 0x56595559 => 2, // VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV
-            0x34555659 | 0x34565559 => 3, // VX_DF_IMAGE_YUV4
+            0x34565559 | 0x34565559 => 3, // VX_DF_IMAGE_YUV4
             _ => 1,
         }
     }
 
     /// Check if the format is a planar YUV format
     pub fn is_planar_format(format: u32) -> bool {
-        matches!(format, 0x3231564E | 0x3132564E | 0x56555949 | 0x34555659 | 0x34565559)
+        matches!(format, 0x3231564E | 0x3132564E | 0x56555949 | 0x34565559 | 0x34565559)
             // NV12 | NV21 | IYUV | YUV4 | YVU4
     }
 
@@ -152,7 +152,7 @@ impl VxCImage {
         match format {
             0x3231564E | 0x3132564E => 2, // NV12, NV21: Y plane + interleaved UV plane
             0x56555949 => 3, // IYUV: Y, U, V planes (I420)
-            0x34555659 | 0x34565559 => 3, // YUV4, YVU4: Y, U, V planes (4:4:4)
+            0x34565559 | 0x34565559 => 3, // YUV4, YVU4: Y, U, V planes (4:4:4)
             _ => 1, // All other formats are single plane
         }
     }
@@ -187,7 +187,7 @@ impl VxCImage {
                 }
             }
             // YUV4: All planes are full size
-            0x34555659 | 0x34565559 => {
+            0x34565559 | 0x34565559 => {
                 match plane_index {
                     0 | 1 | 2 => w * h,
                     _ => 0,
@@ -242,7 +242,7 @@ impl VxCImage {
                 }
             }
             // YUV4 and YVU4: All planes full size
-            0x34555659 | 0x34565559 => {
+            0x34565559 | 0x34565559 => {
                 if plane_index >= 1 && plane_index <= 3 {
                     (width, height)
                 } else {
@@ -263,7 +263,7 @@ impl VxCImage {
                 // NV12/NV21: plane 0 (Y) = 1 byte, plane 1 (UV) = 2 bytes (interleaved)
                 if plane_index == 1 { 2 } else { 1 }
             }
-            0x56555949 | 0x34555659 | 0x34565559 => {
+            0x56555949 | 0x34565559 | 0x34565559 => {
                 // IYUV, YUV4: all planes are single-byte per pixel
                 1
             }
@@ -4861,7 +4861,7 @@ pub const VX_DF_IMAGE_RGBX: vx_enum = 0x41424752i32;  // 'RGBA' (same as RGBA pe
 pub const VX_DF_IMAGE_NV12: vx_enum = 0x3231564Ei32;  // 'NV12'
 pub const VX_DF_IMAGE_NV21: vx_enum = 0x3132564Ei32;  // 'NV21'
 pub const VX_DF_IMAGE_IYUV: vx_enum = 0x56555949i32;  // 'IYUV'
-pub const VX_DF_IMAGE_YUV4: vx_enum = 0x34555659i32;  // 'YUV4'
+pub const VX_DF_IMAGE_YUV4: vx_enum = 0x34565559i32;  // 'YUV4'
 pub const VX_DF_IMAGE_UYVY: vx_enum = 0x59565955i32;  // 'UYVY'
 pub const VX_DF_IMAGE_YUYV: vx_enum = 0x56595559i32;  // 'YUYV'
 
@@ -8569,7 +8569,7 @@ pub extern "C" fn vxSetImagePixelValues(
                         data[y_size+uv_size..y_size+2*uv_size].fill(v_val);
                     }
                 }
-                0x34555659 => { // YUV4: Y, U, V planes all full size
+                0x34565559 => { // YUV4: Y, U, V planes all full size
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
