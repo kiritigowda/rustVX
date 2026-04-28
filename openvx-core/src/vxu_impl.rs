@@ -4153,16 +4153,47 @@ fn abs_diff(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
 
     let width = src1.width;
     let height = src1.height;
-    let dst_data = dst.data_mut();
 
-    for y in 0..height {
-        for x in 0..width {
-            let a = src1.get_pixel(x, y);
-            let b = src2.get_pixel(x, y);
-            let diff = if a > b { a - b } else { b - a };
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = diff;
+    match src1.format {
+        ImageFormat::Gray => {
+            let dst_data = dst.data_mut();
+            for y in 0..height {
+                for x in 0..width {
+                    let a = src1.get_pixel(x, y);
+                    let b = src2.get_pixel(x, y);
+                    let diff = if a > b { a - b } else { b - a };
+                    let idx = y.saturating_mul(width).saturating_add(x);
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = diff;
+                    }
+                }
+            }
+        }
+        ImageFormat::GrayS16 => {
+            for y in 0..height {
+                for x in 0..width {
+                    let a = src1.get_pixel_s16(x, y) as i32;
+                    let b = src2.get_pixel_s16(x, y) as i32;
+                    let diff = (a - b).abs();
+                    // Clamp to S16 range (0..32767 for absolute difference)
+                    let result: i16 = if diff > 32767 { 32767 } else { diff as i16 };
+                    dst.set_pixel_s16(x, y, result);
+                }
+            }
+        }
+        _ => {
+            // Default: treat as U8
+            let dst_data = dst.data_mut();
+            for y in 0..height {
+                for x in 0..width {
+                    let a = src1.get_pixel(x, y);
+                    let b = src2.get_pixel(x, y);
+                    let diff = if a > b { a - b } else { b - a };
+                    let idx = y.saturating_mul(width).saturating_add(x);
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = diff;
+                    }
+                }
             }
         }
     }
