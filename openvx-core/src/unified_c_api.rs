@@ -683,12 +683,89 @@ fn is_virtual_image(image_id: u64) -> bool {
     }
 }
 
+/// Infer the output format for a kernel based on its name and input image formats.
+/// Returns the inferred output vx_df_image format.
+fn infer_output_format(kernel_name: &str, input_formats: &[vx_df_image]) -> vx_df_image {
+    const VX_DF_IMAGE_U8: vx_df_image = 0x38303055;   // VX_DF_IMAGE('U','0','0','8')
+    const VX_DF_IMAGE_S16: vx_df_image = 0x36313053;   // VX_DF_IMAGE('S','0','1','6')
+
+    // If we have no inputs, default to U8
+    if input_formats.is_empty() {
+        return VX_DF_IMAGE_U8;
+    }
+
+    // Kernel names are lowercase: org.khronos.openvx.add, etc.
+    match kernel_name {
+        // Arithmetic kernels: Add/Subtract always produce S16 output
+        // (per OpenVX spec, these overflow into S16 even from U8 inputs)
+        // AbsDiff: U8→U8, S16→S16 (absolute difference stays in range)
+        // Min/Max: same format as inputs
+        k if k.contains("add")
+            || k.contains("subtract") => {
+            VX_DF_IMAGE_S16
+        }
+        k if k.contains("absdiff") => {
+            if input_formats.iter().any(|f| *f == VX_DF_IMAGE_S16) {
+                VX_DF_IMAGE_S16
+            } else {
+                VX_DF_IMAGE_U8
+            }
+        }
+        k if k.contains("min_max") => {
+            VX_DF_IMAGE_S16
+        }
+        k if k.contains("multiply") => {
+            // Multiply always produces S16 output (U8*U8 can exceed U8 range)
+            VX_DF_IMAGE_S16
+        }
+
+        // Bitwise kernels: output = input format (always U8 in practice)
+        k if k.contains("and")
+            || k.contains(".or")
+            || k.contains("xor")
+            || k.contains(".not") => {
+            input_formats[0]
+        }
+
+        // WeightedAverage: same rule as arithmetic
+        k if k.contains("weighted_average") => {
+            if input_formats.iter().any(|&f| f == VX_DF_IMAGE_S16) {
+                VX_DF_IMAGE_S16
+            } else {
+                VX_DF_IMAGE_U8
+            }
+        }
+
+        // Geometric transforms: output format = input format
+        k if k.contains("scale_image")
+            || k.contains("warp_affine")
+            || k.contains("warp_perspective")
+            || k.contains("remap") => {
+            input_formats[0]
+        }
+
+        // ChannelExtract: single channel -> U8
+        k if k.contains("channel_extract") => {
+            VX_DF_IMAGE_U8
+        }
+
+        // ChannelCombine: depends on input planes
+        k if k.contains("channel_combine") => {
+            input_formats[0]
+        }
+
+        // Default: use first input format
+        _ => input_formats[0]
+    }
+}
+
 /// Infer dimensions for a virtual image based on connected nodes
 fn infer_virtual_image_dimensions(
     image_id: u64,
     current_node_id: u64,
     node_params: &[(u64, Vec<Option<u64>>)],
     param_to_producer: &std::collections::HashMap<u64, u64>,
+    kernel_name: &str,
 ) -> Option<(u32, u32, vx_df_image)> {
     // First, check if the virtual image already has explicit dimensions
     if let Ok(registry) = VIRTUAL_IMAGES.lock() {
@@ -723,30 +800,54 @@ fn infer_virtual_image_dimensions(
         current_node_id
     };
 
+    // Collect input image formats from the producer node's parameters
+    let mut input_formats: Vec<vx_df_image> = Vec::new();
+    let mut input_width: u32 = 0;
+    let mut input_height: u32 = 0;
+
     // Find the producer node's parameters
     if let Some((_, producer_params)) = node_params.iter().find(|(id, _)| *id == producer_node) {
-        // Find any non-virtual image parameter to get dimensions from
+        // Find input images and collect their formats and dimensions
         for (idx, param_opt) in producer_params.iter().enumerate() {
             if let Some(param_ref) = param_opt {
                 if *param_ref != image_id && is_image_reference(*param_ref) {
                     // Skip output images - look for input images
-                    // Simple heuristic: first image param that isn't the target is input
+                    // Check if this is an input (not an output of this node)
+                    // Heuristic: parameters that aren't the target virtual image and aren't virtual
                     if !is_virtual_image(*param_ref) {
                         if validate_image(*param_ref as vx_image) == VX_SUCCESS {
                             let img = unsafe { &*(*param_ref as *const VxCImage) };
                             if img.width > 0 && img.height > 0 {
-                                let format = if let Ok(registry) = VIRTUAL_IMAGES.lock() {
-                                    if let Some(info) = registry.get(&(image_id as usize)) {
-                                        if info.format != 0 { info.format } else { img.format }
-                                    } else { img.format }
-                                } else { img.format };
-                                return Some((img.width, img.height, format as vx_df_image));
+                                if input_width == 0 {
+                                    input_width = img.width;
+                                    input_height = img.height;
+                                }
+                                input_formats.push(img.format as vx_df_image);
+                            }
+                        }
+                    } else {
+                        // This is a virtual input image - try to get its inferred format
+                        // from a recursive call or from the virtual image registry
+                        if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+                            if let Some(info) = registry.get(&(*param_ref as usize)) {
+                                if info.format != 0 {
+                                    input_formats.push(info.format as vx_df_image);
+                                    if input_width == 0 && info.width > 0 {
+                                        input_width = info.width;
+                                        input_height = info.height;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    if input_width > 0 && input_height > 0 {
+        let format = infer_output_format(kernel_name, &input_formats);
+        return Some((input_width, input_height, format));
     }
 
     None
@@ -766,6 +867,15 @@ fn allocate_virtual_image_storage(
         img.width = width;
         img.height = height;
         img.format = format;
+
+        // Also update the VIRTUAL_IMAGES registry so subsequent lookups find the inferred format
+        if let Ok(mut registry) = VIRTUAL_IMAGES.lock() {
+            if let Some(info) = registry.get_mut(&(image_id as usize)) {
+                info.width = width;
+                info.height = height;
+                info.format = format as u32;
+            }
+        }
 
         // Calculate size and allocate data
         let size = VxCImage::calculate_size(width, height, format);
@@ -1106,9 +1216,17 @@ while !queue.is_empty() {
                 for param_opt in params.iter() {
                     if let Some(param_ref) = param_opt {
                         if is_image_reference(*param_ref) && is_virtual_image(*param_ref) {
+                            // Skip if already allocated (dimensions and format set)
+                            unsafe {
+                                let img = &*(*param_ref as *const VxCImage);
+                                if img.width > 0 && img.height > 0 && img.format != 0 && img.format != VX_DF_IMAGE_VIRT {
+                                    continue; // already allocated
+                                }
+                            }
                             // Virtual image - determine dimensions from connected nodes
+                            let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
                             let (width, height, format) = if let Some(dim) =
-                                infer_virtual_image_dimensions(*param_ref, *node_id, &node_params, &param_to_producer) {
+                                infer_virtual_image_dimensions(*param_ref, *node_id, &node_params, &param_to_producer, kernel_name) {
                                 dim
                             } else {
                                 // Cannot determine dimensions
