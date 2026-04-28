@@ -6,4 +6,5 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+log = { workspace = true }
 openvx-core = { path = "../openvx-core" }

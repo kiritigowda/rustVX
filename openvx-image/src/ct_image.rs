@@ -9,6 +9,7 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use log::debug;
 
 use openvx_core::c_api::{
     vx_context, vx_image, vx_df_image, vx_enum, vx_status,
@@ -1096,14 +1097,14 @@ pub extern "C" fn ct_assert_eq_ctimage(
 #[no_mangle]
 pub extern "C" fn ct_dump_image_info(image: CT_Image) {
     if image.is_null() {
-        println!("CT_Image: null");
+        debug!("CT_Image: null");
         return;
     }
     unsafe {
         let img = &*image;
-        println!("CT_Image: {}x{} stride={} format=0x{:08X}",
+        debug!("CT_Image: {}x{} stride={} format=0x{:08X}",
             img.width, img.height, img.stride, img.format as u32);
-        println!("  ROI: ({}, {}) {}x{}",
+        debug!("  ROI: ({}, {}) {}x{}",
             img.roi.x, img.roi.y, img.roi.width, img.roi.height);
     }
 }

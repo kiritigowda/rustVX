@@ -18,6 +18,7 @@ use std::ffi::{CStr, CString, c_void};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
+use log::error;
 
 // ============================================================================
 // Graph State and Management
@@ -1130,13 +1131,13 @@ while !queue.is_empty() {
 
             return VX_SUCCESS;
         } else {
-            eprintln!("ERROR: vxVerifyGraph: graph not found in GRAPHS_DATA");
+            error!("vxVerifyGraph: graph not found in GRAPHS_DATA");
         }
     } else {
-        eprintln!("ERROR: vxVerifyGraph: failed to lock GRAPHS_DATA");
+        error!("vxVerifyGraph: failed to lock GRAPHS_DATA");
     }
 
-    eprintln!("ERROR: vxVerifyGraph: returning INVALID_GRAPH");
+    error!("vxVerifyGraph: returning INVALID_GRAPH");
     VX_ERROR_INVALID_GRAPH
 }
 
@@ -1363,7 +1364,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
     // Null check for graph pointer
     if graph.is_null() {
-        eprintln!("ERROR: vxProcessGraph: graph is NULL");
+        error!("vxProcessGraph: graph is NULL");
         return VX_ERROR_INVALID_REFERENCE;
     }
 
@@ -1371,7 +1372,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
     // Validate graph_id is valid
     if graph_id == 0 {
-        eprintln!("ERROR: vxProcessGraph: graph_id is 0 (invalid)");
+        error!("vxProcessGraph: graph_id is 0 (invalid)");
         return VX_ERROR_INVALID_GRAPH;
     }
 
@@ -1385,13 +1386,13 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                         Some(g.clone())
                     }
                     None => {
-                        eprintln!("ERROR: vxProcessGraph: graph {} not found in GRAPHS_DATA", graph_id);
+                        error!("vxProcessGraph: graph {} not found in GRAPHS_DATA", graph_id);
                         return VX_ERROR_INVALID_GRAPH;
                     }
                 }
             }
             Err(_) => {
-                eprintln!("ERROR: vxProcessGraph: failed to acquire GRAPHS_DATA lock");
+                error!("vxProcessGraph: failed to acquire GRAPHS_DATA lock");
                 return VX_ERROR_INVALID_GRAPH;
             }
         }
@@ -1400,7 +1401,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
     let g = match graph_data {
         Some(g) => g,
         None => {
-            eprintln!("ERROR: vxProcessGraph: graph data is None");
+            error!("vxProcessGraph: graph data is None");
             return VX_ERROR_INVALID_GRAPH;
         }
     };
@@ -1411,7 +1412,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
             *v
         }
         Err(_) => {
-            eprintln!("ERROR: vxProcessGraph: failed to acquire verified lock");
+            error!("vxProcessGraph: failed to acquire verified lock");
             return VX_ERROR_INVALID_GRAPH;
         }
     };
@@ -1420,7 +1421,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
         // Per OpenVX spec: vxProcessGraph should auto-verify if not already verified
         let verify_status = vxVerifyGraph(graph);
         if verify_status != VX_SUCCESS {
-            eprintln!("ERROR: vxProcessGraph: auto-verify failed with status {}", verify_status);
+            error!("vxProcessGraph: auto-verify failed with status {}", verify_status);
             return verify_status;
         }
     }
@@ -1442,7 +1443,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
             n
         }
         Err(_) => {
-            eprintln!("ERROR: vxProcessGraph: failed to acquire nodes lock");
+            error!("vxProcessGraph: failed to acquire nodes lock");
             return VX_ERROR_INVALID_GRAPH;
         }
     };
@@ -1461,7 +1462,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
         // Validate node_id
         if *node_id == 0 {
-            eprintln!("ERROR: vxProcessGraph: node_id is 0 at index {}", i);
+            error!("vxProcessGraph: node_id is 0 at index {}", i);
             if let Ok(mut state) = g.state.lock() {
                 *state = VxGraphState::VxGraphStateAbandoned;
             }
@@ -1480,7 +1481,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                 }
                 if status != VX_SUCCESS {
                     // Mark as abandoned on failure
-                    eprintln!("ERROR: vxProcessGraph: node {} failed with status {}", node_id, status);
+                    error!("vxProcessGraph: node {} failed with status {}", node_id, status);
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
@@ -1518,7 +1519,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
             }
             None => {
                 // Node not found - mark as abandoned
-                eprintln!("ERROR: vxProcessGraph: execute_node returned None for node {}", node_id);
+                error!("vxProcessGraph: execute_node returned None for node {}", node_id);
                 if let Ok(mut state) = g.state.lock() {
                     *state = VxGraphState::VxGraphStateAbandoned;
                 }
