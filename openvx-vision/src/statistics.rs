@@ -2,6 +2,7 @@
 
 use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
 use openvx_image::Image;
+use openvx_image::ImageFormat;
 
 /// MinMaxLoc kernel - find minimum and maximum values and their locations
 pub struct MinMaxLocKernel;
@@ -324,19 +325,47 @@ pub fn abs_diff(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
-    let mut dst_data = dst.data_mut();
-    
-    for y in 0..height {
-        for x in 0..width {
-            let a = src1.get_pixel(x, y);
-            let b = src2.get_pixel(x, y);
-            let diff = if a > b { a - b } else { b - a };
-            dst_data[y * width + x] = diff;
+
+    match src1.format() {
+        ImageFormat::Gray => {
+            let mut dst_data = dst.data_mut();
+            for y in 0..height {
+                for x in 0..width {
+                    let a = src1.get_pixel(x, y);
+                    let b = src2.get_pixel(x, y);
+                    let diff = if a > b { a - b } else { b - a };
+                    dst_data[y * width + x] = diff;
+                }
+            }
+        }
+        ImageFormat::S16 => {
+            for y in 0..height {
+                for x in 0..width {
+                    let a = src1.get_pixel_i16(x, y) as i32;
+                    let b = src2.get_pixel_i16(x, y) as i32;
+                    let diff = (a - b).abs();
+                    // Clamp to S16 range (0..32767 for absolute difference)
+                    let result: i16 = if diff > 32767 { 32767 } else { diff as i16 };
+                    dst.set_pixel_i16(x, y, result);
+                }
+            }
+        }
+        _ => {
+            // Default: treat as U8
+            let mut dst_data = dst.data_mut();
+            for y in 0..height {
+                for x in 0..width {
+                    let a = src1.get_pixel(x, y);
+                    let b = src2.get_pixel(x, y);
+                    let diff = if a > b { a - b } else { b - a };
+                    dst_data[y * width + x] = diff;
+                }
+            }
         }
     }
-    
+
     Ok(())
 }
