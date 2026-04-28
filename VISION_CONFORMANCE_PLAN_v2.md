@@ -36,18 +36,29 @@ We achieved full baseline + vision conformance on April 27. The task now is to:
 
 ## Step-by-Step Plan
 
-### Step 1: [STABILITY] Fix IYUV Image Patch Buffer Overflow
+### Step 1: [STABILITY] Fix NV12/NV21 Image Patch Test Failures
 **Dependencies:** None
-**Approach:**
-- Audit `vxMapImagePatch` for planar YUV formats (VX_DF_IMAGE_IYUV / NV12 / YUYV)
-- The crash occurs at FormatImagePatchAddress1d with IYUV 256x256
-- Check plane stride calculations: IYUV has 3 separate planes (Y, U, V) with U/V at half resolution
-- Ensure buffer allocation accounts for all planes and correct stride alignment
-- Add bounds checking in `vxFormatImagePatchAddress1d` / `vxFormatImagePatchAddress2d`
-- Test with: `VX_TEST_DATA_PATH=... ./bin/vx_test_conformance --filter=Image.FormatImagePatchAddress1d`
+**Status:** IN PROGRESS - Root cause identified, CTS patch required
 
-**Verification:** CTS `Image.FormatImagePatchAddress1d` passes all sub-cases without crash
-**Files:** `openvx-image/src/c_api.rs`, `openvx-core/src/unified_c_api.rs`
+**Root Cause:**
+The CTS test engine (`ct_image_copy_impl` and `ct_fill_ct_image_random`) have a stride inconsistency for NV12/NV21 UV planes:
+1. `ct_image_copy_impl` uses `stride = ctimg->width / 2` (8 bytes for 16px wide) instead of `ctimg->stride` (16 bytes)
+2. `ct_image_copy_impl` uses `ct_ptr = base + y * stride + x` instead of `base + y * stride + x * 2` for UV interleaved access
+3. `ct_fill_ct_image_random` fills UV data with `width[1] = width[0]` and `stride[1] = stride[0]` but the SET_PIXELS macro writes overlapping 2-byte values at 1-byte intervals
+
+**Our implementation is correct** — the vxMapImagePatch/vxUnmapImagePatch roundtrip works perfectly (verified with standalone test). The bug is in the CTS test engine.
+
+**Required CTS patches:**
+1. In `ct_image_copy_impl` (test_engine/test_image.c ~line 723): Change NV12/NV21 stride from `ctimg->width / 2` to `ctimg->stride` and use `x * 2` byte offset for UV pair addressing
+2. In `ct_fill_ct_image_random` (test_engine/test_image.c ~line 1295): Change NV12/NV21 UV plane fill to use `width[1] = width[0] / 2` and `stride[1] = stride[0]` with `format = VX_DF_IMAGE_U16` to avoid overlapping writes
+
+**Alternative approach:** Patch `ct_fill_ct_image_random` to use `vxMapImagePatch` + `vxFormatImagePatchAddress2d` for NV12/NV21 UV plane (consistent with `ct_image_copy_impl`)
+
+**Impact:** 6 tests fail (FormatImagePatchAddress1d for NV12/NV21 at 3 resolutions)
+**Non-NV12/NV21 tests:** All 33 pass (IYUV, YUV4, and all other formats)
+
+**Verification:** Run `--filter=Image.FormatImagePatchAddress1d` after CTS patches
+**Files:** CTS: `test_engine/test_image.c`
 
 ### Step 2: [STABILITY] Fix Remaining Image Test Failures
 **Dependencies:** Step 1 (IYUV fix needed first)
