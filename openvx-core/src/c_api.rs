@@ -6,7 +6,7 @@
 
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 
 // Import the unified CONTEXTS registry
 use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
@@ -243,6 +243,7 @@ pub extern "C" fn vxCreateContext() -> vx_context {
                 mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
                 constant_value: vx_pixel_value_t { U32: 0 },
             }),
+            border_policy: std::sync::atomic::AtomicU32::new(crate::unified_c_api::VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED as u32),
             log_callback: Mutex::new(None),
             log_reentrant: std::sync::atomic::AtomicBool::new(false),
             logging_enabled: std::sync::atomic::AtomicBool::new(false),
@@ -2372,6 +2373,7 @@ pub type vx_array = *mut VxArray;
 
 /// Rectangle structure
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct vx_rectangle_t {
     pub start_x: vx_uint32,
     pub start_y: vx_uint32,
