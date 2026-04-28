@@ -8527,28 +8527,35 @@ pub extern "C" fn vxSetImagePixelValues(
                         chunk[0] = val.RGBA[0]; chunk[1] = val.RGBA[1]; chunk[2] = val.RGBA[2]; chunk[3] = val.RGBA[3];
                     }
                 }
-                0x3231564E | 0x3132564E => { // NV12/NV21
+                0x3231564E => { // NV12: Y plane, then interleaved U,V plane
                     let y_val = val.YUV[0];
-                    let uv_val = val.YUV[1]; // Simplified
+                    let u_val = val.YUV[1];
+                    let v_val = val.YUV[2];
                     let y_size = (img.width as usize) * (img.height as usize);
                     if data.len() >= y_size {
                         data[..y_size].fill(y_val);
-                        // UV plane
-                        let uv_stride = img.width as usize;
-                        let uv_height = (img.height as usize + 1) / 2;
-                        for y in 0..uv_height {
-                            let row_start = y_size + y * uv_stride;
-                            for x in 0..uv_stride/2 {
-                                let idx = row_start + x*2;
-                                if idx+1 < data.len() {
-                                    data[idx] = uv_val;
-                                    data[idx+1] = uv_val;
-                                }
-                            }
+                        // UV plane: interleaved U, V pairs
+                        for chunk in data[y_size..].chunks_exact_mut(2) {
+                            chunk[0] = u_val;
+                            chunk[1] = v_val;
                         }
                     }
                 }
-                0x56555949 => { // IYUV
+                0x3132564E => { // NV21: Y plane, then interleaved V,U plane
+                    let y_val = val.YUV[0];
+                    let u_val = val.YUV[1];
+                    let v_val = val.YUV[2];
+                    let y_size = (img.width as usize) * (img.height as usize);
+                    if data.len() >= y_size {
+                        data[..y_size].fill(y_val);
+                        // VU plane: interleaved V, U pairs
+                        for chunk in data[y_size..].chunks_exact_mut(2) {
+                            chunk[0] = v_val;
+                            chunk[1] = u_val;
+                        }
+                    }
+                }
+                0x56555949 => { // IYUV: Y plane, U plane, V plane
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
@@ -8560,6 +8567,39 @@ pub extern "C" fn vxSetImagePixelValues(
                         data[..y_size].fill(y_val);
                         data[y_size..y_size+uv_size].fill(u_val);
                         data[y_size+uv_size..y_size+2*uv_size].fill(v_val);
+                    }
+                }
+                0x34555659 => { // YUV4: Y, U, V planes all full size
+                    let y_val = val.YUV[0];
+                    let u_val = val.YUV[1];
+                    let v_val = val.YUV[2];
+                    let plane_size = (img.width as usize) * (img.height as usize);
+                    if data.len() >= 3 * plane_size {
+                        data[..plane_size].fill(y_val);
+                        data[plane_size..2*plane_size].fill(u_val);
+                        data[2*plane_size..3*plane_size].fill(v_val);
+                    }
+                }
+                0x59565955 => { // UYVY: packed U, Y0, V, Y1 per 2 pixels
+                    let y_val = val.YUV[0];
+                    let u_val = val.YUV[1];
+                    let v_val = val.YUV[2];
+                    for chunk in data.chunks_exact_mut(4) {
+                        chunk[0] = u_val;
+                        chunk[1] = y_val;
+                        chunk[2] = v_val;
+                        chunk[3] = y_val;
+                    }
+                }
+                0x56595559 => { // YUYV: packed Y0, U, Y1, V per 2 pixels
+                    let y_val = val.YUV[0];
+                    let u_val = val.YUV[1];
+                    let v_val = val.YUV[2];
+                    for chunk in data.chunks_exact_mut(4) {
+                        chunk[0] = y_val;
+                        chunk[1] = u_val;
+                        chunk[2] = y_val;
+                        chunk[3] = v_val;
                     }
                 }
                 _ => { data.fill(val.U8); }

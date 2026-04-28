@@ -469,13 +469,80 @@ pub extern "C" fn vxCreateUniformImage(
                     chunk[3] = val.RGBX[3];
                 }
             }
-            VX_DF_IMAGE_YUV4 | VX_DF_IMAGE_IYUV | VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 => {
-                // YUV formats use YUV field - fill with Y value as default
-                data.fill(val.YUV[0]);
+            VX_DF_IMAGE_NV12 => {
+                // NV12: Y plane (full), UV interleaved plane (half height)
+                // UV order: U, V for NV12
+                let y_val = val.YUV[0];
+                let u_val = val.YUV[1];
+                let v_val = val.YUV[2];
+                let y_size = (width as usize) * (height as usize);
+                data[..y_size].fill(y_val);
+                // UV plane: interleaved U, V pairs
+                for chunk in data[y_size..].chunks_exact_mut(2) {
+                    chunk[0] = u_val;
+                    chunk[1] = v_val;
+                }
             }
-            VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV => {
-                // Packed YUV formats - fill with Y value
-                data.fill(val.YUV[0]);
+            VX_DF_IMAGE_NV21 => {
+                // NV21: Y plane (full), VU interleaved plane (half height)
+                // VU order: V, U for NV21
+                let y_val = val.YUV[0];
+                let u_val = val.YUV[1];
+                let v_val = val.YUV[2];
+                let y_size = (width as usize) * (height as usize);
+                data[..y_size].fill(y_val);
+                // VU plane: interleaved V, U pairs
+                for chunk in data[y_size..].chunks_exact_mut(2) {
+                    chunk[0] = v_val;
+                    chunk[1] = u_val;
+                }
+            }
+            VX_DF_IMAGE_IYUV => {
+                // IYUV: Y plane (full), U plane (quarter), V plane (quarter)
+                let y_val = val.YUV[0];
+                let u_val = val.YUV[1];
+                let v_val = val.YUV[2];
+                let y_size = (width as usize) * (height as usize);
+                let uv_w = (width as usize + 1) / 2;
+                let uv_h = (height as usize + 1) / 2;
+                let uv_size = uv_w * uv_h;
+                data[..y_size].fill(y_val);
+                data[y_size..y_size + uv_size].fill(u_val);
+                data[y_size + uv_size..y_size + 2 * uv_size].fill(v_val);
+            }
+            VX_DF_IMAGE_YUV4 => {
+                // YUV4: Y, U, V planes all full size
+                let y_val = val.YUV[0];
+                let u_val = val.YUV[1];
+                let v_val = val.YUV[2];
+                let plane_size = (width as usize) * (height as usize);
+                data[..plane_size].fill(y_val);
+                data[plane_size..2 * plane_size].fill(u_val);
+                data[2 * plane_size..3 * plane_size].fill(v_val);
+            }
+            VX_DF_IMAGE_UYVY => {
+                // UYVY packed format: U, Y0, V, Y1 per 2 pixels
+                let y_val = val.YUV[0];
+                let u_val = val.YUV[1];
+                let v_val = val.YUV[2];
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk[0] = u_val;
+                    chunk[1] = y_val;
+                    chunk[2] = v_val;
+                    chunk[3] = y_val;
+                }
+            }
+            VX_DF_IMAGE_YUYV => {
+                // YUYV packed format: Y0, U, Y1, V per 2 pixels
+                let y_val = val.YUV[0];
+                let u_val = val.YUV[1];
+                let v_val = val.YUV[2];
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk[0] = y_val;
+                    chunk[1] = u_val;
+                    chunk[2] = y_val;
+                    chunk[3] = v_val;
+                }
             }
             _ => {
                 // Default: fill with U8 value for other formats
