@@ -25,7 +25,8 @@ use openvx_core::c_api::{
     VX_DF_IMAGE_U32, VX_DF_IMAGE_S32, VX_DF_IMAGE_VIRT,
     VX_IMAGE_FORMAT, VX_IMAGE_WIDTH, VX_IMAGE_HEIGHT, VX_IMAGE_PLANES,
     VX_IMAGE_IS_UNIFORM, VX_IMAGE_UNIFORM_VALUE, VX_IMAGE_SPACE, VX_IMAGE_RANGE,
-    VX_IMAGE_IS_VIRTUAL,
+    VX_IMAGE_IS_VIRTUAL, VX_IMAGE_SIZE, VX_IMAGE_MEMORY_TYPE,
+    VX_COLOR_SPACE_NONE, VX_CHANNEL_RANGE_FULL, VX_MEMORY_TYPE_NONE,
     VX_READ_ONLY, VX_WRITE_ONLY, VX_READ_AND_WRITE, VX_MEMORY_TYPE_HOST,
 };
 use openvx_core::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES, VX_TYPE_IMAGE};
@@ -893,18 +894,18 @@ pub extern "C" fn vxQueryImage(
                 VX_ERROR_NOT_IMPLEMENTED
             }
             VX_IMAGE_SPACE => {
-                // Image space/color space - return VX_COLOR_SPACE_UNDEFINED (0)
+                // Image space/color space
                 if size == std::mem::size_of::<vx_enum>() {
-                    *(ptr as *mut vx_enum) = 0; // VX_COLOR_SPACE_UNDEFINED
+                    *(ptr as *mut vx_enum) = openvx_core::c_api::VX_COLOR_SPACE_NONE; // VX_COLOR_SPACE_NONE = 0x6000
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
             VX_IMAGE_RANGE => {
-                // Image range - return VX_CHANNEL_RANGE_FULL (0)
+                // Image range
                 if size == std::mem::size_of::<vx_enum>() {
-                    *(ptr as *mut vx_enum) = 0; // VX_CHANNEL_RANGE_FULL
+                    *(ptr as *mut vx_enum) = openvx_core::c_api::VX_CHANNEL_RANGE_FULL; // VX_CHANNEL_RANGE_FULL = 0x7000
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -918,6 +919,28 @@ pub extern "C" fn vxQueryImage(
                 let is_virt = if img.is_virtual { 1 } else { 0 };
                 *(ptr as *mut vx_enum) = is_virt;
                 VX_SUCCESS
+            }
+            VX_IMAGE_MEMORY_TYPE => {
+                if size != std::mem::size_of::<vx_enum>() {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                // Return VX_MEMORY_TYPE_NONE (0x0E000) for host-allocated images
+                *(ptr as *mut vx_enum) = openvx_core::c_api::VX_MEMORY_TYPE_NONE;
+                VX_SUCCESS
+            }
+            VX_IMAGE_SIZE => {
+                // Return total image data size in bytes
+                if size == std::mem::size_of::<vx_size>() {
+                    let image_size = VxCImage::calculate_size(img.width, img.height, img.format);
+                    *(ptr as *mut vx_size) = image_size as vx_size;
+                    VX_SUCCESS
+                } else if size == std::mem::size_of::<vx_uint32>() {
+                    let image_size = VxCImage::calculate_size(img.width, img.height, img.format);
+                    *(ptr as *mut vx_uint32) = image_size as vx_uint32;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
             }
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }
