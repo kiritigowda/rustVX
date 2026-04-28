@@ -1157,6 +1157,10 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
                     let current_index = delay_data.current_index as i32;
                     let slot_count = delay_data.slot_count as i32;
 
+                    if slot_count == 0 {
+                        continue;
+                    }
+
                     let mut new_phys = (current_index + logical_idx) % slot_count;
                     if new_phys < 0 {
                         new_phys += slot_count;
@@ -1240,6 +1244,10 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
                     let delay_data = unsafe { &*(delay_addr as *const VxCDelay) };
                     let current_index = delay_data.current_index as i32;
                     let slot_count = delay_data.slot_count as i32;
+
+                    if slot_count == 0 {
+                        continue;
+                    }
 
                     // Compute which physical slot the pyramid is now at
                     let mut new_phys = (current_index + logical_idx) % slot_count;

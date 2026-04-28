@@ -397,6 +397,24 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
         if let Ok(mut unified_ctxs) = UNIFIED_CONTEXTS.lock() {
             unified_ctxs.remove(&addr);
         }
+        
+        // Clear delay/pyramid registries to prevent stale data between test contexts
+        if let Ok(mut delay_params) = crate::unified_c_api::DELAY_NODE_PARAMS.lock() {
+            delay_params.clear();
+        }
+        if let Ok(mut delay_pyr_level) = crate::unified_c_api::DELAY_PYRAMID_LEVEL.lock() {
+            delay_pyr_level.clear();
+        }
+        if let Ok(mut slot_logical) = crate::unified_c_api::DELAY_SLOT_LOGICAL.lock() {
+            slot_logical.clear();
+        }
+        if let Ok(mut slot_objs) = crate::unified_c_api::DELAY_SLOT_OBJECTS.lock() {
+            slot_objs.clear();
+        }
+        if let Ok(mut level_imgs) = crate::unified_c_api::PYRAMID_LEVEL_IMAGES.lock() {
+            level_imgs.clear();
+        }
+        
         *context = std::ptr::null_mut();
     }
     VX_SUCCESS
@@ -731,6 +749,12 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                 }
             }
             
+            // Collect non-scalar parameter values that need release
+            let mut non_scalar_params: Vec<u64> = Vec::new();
+
+            // Collect non-scalar params that reached ref count 0 for type-specific release
+            let mut non_scalar_last_refs: Vec<usize> = Vec::new();
+
             // Free the graph's nodes
             if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 if let Some(g) = graphs_data.get(&id) {
@@ -741,7 +765,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                             Vec::new()
                         }
                     };
-                    
+
                     for node_id in graph_nodes {
                         // Release node's parameter references (decrement their ref counts)
                         // For internally-created scalars, also release them fully
@@ -780,81 +804,31 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                                                 // Only one ref - remove and free
                                                                 let addr = *val as usize;
                                                                 drop(counts);
-                                                                if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
-                                                                    counts2.remove(&addr);
-                                                                }
-                                                                if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                                                                    types.remove(&addr);
-                                                                }
+                                                                    if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
+                                                                        counts2.remove(&addr);
+                                                                    }
+                                                                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                                                        types.remove(&addr);
+                                                                    }
                                                                 let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
                                                             }
                                                         }
                                                     }
                                                 } else {
-                                                    // For non-scalar types, just decrement the parameter reference
+                                                    // For non-scalar types, decrement ref count.
+                                                    // If ref count reaches 0, collect for type-specific release.
                                                     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                                                         if let Some(cnt) = counts.get_mut(&(*val as usize)) {
                                                             let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                                             if current > 1 {
                                                                 cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                                                            } else {
-                                                                // Ref count will reach 0 - need type-specific cleanup
-                                                                // Collect the address and type, then release after dropping locks
-                                                                let addr = *val as usize;
-                                                                let ref_type = if let Ok(types) = REFERENCE_TYPES.lock() {
-                                                                    types.get(&addr).copied()
-                                                                } else {
-                                                                    None
-                                                                };
-                                                                drop(counts);
-                                                                // Remove from registries first
-                                                                if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
-                                                                    counts2.remove(&addr);
-                                                                }
-                                                                if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                                                                    types.remove(&addr);
-                                                                }
-                                                                // Type-specific cleanup
-                                                                match ref_type {
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_PYRAMID => {
-                                                                        extern "C" { fn vxReleasePyramid(pyramid: *mut crate::unified_c_api::vx_pyramid) -> vx_status; }
-                                                                        let mut pyr = addr as crate::unified_c_api::vx_pyramid;
-                                                                        unsafe { vxReleasePyramid(&mut pyr); }
-                                                                    }
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_IMAGE => {
-                                                                        extern "C" { fn vxReleaseImage(image: *mut crate::unified_c_api::vx_image) -> vx_status; }
-                                                                        let mut img = addr as crate::unified_c_api::vx_image;
-                                                                        unsafe { vxReleaseImage(&mut img); }
-                                                                    }
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_OBJECT_ARRAY => {
-                                                                        let mut arr = addr as crate::unified_c_api::vx_object_array;
-                                                                        crate::unified_c_api::vxReleaseObjectArray(&mut arr);
-                                                                    }
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_DELAY => {
-                                                                        let mut d = addr as crate::unified_c_api::vx_delay;
-                                                                        crate::unified_c_api::vxReleaseDelay(&mut d);
-                                                                    }
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_DISTRIBUTION => {
-                                                                        let mut d = addr as crate::unified_c_api::vx_distribution;
-                                                                        crate::unified_c_api::vxReleaseDistribution(&mut d);
-                                                                    }
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_REMAP => {
-                                                                        let mut r = addr as crate::unified_c_api::vx_remap;
-                                                                        crate::unified_c_api::vxReleaseRemap(&mut r);
-                                                                    }
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_LUT => {
-                                                                        let mut l = addr as crate::unified_c_api::vx_lut;
-                                                                        crate::c_api_data::vxReleaseLUT(&mut l);
-                                                                    }
-                                                                    Some(t) if t == crate::unified_c_api::VX_TYPE_MATRIX => {
-                                                                        let mut m = addr as crate::unified_c_api::vx_matrix;
-                                                                        crate::c_api_data::vxReleaseMatrix(&mut m);
-                                                                    }
-                                                                    _ => {
-                                                                        // Unknown type - just remove from registries (already done above)
-                                                                    }
-                                                                }
+                                                            } else if current == 1 {
+                                                                // Last reference - will need type-specific cleanup
+                                                                // Collect address for later release (can't do it while holding locks)
+                                                                non_scalar_last_refs.push(*val as usize);
+                                                                cnt.store(0, std::sync::atomic::Ordering::SeqCst);
                                                             }
+                                                            // If current == 0, object already freed elsewhere
                                                         }
                                                     }
                                                 }
@@ -877,7 +851,13 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                     }
                 }
             }
-            
+
+            // Type-specific release for non-scalar params that reached ref count 0
+            for addr in non_scalar_last_refs {
+                let mut r = addr as vx_reference;
+                crate::unified_c_api::vxReleaseReference(&mut r as *mut vx_reference);
+            }
+
             // Remove from all registries when count reaches 0
             if let Ok(mut graphs) = GRAPHS.lock() {
                 graphs.remove(&id);
