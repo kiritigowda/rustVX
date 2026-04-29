@@ -115,6 +115,12 @@ pub struct Image {
     height: usize,
     format: ImageFormat,
     data: Vec<u8>,
+    // Valid region (start_x, start_y, end_x, end_y) - pixels outside this region
+    // are treated as out-of-bounds by geometric operations
+    valid_start_x: usize,
+    valid_start_y: usize,
+    valid_end_x: usize,
+    valid_end_y: usize,
 }
 
 impl Image {
@@ -128,11 +134,11 @@ impl Image {
         }
         
         let data = vec![0u8; size];
-        Some(Image { width, height, format, data })
+        Some(Image { width, height, format, data, valid_start_x: 0, valid_start_y: 0, valid_end_x: width, valid_end_y: height })
     }
 
     pub fn from_data(width: usize, height: usize, format: ImageFormat, data: Vec<u8>) -> Self {
-        Image { width, height, format, data }
+        Image { width, height, format, data, valid_start_x: 0, valid_start_y: 0, valid_end_x: width, valid_end_y: height }
     }
 
     pub fn width(&self) -> usize { self.width }
@@ -140,6 +146,12 @@ impl Image {
     pub fn format(&self) -> ImageFormat { self.format }
     pub fn data(&self) -> &[u8] { &self.data }
     pub fn data_mut(&mut self) -> &mut [u8] { &mut self.data }
+    pub fn valid_rect(&self) -> (usize, usize, usize, usize) { (self.valid_start_x, self.valid_start_y, self.valid_end_x, self.valid_end_y) }
+    pub fn set_valid_rect(&mut self, sx: usize, sy: usize, ex: usize, ey: usize) { self.valid_start_x = sx; self.valid_start_y = sy; self.valid_end_x = ex; self.valid_end_y = ey; }
+    /// Check if a pixel is within the valid region
+    pub fn is_valid_pixel(&self, x: i32, y: i32) -> bool {
+        x >= self.valid_start_x as i32 && x < self.valid_end_x as i32 && y >= self.valid_start_y as i32 && y < self.valid_end_y as i32
+    }
 
     pub fn get_pixel(&self, x: usize, y: usize) -> u8 {
         if x >= self.width || y >= self.height {
@@ -242,7 +254,12 @@ unsafe fn c_image_to_rust(image: vx_image) -> Option<Image> {
     let img = &*(image as *const VxCImage);
     let data = img.data.read().ok()?.clone();
     let format = df_image_to_format(format)?;
-    Some(Image::from_data(width as usize, height as usize, format, data))
+    let mut result = Image::from_data(width as usize, height as usize, format, data);
+    // Read valid rectangle from C image
+    if let Ok(vr) = img.valid_rect.read() {
+        result.set_valid_rect(vr.start_x as usize, vr.start_y as usize, vr.end_x as usize, vr.end_y as usize);
+    }
+    Some(result)
 }
 
 /// Convert C API image to Rust Image using raw data access
@@ -252,8 +269,12 @@ unsafe fn c_image_to_rust_raw(image: vx_image) -> Option<Image> {
     let format = df_image_to_format(format)?;
     
     let data = img.data.read().ok()?.clone();
-    
-    Some(Image::from_data(width as usize, height as usize, format, data))
+    let mut result = Image::from_data(width as usize, height as usize, format, data);
+    // Read valid rectangle from C image
+    if let Ok(vr) = img.valid_rect.read() {
+        result.set_valid_rect(vr.start_x as usize, vr.start_y as usize, vr.end_x as usize, vr.end_y as usize);
+    }
+    Some(result)
 }
 
 /// Copy Rust Image data back to C API image
@@ -3138,6 +3159,8 @@ pub fn vxu_remap_impl(
 
         let border = override_border.unwrap_or_else(|| get_border_from_context(context));
         let nearest_neighbor = _policy == 0x4000; // VX_INTERPOLATION_NEAREST_NEIGHBOR
+    
+    
         let src_width = src.width as f32;
         let src_height = src.height as f32;
         let src_w = src.width as i32;
@@ -4285,8 +4308,8 @@ fn nearest_neighbor_interpolate(img: &Image, x: f32, y: f32, border: BorderMode)
     let nx = (x + 0.5).floor() as i32;
     let ny = (y + 0.5).floor() as i32;
     
-    // Check bounds
-    if nx < 0 || nx >= width || ny < 0 || ny >= height {
+    // Check if within valid region
+    if !img.is_valid_pixel(nx, ny) {
         return match border {
             BorderMode::Constant(val) => val,
             BorderMode::Replicate => {
@@ -4313,9 +4336,9 @@ fn bilinear_interpolate_with_border(img: &Image, x: f32, y: f32, border: BorderM
     let fx = x - x0 as f32;
     let fy = y - y0 as f32;
 
-    // Handle border modes
+    // Handle border modes - pixels outside valid region use border mode
     let get_pixel_bilinear = |px: i32, py: i32| -> u8 {
-        if px >= 0 && px < width && py >= 0 && py < height {
+        if img.is_valid_pixel(px, py) {
             img.get_pixel(px as usize, py as usize)
         } else {
             match border {
@@ -4357,22 +4380,29 @@ fn area_interpolate(img: &Image, x: f32, y: f32, x_scale: f32, y_scale: f32, bor
     
     for py in y_start..y_end {
         for px in x_start..x_end {
-            if px >= 0 && px < img.width as i32 && py >= 0 && py < img.height as i32 {
+            if img.is_valid_pixel(px, py) {
                 sum += img.get_pixel(px as usize, py as usize) as u32;
                 count += 1;
             } else {
-                // Out of bounds - use border value
-                let pixel = match border {
-                    BorderMode::Constant(val) => val,
+                // Outside valid region
+                match border {
+                    BorderMode::Constant(val) => {
+                        sum += val as u32;
+                        count += 1;
+                    }
                     BorderMode::Replicate => {
                         let clamped_x = px.clamp(0, img.width as i32 - 1) as usize;
                         let clamped_y = py.clamp(0, img.height as i32 - 1) as usize;
-                        img.get_pixel(clamped_x, clamped_y)
+                        sum += img.get_pixel(clamped_x, clamped_y) as u32;
+                        count += 1;
                     }
-                    BorderMode::Undefined => 0,
-                };
-                sum += pixel as u32;
-                count += 1;
+                    BorderMode::Undefined => {
+                        // For BORDER_UNDEFINED with valid region,
+                        // count invalid pixels as 0 in the average
+                        sum += 0;
+                        count += 1;
+                    }
+                }
             }
         }
     }
@@ -4394,40 +4424,33 @@ enum InterpolationType {
 fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMode, nearest_neighbor: bool) -> VxResult<()> {
     let dst_width = dst.width;
     let dst_height = dst.height;
-    let src_width = src.width as f32;
-    let src_height = src.height as f32;
     let src_w = src.width as i32;
     let src_h = src.height as i32;
 
     let dst_data = dst.data_mut();
 
-    // CTS affine matrix layout: m[col*2 + row]
-    // m[0]=x-coeff of x, m[1]=y-coeff of x, m[2]=x-coeff of y,
-    // m[3]=y-coeff of y, m[4]=x-translation, m[5]=y-translation
-    let a11 = matrix[0]; // x-coeff of x
-    let a12 = matrix[2]; // x-coeff of y
-    let a13 = matrix[4]; // x-translation
-    let a21 = matrix[1]; // y-coeff of x
-    let a22 = matrix[3]; // y-coeff of y
-    let a23 = matrix[5]; // y-translation
+    let a11 = matrix[0];
+    let a12 = matrix[2];
+    let a13 = matrix[4];
+    let a21 = matrix[1];
+    let a22 = matrix[3];
+    let a23 = matrix[5];
 
     for y in 0..dst_height {
         for x in 0..dst_width {
             let xf = x as f32;
             let yf = y as f32;
 
-            // Inverse mapping
             let src_x = a11 * xf + a12 * yf + a13;
             let src_y = a21 * xf + a22 * yf + a23;
 
             let idx = y.saturating_mul(dst_width).saturating_add(x);
             
             if nearest_neighbor {
-                // Nearest neighbor: round to nearest pixel
                 let nx = (src_x + 0.5).floor() as i32;
                 let ny = (src_y + 0.5).floor() as i32;
                 
-                if nx >= 0 && nx < src_w && ny >= 0 && ny < src_h {
+                if src.is_valid_pixel(nx, ny) {
                     if let Some(p) = dst_data.get_mut(idx) {
                         *p = src.get_pixel(nx as usize, ny as usize);
                     }
@@ -4442,21 +4465,17 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMo
                 }
             } else {
                 // Bilinear interpolation
-                // For VX_BORDER_UNDEFINED, only process pixels where the full 2x2
-                // neighborhood is within bounds (CTS skips validation for others)
-                // For VX_BORDER_CONSTANT, use the constant value for out-of-bounds pixels
                 if matches!(border, BorderMode::Undefined) {
-                    // Check if the full 2x2 neighborhood is within bounds
+                    // Check if the full 2x2 neighborhood is within valid region
                     let x0 = src_x.floor() as i32;
                     let y0 = src_y.floor() as i32;
-                    if x0 >= 0 && x0 + 1 < src_w && y0 >= 0 && y0 + 1 < src_h {
+                    if src.is_valid_pixel(x0, y0) && src.is_valid_pixel(x0 + 1, y0)
+                        && src.is_valid_pixel(x0, y0 + 1) && src.is_valid_pixel(x0 + 1, y0 + 1) {
                         if let Some(p) = dst_data.get_mut(idx) {
                             *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
                         }
                     }
-                    // else: for UNDEFINED border, leave as 0 (CTS won't validate these)
                 } else {
-                    // For CONSTANT and REPLICATE borders, always interpolate
                     if let Some(p) = dst_data.get_mut(idx) {
                         *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
                     }
@@ -4471,8 +4490,8 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMo
 fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: BorderMode, nearest_neighbor: bool) -> VxResult<()> {
     let dst_width = dst.width;
     let dst_height = dst.height;
-    let src_width = src.width as f32;
-    let src_height = src.height as f32;
+
+
     let src_w = src.width as i32;
     let src_h = src.height as i32;
 
@@ -4519,7 +4538,7 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: Bor
                 let nx = (src_x + 0.5).floor() as i32;
                 let ny = (src_y + 0.5).floor() as i32;
                 
-                if nx >= 0 && nx < src_w && ny >= 0 && ny < src_h {
+                if src.is_valid_pixel(nx, ny) {
                     if let Some(p) = dst_data.get_mut(idx) {
                         *p = src.get_pixel(nx as usize, ny as usize);
                     }
@@ -4537,7 +4556,8 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: Bor
                 if matches!(border, BorderMode::Undefined) {
                     let x0 = src_x.floor() as i32;
                     let y0 = src_y.floor() as i32;
-                    if x0 >= 0 && x0 + 1 < src_w && y0 >= 0 && y0 + 1 < src_h {
+                    if src.is_valid_pixel(x0, y0) && src.is_valid_pixel(x0 + 1, y0)
+                        && src.is_valid_pixel(x0, y0 + 1) && src.is_valid_pixel(x0 + 1, y0 + 1) {
                         if let Some(p) = dst_data.get_mut(idx) {
                             *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
                         }
