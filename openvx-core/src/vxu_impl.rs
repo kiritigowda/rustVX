@@ -4284,8 +4284,15 @@ fn scale_image(src: &Image, dst: &mut Image, interpolation: InterpolationType, b
                     bilinear_interpolate_with_border(src, src_x, src_y, border)
                 }
                 InterpolationType::Area => {
-                    // For downsampling, compute average of source region
-                    area_interpolate(src, src_x, src_y, x_scale, y_scale, border)
+                    // AREA interpolation is only for downscaling (x_scale >= 1 and y_scale >= 1)
+                    // For upscaling, fall back to nearest-neighbor
+                    if x_scale >= 1.0 && y_scale >= 1.0 {
+                        let src_x_area = x as f32 * x_scale;
+                        let src_y_area = y as f32 * y_scale;
+                        area_interpolate(src, src_x_area, src_y_area, x_scale, y_scale, border)
+                    } else {
+                        nearest_neighbor_interpolate(src, src_x, src_y, border)
+                    }
                 }
             };
 
@@ -4369,11 +4376,17 @@ fn bilinear_interpolate_with_border(img: &Image, x: f32, y: f32, border: BorderM
 
 fn area_interpolate(img: &Image, x: f32, y: f32, x_scale: f32, y_scale: f32, border: BorderMode) -> u8 {
     // For area interpolation (used when downscaling), compute the average
-    // over the source region that maps to this output pixel
+    // over the source region that maps to this output pixel.
+    // For integer downscaling (e.g., 4:1), this should average exactly
+    // the NxM block of source pixels.
+    // Use floor-based region: start at floor(x), end at floor(x + x_scale)
+    // This ensures integer downscale averages the correct block.
     let x_start = x.floor() as i32;
     let y_start = y.floor() as i32;
-    let x_end = ((x + x_scale).ceil() as i32).min(img.width as i32);
-    let y_end = ((y + y_scale).ceil() as i32).min(img.height as i32);
+    // For exact integer downscale: x_start should be the block start,
+    // and the region should cover exactly x_scale * y_scale pixels.
+    let x_end = (x + x_scale).floor() as i32;  // Use floor, not ceil
+    let y_end = (y + y_scale).floor() as i32;
     
     let mut sum: u32 = 0;
     let mut count: u32 = 0;
