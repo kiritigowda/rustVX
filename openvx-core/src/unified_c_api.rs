@@ -998,7 +998,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.minmaxloc", vec![1, 2, 3, 4, 5]),  // [input, min_val, max_val, min_loc, max_loc, num_min_max]
                 // 7-param kernels
                 ("org.khronos.openvx.multiply", vec![5]),  // [in1, in2, scale, overflow, rounding, output]
-                ("org.khronos.openvx.harris_corners", vec![6]),  // 7 params
+                ("org.khronos.openvx.harris_corners", vec![6, 7]),  // [input, strength_thresh, min_distance, sensitivity, gs, bs, corners, num_corners]
                 ("org.khronos.openvx.optical_flow_pyr_lk", vec![6]),  // 7 params
             ].iter().cloned().collect();
 
@@ -1791,7 +1791,6 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
 
     // Validate kernel_name is not empty
     if kernel_name.is_empty() {
-
         return Some(VX_ERROR_INVALID_KERNEL);
     }
 
@@ -2613,7 +2612,7 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let corners = if params.len() > 6 && !params[6].is_null() { params[6] as vx_array } else { std::ptr::null_mut() };
                 let num_corners = if params.len() > 7 && !params[7].is_null() { params[7] as vx_scalar } else { std::ptr::null_mut() };
 
-                crate::vxu_impl::vxu_harris_corners_impl(
+                let result = crate::vxu_impl::vxu_harris_corners_impl(
                     unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                     input,
                     strength_thresh,
@@ -2623,7 +2622,8 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                     block_size,
                     corners,
                     num_corners
-                )
+                );
+                result
             } else {
                 VX_ERROR_INVALID_PARAMETERS
             }

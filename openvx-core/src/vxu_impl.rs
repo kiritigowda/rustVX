@@ -2963,9 +2963,11 @@ pub fn vxu_harris_corners_impl(
         if width < 3 || height < 3 {
             // Image too small for Harris corners
             if !corners.is_null() {
-                let arr = &*(corners as *const crate::unified_c_api::VxCArray);
-                if let Ok(mut arr_data) = arr.items.write() {
-                    arr_data.clear();
+                extern "C" {
+                    fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+                }
+                unsafe {
+                    vxTruncateArray(corners, 0);
                 }
             }
             if !num_corners.is_null() {
@@ -2982,25 +2984,16 @@ pub fn vxu_harris_corners_impl(
         // Get image data as flat u8 array
         let img_data = src.data();
 
-        // Normalization factor matching MIVisionX reference:
-        // For 3x3: div_factor = 1 (gradients already small)
-        // For larger kernels, scale by 2^(gs-1) to match the reference's separation
-        let div_factor: f32 = match gs {
-            3 => 1.0,
-            5 => 16.0,  // 2^4
-            7 => 64.0,  // 2^6
-            _ => 1.0,
-        };
+        // Gradients are computed raw (no normalization) - the normFactor at the end handles all normalization
 
         // Compute GxGx, GxGy, GyGy structure tensor components
         // using separable Sobel filters (horizontal then vertical pass)
         let mut gxy = vec![GxyComponent { ixx: 0.0f32, ixy: 0.0f32, iyy: 0.0f32 }; width * height];
 
         match gs {
-            3 => harris_sobel_3x3(&img_data, width, height, &mut gxy, div_factor),
-            5 => harris_sobel_5x5(&img_data, width, height, &mut gxy, div_factor),
-            7 => harris_sobel_7x7(&img_data, width, height, &mut gxy, div_factor),
-            _ => harris_sobel_3x3(&img_data, width, height, &mut gxy, div_factor),
+            5 => harris_sobel_5x5(&img_data, width, height, &mut gxy),
+            7 => harris_sobel_7x7(&img_data, width, height, &mut gxy),
+            _ => harris_sobel_3x3(&img_data, width, height, &mut gxy),
         }
 
         // Compute Harris response using sliding window accumulation over blockSize
@@ -3064,10 +3057,13 @@ pub fn vxu_harris_corners_impl(
             }
         }
 
-        // Normalize responses by block_area
-        // This matches the MIVisionX reference which divides by the window size
+        // Normalize responses using the proper Harris normalization factor
+        // normFactor = (255.0 * (1 << (gradient_size - 1)) * block_size)^4
+        // This matches the CTS truth data scale: scale = 1/((1<<(gs-1))*bs*255), scale^4
+        let norm_base = 255.0f32 * (1 << (gs - 1)) as f32 * bs as f32;
+        let norm_factor = norm_base * norm_base * norm_base * norm_base;
         for r in responses.iter_mut() {
-            *r /= block_area;
+            *r /= norm_factor;
         }
 
         // Non-maximum suppression with min_distance using grid-based approach
@@ -3149,40 +3145,44 @@ pub fn vxu_harris_corners_impl(
             }
         }
 
-        // Write corners to output array
+        // Write corners to output array using proper C API functions
+        // (openvx-buffer VxCArray struct layout differs from unified_c_api VxCArray)
         if !corners.is_null() {
-            let arr = &*(corners as *const crate::unified_c_api::VxCArray);
-            let mut arr_data = match arr.items.write() {
-                Ok(d) => d,
-                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
-            };
-
             let keypoint_size = std::mem::size_of::<vx_keypoint_t>();
-            let output_size = corner_list.len() * keypoint_size;
-            if arr_data.len() < output_size {
-                arr_data.resize(output_size, 0);
+
+            // First truncate the array to 0 items
+            extern "C" {
+                fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+                fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+            }
+            unsafe {
+                vxTruncateArray(corners, 0);
             }
 
-            for (i, &(x, y, strength)) in corner_list.iter().enumerate() {
-                let offset = i * keypoint_size;
-                if offset + keypoint_size <= arr_data.len() {
-                    let kp = vx_keypoint_t {
-                        x,
-                        y,
-                        strength,
-                        scale: 0.0,
-                        orientation: 0.0,
-                        tracking_status: 1,
-                        error: 0.0,
-                    };
-                    let kp_ptr = arr_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
-                    *kp_ptr = kp;
-                }
+            // Build a flat byte buffer of keypoints
+            let mut buf: Vec<u8> = Vec::with_capacity(corner_list.len() * keypoint_size);
+            for &(x, y, strength) in &corner_list {
+                let kp = vx_keypoint_t {
+                    x,
+                    y,
+                    strength,
+                    scale: 0.0,
+                    orientation: 0.0,
+                    tracking_status: 1,
+                    error: 0.0,
+                };
+                let kp_bytes = std::slice::from_raw_parts(
+                    &kp as *const vx_keypoint_t as *const u8,
+                    keypoint_size
+                );
+                buf.extend_from_slice(kp_bytes);
             }
-            // Zero out remaining data
-            let end = (corner_list.len() * keypoint_size).min(arr_data.len());
-            for i in (corner_list.len() * keypoint_size)..end {
-                arr_data[i] = 0;
+
+            // Add all keypoints at once
+            unsafe {
+                let status = vxAddArrayItems(corners, corner_list.len() as vx_size, buf.as_ptr() as *const c_void, keypoint_size as vx_size);
+                if status != VX_SUCCESS {
+                }
             }
         }
 
@@ -3213,18 +3213,14 @@ struct GxyComponent {
 /// Gx: horizontal = [-1, 0, 1], vertical = [1, 2, 1]
 /// Gy: horizontal = [1, 2, 1], vertical = [-1, 0, 1]
 /// Computes Gx*Gx, Gx*Gy, Gy*Gy per pixel
-fn harris_sobel_3x3(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent], div_factor: f32) {
-    let inv_df = 1.0 / div_factor;
-
+fn harris_sobel_3x3(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent]) {
+    // Use raw gradients (no normalization) - matches MIVisionX reference with div_factor=1
     for y in 1..height - 1 {
         let row_m = (y - 1) * width;
         let row_c = y * width;
         let row_p = (y + 1) * width;
 
         for x in 1..width - 1 {
-            // Separable Sobel 3x3:
-            // Gx = (I[y+1][x+1] - I[y+1][x-1]) + 2*(I[y][x+1] - I[y][x-1]) + (I[y-1][x+1] - I[y-1][x-1])
-            // Gy = (I[y+1][x+1] + 2*I[y+1][x] + I[y+1][x-1]) - (I[y-1][x+1] + 2*I[y-1][x] + I[y-1][x-1])
             let p_m_l = img_data[row_m + x - 1] as i32;
             let p_m_c = img_data[row_m + x] as i32;
             let p_m_r = img_data[row_m + x + 1] as i32;
@@ -3237,8 +3233,8 @@ fn harris_sobel_3x3(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
             let gx: i32 = (p_p_r - p_p_l) + 2 * (p_c_r - p_c_l) + (p_m_r - p_m_l);
             let gy: i32 = (p_p_r + 2 * p_p_c + p_p_l) - (p_m_r + 2 * p_m_c + p_m_l);
 
-            let gxf = gx as f32 * inv_df;
-            let gyf = gy as f32 * inv_df;
+            let gxf = gx as f32;
+            let gyf = gy as f32;
 
             let idx = y * width + x;
             gxy[idx].ixx = gxf * gxf;
@@ -3249,8 +3245,7 @@ fn harris_sobel_3x3(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
 }
 
 /// 5x5 Sobel + structure tensor computation
-fn harris_sobel_5x5(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent], div_factor: f32) {
-    let inv_df = 1.0 / div_factor;
+fn harris_sobel_5x5(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent]) {
 
     // 5x5 Sobel kernels (from OpenVX spec)
     let gx_kernel: [[i32; 5]; 5] = [
@@ -3282,9 +3277,9 @@ fn harris_sobel_5x5(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
                 }
             }
 
-            // Divide by 2^(5-1) = 16 for normalization
-            let gxf = (gx >> 4) as f32 * inv_df;
-            let gyf = (gy >> 4) as f32 * inv_df;
+            // Use raw gradients (no normalization) - normFactor handles it
+            let gxf = gx as f32;
+            let gyf = gy as f32;
 
             let idx = y * width + x;
             gxy[idx].ixx = gxf * gxf;
@@ -3295,8 +3290,7 @@ fn harris_sobel_5x5(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
 }
 
 /// 7x7 Sobel + structure tensor computation
-fn harris_sobel_7x7(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent], div_factor: f32) {
-    let inv_df = 1.0 / div_factor;
+fn harris_sobel_7x7(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent]) {
 
     // 7x7 Sobel kernels
     let gx_kernel: [[i32; 7]; 7] = [
@@ -3332,9 +3326,9 @@ fn harris_sobel_7x7(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
                 }
             }
 
-            // Divide by 2^(7-1) = 64 for normalization
-            let gxf = (gx >> 6) as f32 * inv_df;
-            let gyf = (gy >> 6) as f32 * inv_df;
+            // Use raw gradients (no normalization) - normFactor handles it
+            let gxf = gx as f32;
+            let gyf = gy as f32;
 
             let idx = y * width + x;
             gxy[idx].ixx = gxf * gxf;
@@ -3557,45 +3551,38 @@ pub fn vxu_fast_corners_impl(
         // Sort corners by strength (descending)
         corner_list.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Write corners to output array
+        // Write corners to output array using proper C API functions
         if !corners.is_null() {
-            let arr = &*(corners as *const crate::unified_c_api::VxCArray);
-            let mut arr_data = match arr.items.write() {
-                Ok(d) => d,
-                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
-            };
-
             let keypoint_size = std::mem::size_of::<vx_keypoint_t>();
-            let output_size = corner_list.len() * keypoint_size;
-            if arr_data.len() < output_size {
-                arr_data.resize(output_size, 0);
-            }
 
-            for (i, &(x, y, strength)) in corner_list.iter().enumerate() {
-                let offset = i * keypoint_size;
-                if offset + keypoint_size <= arr_data.len() {
-                    let kp = vx_keypoint_t {
-                        x: x as i32,
-                        y: y as i32,
-                        strength,
-                        scale: 0.0,
-                        orientation: 0.0,
-                        error: 0.0,
-                        tracking_status: 1,
-                    };
-                    let kp_ptr = arr_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
-                    *kp_ptr = kp;
-                }
+            extern "C" {
+                fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+                fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
             }
-            // Zero out remaining data
-            for i in corner_list.len() * keypoint_size..arr_data.len() {
-                arr_data[i] = 0;
-            }
-
-            // Update array capacity/size
             unsafe {
-                let arr_mut = arr as *const crate::unified_c_api::VxCArray as *mut crate::unified_c_api::VxCArray;
-                (*arr_mut).capacity = corner_list.len();
+                vxTruncateArray(corners, 0);
+            }
+
+            let mut buf: Vec<u8> = Vec::with_capacity(corner_list.len() * keypoint_size);
+            for &(x, y, strength) in &corner_list {
+                let kp = vx_keypoint_t {
+                    x: x as i32,
+                    y: y as i32,
+                    strength,
+                    scale: 0.0,
+                    orientation: 0.0,
+                    tracking_status: 1,
+                    error: 0.0,
+                };
+                let kp_bytes = std::slice::from_raw_parts(
+                    &kp as *const vx_keypoint_t as *const u8,
+                    keypoint_size
+                );
+                buf.extend_from_slice(kp_bytes);
+            }
+
+            unsafe {
+                vxAddArrayItems(corners, corner_list.len() as vx_size, buf.as_ptr() as *const c_void, keypoint_size as vx_size);
             }
         }
 
