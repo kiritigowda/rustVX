@@ -3460,28 +3460,31 @@ pub fn vxu_fast_corners_impl(
             }
 
             // NMS: keep only local maxima in 3x3 neighborhood
+            // Matching CTS reference: >= for top/left, > for right/bottom (raster-scan bias)
             let mut nms_corners: Vec<(usize, usize, f32)> = Vec::new();
-            for &(x, y, s) in &corner_list {
+            for &(x, y, _s) in &corner_list {
                 let ix = x as usize;
                 let iy = y as usize;
                 if ix < 1 || ix >= width - 1 || iy < 1 || iy >= height - 1 {
                     continue;
                 }
-                let my_strength = strength_img[iy * width + ix];
-                let mut is_max = true;
-                'outer: for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        if dx == 0 && dy == 0 { continue; }
-                        let nx = (ix as i32 + dx) as usize;
-                        let ny = (iy as i32 + dy) as usize;
-                        if strength_img[ny * width + nx] > my_strength {
-                            is_max = false;
-                            break 'outer;
-                        }
-                    }
-                }
-                if is_max && my_strength > 0 {
-                    nms_corners.push((x, y, my_strength as f32));
+                let c = strength_img[iy * width + ix] as i32;
+                // Asymmetric: >= for top/left neighbors, > for right/bottom
+                let top_left     = strength_img[(iy - 1) * width + ix - 1] as i32;
+                let top          = strength_img[(iy - 1) * width + ix] as i32;
+                let top_right    = strength_img[(iy - 1) * width + ix + 1] as i32;
+                let left         = strength_img[iy * width + ix - 1] as i32;
+                let right        = strength_img[iy * width + ix + 1] as i32;
+                let bottom_left  = strength_img[(iy + 1) * width + ix - 1] as i32;
+                let bottom       = strength_img[(iy + 1) * width + ix] as i32;
+                let bottom_right = strength_img[(iy + 1) * width + ix + 1] as i32;
+
+                if c >= top_left && c >= top && c >= top_right &&
+                   c >= left &&
+                   c > right &&
+                   c > bottom_left && c > bottom && c > bottom_right
+                {
+                    nms_corners.push((x, y, c as f32));
                 }
             }
             corner_list = nms_corners;
