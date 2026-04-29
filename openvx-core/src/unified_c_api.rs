@@ -8462,10 +8462,52 @@ pub extern "C" fn vxuSobel5x5(
 pub extern "C" fn vxuMeanStdDev(
     context: vx_context,
     input: vx_image,
-    _mean: vx_scalar,
-    _stddev: vx_scalar,
+    mean_ptr: *mut vx_float32,
+    stddev_ptr: *mut vx_float32,
 ) -> i32 {
-    crate::vxu_impl::vxu_mean_std_dev_impl(context, input, _mean, _stddev)
+    // Immediate mode: create temp scalars, call impl, then read values back
+    if context.is_null() || input.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let mut mean_val: f32 = 0.0;
+        let mut stddev_val: f32 = 0.0;
+
+        // Create temporary scalars for the impl function
+        let mut mean_scalar = vxCreateScalar(context, 0x11002, &mut mean_val as *mut f32 as *mut c_void); // VX_TYPE_FLOAT32
+        let mut stddev_scalar = vxCreateScalar(context, 0x11002, &mut stddev_val as *mut f32 as *mut c_void);
+
+        let result = crate::vxu_impl::vxu_mean_std_dev_impl(context, input, mean_scalar, stddev_scalar);
+
+        // Read values back from scalars
+        if result == VX_SUCCESS {
+            if !mean_ptr.is_null() {
+                crate::c_api_data::vxCopyScalarData(
+                    mean_scalar,
+                    mean_ptr as *mut c_void,
+                    0x11001, 0x0 // VX_READ_ONLY
+                );
+            }
+            if !stddev_ptr.is_null() {
+                crate::c_api_data::vxCopyScalarData(
+                    stddev_scalar,
+                    stddev_ptr as *mut c_void,
+                    0x11001, 0x0
+                );
+            }
+        }
+
+        // Release temp scalars
+        if !mean_scalar.is_null() {
+            vxReleaseScalar(&mut mean_scalar as *mut _);
+        }
+        if !stddev_scalar.is_null() {
+            vxReleaseScalar(&mut stddev_scalar as *mut _);
+        }
+
+        result
+    }
 }
 
 #[no_mangle]

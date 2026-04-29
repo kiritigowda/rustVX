@@ -13,6 +13,7 @@ use crate::c_api::{
     VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
     VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
     VX_DF_IMAGE_S16, VX_DF_IMAGE_U16, VX_DF_IMAGE_U8,  // Add S16/U16/U8 format constants
+    vx_coordinates2d_t,
 };
 use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage, vx_border_t};
 
@@ -2628,8 +2629,8 @@ pub fn vxu_integral_image_impl(
 pub fn vxu_mean_std_dev_impl(
     context: vx_context,
     input: vx_image,
-    _mean: vx_scalar,
-    _stddev: vx_scalar,
+    mean_scalar: vx_scalar,
+    stddev_scalar: vx_scalar,
 ) -> vx_status {
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -2642,8 +2643,21 @@ pub fn vxu_mean_std_dev_impl(
         };
 
         match mean_std_dev(&src) {
-            Ok((_mean_val, _stddev_val)) => {
-                // In a full implementation, would write to scalar outputs
+            Ok((mean_val, stddev_val)) => {
+                if !mean_scalar.is_null() {
+                    crate::c_api_data::vxCopyScalarData(
+                        mean_scalar,
+                        &mean_val as *const f32 as *mut c_void,
+                        0x11002, 0x0 // VX_WRITE_ONLY
+                    );
+                }
+                if !stddev_scalar.is_null() {
+                    crate::c_api_data::vxCopyScalarData(
+                        stddev_scalar,
+                        &stddev_val as *const f32 as *mut c_void,
+                        0x11002, 0x0
+                    );
+                }
                 VX_SUCCESS
             }
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -2654,11 +2668,11 @@ pub fn vxu_mean_std_dev_impl(
 pub fn vxu_min_max_loc_impl(
     context: vx_context,
     input: vx_image,
-    _min_val: vx_scalar,
-    _max_val: vx_scalar,
-    _min_loc: vx_array,
-    _max_loc: vx_array,
-    _num_min_max: vx_scalar,
+    min_val_scalar: vx_scalar,
+    max_val_scalar: vx_scalar,
+    min_loc_array: vx_array,
+    max_loc_array: vx_array,
+    num_min_max_scalar: vx_scalar,
 ) -> vx_status {
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -2671,8 +2685,52 @@ pub fn vxu_min_max_loc_impl(
         };
 
         match min_max_loc(&src) {
-            Ok((_min_val, _max_val, _min_loc, _max_loc)) => {
-                // In a full implementation, would write to scalar/array outputs
+            Ok((min_val, max_val, min_loc, max_loc)) => {
+                // Write min/max values to scalars
+                if !min_val_scalar.is_null() {
+                    // For U8 images, min/max are written as the image data type
+                    let min_v = min_val as f32;
+                    crate::c_api_data::vxCopyScalarData(
+                        min_val_scalar,
+                        &min_v as *const f32 as *mut c_void,
+                        0x11002, 0x0
+                    );
+                }
+                if !max_val_scalar.is_null() {
+                    let max_v = max_val as f32;
+                    crate::c_api_data::vxCopyScalarData(
+                        max_val_scalar,
+                        &max_v as *const f32 as *mut c_void,
+                        0x11002, 0x0
+                    );
+                }
+                // Write min/max locations to arrays
+                if !min_loc_array.is_null() {
+                    extern "C" {
+                        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+                        fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+                    }
+                    vxTruncateArray(min_loc_array, 0);
+                    let coord = vx_coordinates2d_t { x: min_loc.x as u32, y: min_loc.y as u32 };
+                    vxAddArrayItems(min_loc_array, 1, &coord as *const _ as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                }
+                if !max_loc_array.is_null() {
+                    extern "C" {
+                        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+                        fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+                    }
+                    vxTruncateArray(max_loc_array, 0);
+                    let coord = vx_coordinates2d_t { x: max_loc.x as u32, y: max_loc.y as u32 };
+                    vxAddArrayItems(max_loc_array, 1, &coord as *const _ as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                }
+                if !num_min_max_scalar.is_null() {
+                    let num: usize = 1;
+                    crate::c_api_data::vxCopyScalarData(
+                        num_min_max_scalar,
+                        &num as *const usize as *mut c_void,
+                        0x11002, 0x0
+                    );
+                }
                 VX_SUCCESS
             }
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
