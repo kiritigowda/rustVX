@@ -6916,7 +6916,7 @@ pub extern "C" fn vxChannelExtractNode(
     );
 
     // Release the scalar (node has reference now)
-    // vxReleaseScalar(&mut scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut scalar);
 
     node
 }
@@ -7300,7 +7300,7 @@ pub extern "C" fn vxAddNode(
     );
 
     // Don't release - node needs scalar at execution time
-    // vxReleaseScalar(&mut policy_scalar);
+    vxReleaseScalar(&mut policy_scalar);
 
     node
 }
@@ -7336,7 +7336,7 @@ pub extern "C" fn vxSubtractNode(
     );
 
     // Don't release - node needs scalar at execution time
-    // vxReleaseScalar(&mut policy_scalar);
+    vxReleaseScalar(&mut policy_scalar);
 
     node
 }
@@ -7366,8 +7366,8 @@ pub extern "C" fn vxMultiplyNode(
     let mut rounding_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_rounding_policy as *const _ as *const c_void);
 
     if overflow_scalar.is_null() || rounding_scalar.is_null() {
-        // vxReleaseScalar(&mut overflow_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut rounding_scalar); // leak: node needs scalar at exec time
+        vxReleaseScalar(&mut overflow_scalar);
+        vxReleaseScalar(&mut rounding_scalar);
         return std::ptr::null_mut();
     }
 
@@ -7380,8 +7380,8 @@ pub extern "C" fn vxMultiplyNode(
 
     // Don't release the scalars - the node needs them at execution time
     // The reference counting in vxSetParameterByIndex is unreliable
-    // vxReleaseScalar(&mut overflow_scalar);
-    // vxReleaseScalar(&mut rounding_scalar);
+    vxReleaseScalar(&mut overflow_scalar);
+    vxReleaseScalar(&mut rounding_scalar);
 
     node
 }
@@ -7569,7 +7569,7 @@ pub extern "C" fn vxScaleImageNode(
     );
 
     // Release the scalar (node has reference now)
-    // vxReleaseScalar(&mut interp_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut interp_scalar);
 
     node
 }
@@ -7605,7 +7605,7 @@ pub extern "C" fn vxWarpAffineNode(
     );
 
     // Release the scalar (node has reference now)
-    // vxReleaseScalar(&mut interp_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut interp_scalar);
 
     node
 }
@@ -7641,7 +7641,7 @@ pub extern "C" fn vxWarpPerspectiveNode(
     );
 
     // Release the scalar (node has reference now)
-    // vxReleaseScalar(&mut interp_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut interp_scalar);
 
     node
 }
@@ -7677,7 +7677,7 @@ pub extern "C" fn vxRemapNode(
     );
 
     // Release the scalar (node has reference now)
-    // vxReleaseScalar(&mut policy_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut policy_scalar);
 
     node
 }
@@ -7743,7 +7743,7 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
     );
 
     // Release the termination scalar (node has reference now)
-    // vxReleaseScalar(&mut termination_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut termination_scalar);
 
     node
 }
@@ -7903,7 +7903,7 @@ pub extern "C" fn vxFASTCornersNode(
     );
 
     // Release the scalar (node has reference now)
-    // vxReleaseScalar(&mut nonmax_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut nonmax_scalar);
 
     node
 }
@@ -7966,7 +7966,7 @@ pub extern "C" fn vxCornerMinEigenValNode(
     );
 
     // Release the scalar (node has reference now)
-    // vxReleaseScalar(&mut block_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut block_scalar);
 
     node
 }
@@ -7995,8 +7995,8 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
     let mut norm_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_norm_type as *const _ as *const c_void);
 
     if gradient_scalar.is_null() || norm_scalar.is_null() {
-        // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut norm_scalar); // leak: node needs scalar at exec time
+        vxReleaseScalar(&mut gradient_scalar);
+        vxReleaseScalar(&mut norm_scalar);
         return std::ptr::null_mut();
     }
 
@@ -8008,8 +8008,8 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
     );
 
     // Release the scalars (node has reference now)
-    // vxReleaseScalar(&mut gradient_scalar); // leak: node needs scalar at exec time
-    // vxReleaseScalar(&mut norm_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut gradient_scalar);
+    vxReleaseScalar(&mut norm_scalar);
 
     node
 }
@@ -8046,11 +8046,11 @@ pub extern "C" fn vxHoughLinesPNode(
 
         if rho_scalar.is_null() || theta_scalar.is_null() || threshold_scalar.is_null() ||
            line_length_scalar.is_null() || line_gap_scalar.is_null() {
-            // vxReleaseScalar(&mut rho_scalar); // leak: node needs scalar at exec time
-            // vxReleaseScalar(&mut theta_scalar); // leak: node needs scalar at exec time
-            // vxReleaseScalar(&mut threshold_scalar); // leak: node needs scalar at exec time
-            // vxReleaseScalar(&mut line_length_scalar); // leak: node needs scalar at exec time
-            // vxReleaseScalar(&mut line_gap_scalar); // leak: node needs scalar at exec time
+            vxReleaseScalar(&mut rho_scalar);
+            vxReleaseScalar(&mut theta_scalar);
+            vxReleaseScalar(&mut threshold_scalar);
+            vxReleaseScalar(&mut line_length_scalar);
+            vxReleaseScalar(&mut line_gap_scalar);
             return std::ptr::null_mut();
         }
 
@@ -8063,11 +8063,11 @@ pub extern "C" fn vxHoughLinesPNode(
         );
 
         // Release the scalars (node has reference now)
-        // vxReleaseScalar(&mut rho_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut theta_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut threshold_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut line_length_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut line_gap_scalar); // leak: node needs scalar at exec time
+        vxReleaseScalar(&mut rho_scalar);
+        vxReleaseScalar(&mut theta_scalar);
+        vxReleaseScalar(&mut threshold_scalar);
+        vxReleaseScalar(&mut line_length_scalar);
+        vxReleaseScalar(&mut line_gap_scalar);
 
         node
     }
@@ -8118,9 +8118,9 @@ pub extern "C" fn vxMeanShiftNode(
         &_criteria as *const _ as *const c_void);
 
     if width_scalar.is_null() || height_scalar.is_null() || criteria_scalar.is_null() {
-        // vxReleaseScalar(&mut width_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut height_scalar); // leak: node needs scalar at exec time
-        // vxReleaseScalar(&mut criteria_scalar); // leak: node needs scalar at exec time
+        vxReleaseScalar(&mut width_scalar);
+        vxReleaseScalar(&mut height_scalar);
+        vxReleaseScalar(&mut criteria_scalar);
         return std::ptr::null_mut();
     }
 
@@ -8132,9 +8132,9 @@ pub extern "C" fn vxMeanShiftNode(
     );
 
     // Release the scalars (node has reference now)
-    // vxReleaseScalar(&mut width_scalar); // leak: node needs scalar at exec time
-    // vxReleaseScalar(&mut height_scalar); // leak: node needs scalar at exec time
-    // vxReleaseScalar(&mut criteria_scalar); // leak: node needs scalar at exec time
+    vxReleaseScalar(&mut width_scalar);
+    vxReleaseScalar(&mut height_scalar);
+    vxReleaseScalar(&mut criteria_scalar);
 
     node
 }
