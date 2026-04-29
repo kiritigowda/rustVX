@@ -980,7 +980,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.laplacian_reconstruct", vec![2]),
                 ("org.khronos.openvx.non_linear_filter", vec![3]),  // [input, matrix, border, output]
                 // 4-param kernels
-                ("org.khronos.openvx.channel_combine", vec![3]),  // [plane1, plane2, plane3/plane4, output]
+                ("org.khronos.openvx.channel_combine", vec![4]),  // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]),  // [in1, in2, policy_scalar, output]
                 ("org.khronos.openvx.subtract", vec![3]),  // [in1, in2, policy_scalar, output]
                 ("org.khronos.openvx.warp_affine", vec![3]),  // [input, matrix, type, output]
@@ -2496,12 +2496,13 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         }
         // Channel Combine
         "org.khronos.openvx.channel_combine" => {
-            if params.len() >= 4 {
+            // params: [plane0, plane1, plane2, plane3(may be null), output]
+            if params.len() >= 5 {
                 let plane0 = params[0] as vx_image;
                 let plane1 = params[1] as vx_image;
                 let plane2 = params[2] as vx_image;
-                let plane3 = params.get(3).copied().unwrap_or(std::ptr::null_mut()) as vx_image;
-                let output = params[params.len() - 1] as vx_image;
+                let plane3 = params[3] as vx_image;
+                let output = params[4] as vx_image;
                 if !plane0.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_channel_combine_impl(
                         unsafe { crate::c_api::vxGetContext(plane0 as vx_reference) },
@@ -2509,6 +2510,24 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                         plane1,
                         plane2,
                         plane3,
+                        output
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else if params.len() >= 4 {
+                // Legacy path: [plane0, plane1, plane2, output] (no alpha)
+                let plane0 = params[0] as vx_image;
+                let plane1 = params[1] as vx_image;
+                let plane2 = params[2] as vx_image;
+                let output = params[3] as vx_image;
+                if !plane0.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_channel_combine_impl(
+                        unsafe { crate::c_api::vxGetContext(plane0 as vx_reference) },
+                        plane0,
+                        plane1,
+                        plane2,
+                        std::ptr::null_mut(),
                         output
                     )
                 } else {
@@ -6985,28 +7004,15 @@ pub extern "C" fn vxChannelCombineNode(
         return std::ptr::null_mut();
     }
 
-    // Build parameter list based on which planes are provided
-    let mut params: Vec<vx_reference> = Vec::new();
-
-    if !plane0.is_null() {
-        params.push(plane0 as vx_reference);
-    }
-    if !plane1.is_null() {
-        params.push(plane1 as vx_reference);
-    }
-    if !plane2.is_null() {
-        params.push(plane2 as vx_reference);
-    }
-    if !plane3.is_null() {
-        params.push(plane3 as vx_reference);
-    }
-
-    params.push(output as vx_reference);
-
-    if params.len() < 2 {
-        // Need at least one input plane and output
-        return std::ptr::null_mut();
-    }
+    // Always include all parameter positions (even NULL ones)
+    // The kernel expects: [plane0, plane1, plane2, plane3, output]
+    let params: Vec<vx_reference> = vec![
+        plane0 as vx_reference,
+        plane1 as vx_reference,
+        plane2 as vx_reference,
+        plane3 as vx_reference,
+        output as vx_reference,
+    ];
 
     create_node_with_params(
         graph,

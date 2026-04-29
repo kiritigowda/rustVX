@@ -1453,107 +1453,252 @@ pub fn vxu_channel_extract_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        let width = src.width();
-        let height = src.height();
+        let src_width = src.width();
+        let src_height = src.height();
+        let dst_width = dst.width();
+        let dst_height = dst.height();
         let mut dst_data = dst.data_mut();
         let src_data = src.data();
 
-        for y in 0..height {
-            for x in 0..width {
-                let val: u8 = match src.format() {
-                    ImageFormat::Rgb => {
+        match src.format() {
+            ImageFormat::Rgb => {
+                for y in 0..dst_height {
+                    for x in 0..dst_width {
                         let (r, g, b) = src.get_rgb(x, y);
-                        match channel {
+                        let val = match channel {
                             VX_CHANNEL_R => r,
                             VX_CHANNEL_G => g,
                             VX_CHANNEL_B => b,
                             _ => r,
+                        };
+                        dst_data[y * dst_width + x] = val;
+                    }
+                }
+            }
+            ImageFormat::Rgba => {
+                for y in 0..dst_height {
+                    for x in 0..dst_width {
+                        let idx = y * src_width + x;
+                        let val = match channel {
+                            VX_CHANNEL_R => src_data[idx * 4],
+                            VX_CHANNEL_G => src_data[idx * 4 + 1],
+                            VX_CHANNEL_B => src_data[idx * 4 + 2],
+                            VX_CHANNEL_A => src_data[idx * 4 + 3],
+                            _ => src_data[idx * 4],
+                        };
+                        dst_data[y * dst_width + x] = val;
+                    }
+                }
+            }
+            ImageFormat::NV12 => {
+                let y_size = src_width * src_height;
+                match channel {
+                    VX_CHANNEL_Y => {
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                dst_data[y * dst_width + x] = src_data[y * src_width + x];
+                            }
                         }
                     }
-                    ImageFormat::Rgba => {
-                        let idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
-                        match channel {
-                            VX_CHANNEL_R => *src_data.get(idx).unwrap_or(&0),
-                            VX_CHANNEL_G => *src_data.get(idx.saturating_add(1)).unwrap_or(&0),
-                            VX_CHANNEL_B => *src_data.get(idx.saturating_add(2)).unwrap_or(&0),
-                            VX_CHANNEL_A => *src_data.get(idx.saturating_add(3)).unwrap_or(&0),
-                            _ => *src_data.get(idx).unwrap_or(&0),
+                    VX_CHANNEL_U | VX_CHANNEL_V => {
+                        // NV12: UV interleaved, subsampled 2x2
+                        // dst is (width/2) x (height/2)
+                        let uv_offset = if channel == VX_CHANNEL_U { 0 } else { 1 };
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                // In the source, UV pairs are at even x positions
+                                // src: Y plane, then UV interleaved
+                                // For destination pixel (x,y), the source UV is at
+                                // (x*2, y*2) in the UV plane
+                                let uv_idx = y_size + y * src_width + x * 2 + uv_offset;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(uv_idx).unwrap_or(&128);
+                            }
                         }
                     }
-                    ImageFormat::NV12 => {
-                        // NV12: Y plane (full size), UV plane (half size, interleaved)
-                        let y_size = width * height;
-                        match channel {
-                            VX_CHANNEL_Y => src_data[y * width + x],
-                            VX_CHANNEL_U => {
-                                let uv_x = (x / 2) * 2;
-                                let uv_y = y / 2;
-                                let uv_idx = y_size + uv_y * width + uv_x;
-                                *src_data.get(uv_idx).unwrap_or(&128)
+                    _ => return VX_ERROR_INVALID_PARAMETERS,
+                }
+            }
+            ImageFormat::NV21 => {
+                let y_size = src_width * src_height;
+                match channel {
+                    VX_CHANNEL_Y => {
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                dst_data[y * dst_width + x] = src_data[y * src_width + x];
                             }
-                            VX_CHANNEL_V => {
-                                let uv_x = (x / 2) * 2;
-                                let uv_y = y / 2;
-                                let uv_idx = y_size + uv_y * width + uv_x + 1;
-                                *src_data.get(uv_idx).unwrap_or(&128)
-                            }
-                            _ => 0,
                         }
                     }
-                    ImageFormat::NV21 => {
-                        // NV21: Y plane (full size), VU plane (half size, interleaved V first)
-                        let y_size = width * height;
-                        match channel {
-                            VX_CHANNEL_Y => src_data[y * width + x],
-                            VX_CHANNEL_V => {
-                                let vu_x = (x / 2) * 2;
-                                let vu_y = y / 2;
-                                let vu_idx = y_size + vu_y * width + vu_x;
-                                *src_data.get(vu_idx).unwrap_or(&128)
+                    VX_CHANNEL_V | VX_CHANNEL_U => {
+                        // NV21: VU interleaved, subsampled 2x2
+                        // dst is (width/2) x (height/2)
+                        let vu_offset = if channel == VX_CHANNEL_V { 0 } else { 1 };
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let vu_idx = y_size + y * src_width + x * 2 + vu_offset;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(vu_idx).unwrap_or(&128);
                             }
-                            VX_CHANNEL_U => {
-                                let vu_x = (x / 2) * 2;
-                                let vu_y = y / 2;
-                                let vu_idx = y_size + vu_y * width + vu_x + 1;
-                                *src_data.get(vu_idx).unwrap_or(&128)
-                            }
-                            _ => 0,
                         }
                     }
-                    ImageFormat::IYUV => {
-                        // IYUV: Y plane (full), U plane (quarter), V plane (quarter)
-                        let y_size = width * height;
-                        let half_w = (width + 1) / 2;
-                        let half_h = (height + 1) / 2;
-                        let u_size = half_w * half_h;
-                        match channel {
-                            VX_CHANNEL_Y => src_data[y * width + x],
-                            VX_CHANNEL_U => {
-                                let u_idx = y_size + (y / 2) * half_w + (x / 2);
-                                *src_data.get(u_idx).unwrap_or(&128)
+                    _ => return VX_ERROR_INVALID_PARAMETERS,
+                }
+            }
+            ImageFormat::UYVY => {
+                // UYVY: U0 Y0 V0 Y1 - packed 4:2:2
+                // Each 4-byte macropixel = 2 horizontal pixels
+                // stride = src_width * 2 bytes
+                match channel {
+                    VX_CHANNEL_Y => {
+                        // Y is subsampled x=1, y=1 - output is full size
+                        // Y0 at offset 1, Y1 at offset 3 in each macropixel
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let macro_x = x / 2; // which macropixel
+                                let byte_idx = y * src_width * 2 + macro_x * 4;
+                                let y_val = if x % 2 == 0 {
+                                    src_data[byte_idx + 1] // Y0
+                                } else {
+                                    src_data[byte_idx + 3] // Y1
+                                };
+                                dst_data[y * dst_width + x] = y_val;
                             }
-                            VX_CHANNEL_V => {
-                                let v_idx = y_size + u_size + (y / 2) * half_w + (x / 2);
-                                *src_data.get(v_idx).unwrap_or(&128)
-                            }
-                            _ => 0,
                         }
                     }
-                    ImageFormat::YUV4 => {
-                        // YUV4: Three full-size planes
-                        let y_size = width * height;
-                        match channel {
-                            VX_CHANNEL_Y => src_data[y * width + x],
-                            VX_CHANNEL_U => src_data[y_size + y * width + x],
-                            VX_CHANNEL_V => src_data[2 * y_size + y * width + x],
-                            _ => 0,
+                    VX_CHANNEL_U => {
+                        // U is subsampled x=2, y=1 - output is (width/2) x height
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let byte_idx = y * src_width * 2 + x * 4;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(byte_idx).unwrap_or(&128);
+                            }
                         }
                     }
-                    _ => src.get_pixel(x, y),
-                };
-                let idx = y.saturating_mul(width).saturating_add(x);
-                if let Some(p) = dst_data.get_mut(idx) {
-                    *p = val;
+                    VX_CHANNEL_V => {
+                        // V is subsampled x=2, y=1 - output is (width/2) x height
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let byte_idx = y * src_width * 2 + x * 4 + 2;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(byte_idx).unwrap_or(&128);
+                            }
+                        }
+                    }
+                    _ => return VX_ERROR_INVALID_PARAMETERS,
+                }
+            }
+            ImageFormat::YUYV => {
+                // YUYV: Y0 U0 Y1 V0 - packed 4:2:2
+                // Each 4-byte macropixel = 2 horizontal pixels
+                match channel {
+                    VX_CHANNEL_Y => {
+                        // Y is subsampled x=1, y=1 - output is full size
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let macro_x = x / 2;
+                                let byte_idx = y * src_width * 2 + macro_x * 4;
+                                let y_val = if x % 2 == 0 {
+                                    src_data[byte_idx]     // Y0
+                                } else {
+                                    src_data[byte_idx + 2] // Y1
+                                };
+                                dst_data[y * dst_width + x] = y_val;
+                            }
+                        }
+                    }
+                    VX_CHANNEL_U => {
+                        // U is subsampled x=2, y=1 - output is (width/2) x height
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let byte_idx = y * src_width * 2 + x * 4 + 1;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(byte_idx).unwrap_or(&128);
+                            }
+                        }
+                    }
+                    VX_CHANNEL_V => {
+                        // V is subsampled x=2, y=1 - output is (width/2) x height
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let byte_idx = y * src_width * 2 + x * 4 + 3;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(byte_idx).unwrap_or(&128);
+                            }
+                        }
+                    }
+                    _ => return VX_ERROR_INVALID_PARAMETERS,
+                }
+            }
+            ImageFormat::IYUV => {
+                let y_size = src_width * src_height;
+                let half_w = (src_width + 1) / 2;
+                let half_h = (src_height + 1) / 2;
+                let u_size = half_w * half_h;
+                match channel {
+                    VX_CHANNEL_Y => {
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                dst_data[y * dst_width + x] = src_data[y * src_width + x];
+                            }
+                        }
+                    }
+                    VX_CHANNEL_U => {
+                        // U is subsampled 2x2 - dst is (width/2) x (height/2)
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let u_idx = y_size + y * half_w + x;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(u_idx).unwrap_or(&128);
+                            }
+                        }
+                    }
+                    VX_CHANNEL_V => {
+                        // V is subsampled 2x2 - dst is (width/2) x (height/2)
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                let v_idx = y_size + u_size + y * half_w + x;
+                                dst_data[y * dst_width + x] =
+                                    *src_data.get(v_idx).unwrap_or(&128);
+                            }
+                        }
+                    }
+                    _ => return VX_ERROR_INVALID_PARAMETERS,
+                }
+            }
+            ImageFormat::YUV4 => {
+                let y_size = src_width * src_height;
+                match channel {
+                    VX_CHANNEL_Y => {
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                dst_data[y * dst_width + x] = src_data[y * src_width + x];
+                            }
+                        }
+                    }
+                    VX_CHANNEL_U => {
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                dst_data[y * dst_width + x] = src_data[y_size + y * src_width + x];
+                            }
+                        }
+                    }
+                    VX_CHANNEL_V => {
+                        for y in 0..dst_height {
+                            for x in 0..dst_width {
+                                dst_data[y * dst_width + x] = src_data[2 * y_size + y * src_width + x];
+                            }
+                        }
+                    }
+                    _ => return VX_ERROR_INVALID_PARAMETERS,
+                }
+            }
+            _ => {
+                // Default: try to extract as U8
+                for y in 0..dst_height {
+                    for x in 0..dst_width {
+                        dst_data[y * dst_width + x] = src.get_pixel(x, y);
+                    }
                 }
             }
         }
@@ -2815,99 +2960,192 @@ pub fn vxu_harris_corners_impl(
         let width = src.width();
         let height = src.height();
 
-        // Scale factor for gradient normalization: 1 / (2^(gradient_size-1) * block_size * 255)
-        let scale = 1.0 / ((1i32 << (gs - 1)) as f32 * bs as f32 * 255.0);
+        if width < 3 || height < 3 {
+            // Image too small for Harris corners
+            if !corners.is_null() {
+                let arr = &*(corners as *const crate::unified_c_api::VxCArray);
+                if let Ok(mut arr_data) = arr.items.write() {
+                    arr_data.clear();
+                }
+            }
+            if !num_corners.is_null() {
+                let num: usize = 0;
+                crate::c_api_data::vxCopyScalarData(
+                    num_corners,
+                    &num as *const usize as *mut c_void,
+                    0x11002, 0x0
+                );
+            }
+            return VX_SUCCESS;
+        }
 
-        // Compute gradients using Sobel with appropriate kernel size
-        let grad_x = compute_sobel(&src, width, height, gs, true);  // horizontal gradient
-        let grad_y = compute_sobel(&src, width, height, gs, false); // vertical gradient
+        // Get image data as flat u8 array
+        let img_data = src.data();
 
-        // Compute structure tensor sums and Harris response for each pixel
+        // Normalization factor matching MIVisionX reference:
+        // For 3x3: div_factor = 1 (gradients already small)
+        // For larger kernels, scale by 2^(gs-1) to match the reference's separation
+        let div_factor: f32 = match gs {
+            3 => 1.0,
+            5 => 16.0,  // 2^4
+            7 => 64.0,  // 2^6
+            _ => 1.0,
+        };
+
+        // Compute GxGx, GxGy, GyGy structure tensor components
+        // using separable Sobel filters (horizontal then vertical pass)
+        let mut gxy = vec![GxyComponent { ixx: 0.0f32, ixy: 0.0f32, iyy: 0.0f32 }; width * height];
+
+        match gs {
+            3 => harris_sobel_3x3(&img_data, width, height, &mut gxy, div_factor),
+            5 => harris_sobel_5x5(&img_data, width, height, &mut gxy, div_factor),
+            7 => harris_sobel_7x7(&img_data, width, height, &mut gxy, div_factor),
+            _ => harris_sobel_3x3(&img_data, width, height, &mut gxy, div_factor),
+        }
+
+        // Compute Harris response using sliding window accumulation over blockSize
         let half_block = bs / 2;
+        let block_area = (bs * bs) as f32; // normalization by window size
         let mut responses = vec![0.0f32; width * height];
 
+        // Sliding window: first compute column sums, then slide horizontally
+        // This reduces O(W*H*B^2) to O(W*H*B)
+        let mut col_sums_ixx = vec![0.0f32; width];
+        let mut col_sums_ixy = vec![0.0f32; width];
+        let mut col_sums_iyy = vec![0.0f32; width];
+
         for y in half_block..height - half_block {
-            for x in half_block..width - half_block {
-                let mut ixx: f64 = 0.0;
-                let mut iyy: f64 = 0.0;
-                let mut ixy: f64 = 0.0;
+            // Initialize column sums for this row
+            // Each col_sum[c] = sum of gxy[y-half_block..=y+half_block][c].component
+            col_sums_ixx.fill(0.0);
+            col_sums_ixy.fill(0.0);
+            col_sums_iyy.fill(0.0);
 
-                // Sum over blockSize x blockSize window
-                for by in 0..bs {
-                    for bx in 0..bs {
-                        let py = y + by - half_block;
-                        let px = x + bx - half_block;
-                        if px < width && py < height {
-                            let ix = grad_x[py * width + px];
-                            let iy = grad_y[py * width + px];
-                            ixx += (ix as f64) * (ix as f64);
-                            iyy += (iy as f64) * (iy as f64);
-                            ixy += (ix as f64) * (iy as f64);
-                        }
-                    }
+            for row in y - half_block..=y + half_block {
+                let row_off = row * width;
+                for col in half_block..width - half_block {
+                    col_sums_ixx[col] += gxy[row_off + col].ixx;
+                    col_sums_ixy[col] += gxy[row_off + col].ixy;
+                    col_sums_iyy[col] += gxy[row_off + col].iyy;
                 }
+            }
 
-                // Harris response: R = det(M) - k * trace(M)^2
-                // det(M) = ixx * iyy - ixy^2
-                // trace(M) = ixx + iyy
-                // Scale factor applied: each gradient is scaled by `scale`
-                // So ixx becomes scale^2 * sum(Ix^2), etc.
-                let det = ixx * iyy - ixy * ixy;
-                let trace = ixx + iyy;
-                let response = ((scale as f64) * (scale as f64) * det - (k as f64) * (scale as f64) * (scale as f64) * trace * trace) as f32;
-                responses[y * width + x] = response;
+            // Now slide horizontally across the row
+            // Initialize window sum from first position
+            let mut win_ixx = 0.0f32;
+            let mut win_ixy = 0.0f32;
+            let mut win_iyy = 0.0f32;
+            for col in half_block..half_block + bs {
+                win_ixx += col_sums_ixx[col];
+                win_ixy += col_sums_ixy[col];
+                win_iyy += col_sums_iyy[col];
+            }
+
+            // First position
+            let x = half_block;
+            let det = win_ixx * win_iyy - win_ixy * win_ixy;
+            let trace = win_ixx + win_iyy;
+            let mc = det - k * trace * trace;
+            responses[y * width + x] = mc;
+
+            // Slide the window right
+            for x in (half_block + 1)..width - half_block {
+                // Subtract leftmost column, add new rightmost column
+                let left_col = x - 1 - half_block;
+                let right_col = x + half_block;
+                win_ixx += col_sums_ixx[right_col] - col_sums_ixx[left_col];
+                win_ixy += col_sums_ixy[right_col] - col_sums_ixy[left_col];
+                win_iyy += col_sums_iyy[right_col] - col_sums_iyy[left_col];
+
+                let det = win_ixx * win_iyy - win_ixy * win_ixy;
+                let trace = win_ixx + win_iyy;
+                let mc = det - k * trace * trace;
+                responses[y * width + x] = mc;
             }
         }
 
-        // Non-maximum suppression with min_distance
-        let mut corner_list: Vec<(i32, i32, f32)> = Vec::new();
-        let min_dist_sq = (min_dist * min_dist) as f32;
+        // Normalize responses by block_area
+        // This matches the MIVisionX reference which divides by the window size
+        for r in responses.iter_mut() {
+            *r /= block_area;
+        }
 
-        // First, collect all corners above threshold
-        let mut candidates: Vec<(usize, usize, f32)> = Vec::new();
-        for y in half_block..height - half_block {
-            for x in half_block..width - half_block {
-                let r = responses[y * width + x];
-                if r > threshold {
-                    // Check if local maximum in 3x3 neighborhood
-                    let mut is_max = true;
-                    for dy in -1i32..=1 {
-                        for dx in -1i32..=1 {
-                            if dx == 0 && dy == 0 { continue; }
-                            let nx = (x as i32 + dx) as usize;
-                            let ny = (y as i32 + dy) as usize;
-                            if nx < width && ny < height {
-                                if responses[ny * width + nx] > r {
-                                    is_max = false;
-                                    break;
-                                }
+        // Non-maximum suppression with min_distance using grid-based approach
+        let radius = min_dist as i32;
+        let radius_sq = (min_dist * min_dist) as f32;
+
+        // Phase 1: Find all local maxima above threshold (3x3 NMS)
+        let mut candidates: Vec<(i32, i32, f32)> = Vec::new();
+        for y in 1..(height as i32 - 1) {
+            for x in 1..(width as i32 - 1) {
+                let idx = (y as usize) * width + (x as usize);
+                let r = responses[idx];
+                if r <= threshold {
+                    continue;
+                }
+                // Check 3x3 neighborhood for local max (strictly greater, not equal)
+                let mut is_max = true;
+                'nms: for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 { continue; }
+                        let nx = x + dx;
+                        let ny = y + dy;
+                        if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                            if responses[(ny as usize) * width + (nx as usize)] >= r {
+                                is_max = false;
+                                break 'nms;
                             }
                         }
-                        if !is_max { break; }
                     }
-                    if is_max {
-                        candidates.push((x, y, r));
-                    }
+                }
+                if is_max {
+                    candidates.push((x, y, r));
                 }
             }
         }
 
-        // Sort candidates by strength (descending)
+        // Sort by strength descending
         candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Non-maximum suppression: remove candidates too close to stronger ones
-        for &(x, y, r) in &candidates {
-            let mut too_close = false;
-            for &(cx, cy, _cr) in &corner_list {
-                let dx = x as f32 - cx as f32;
-                let dy = y as f32 - cy as f32;
-                if dx * dx + dy * dy < min_dist_sq {
-                    too_close = true;
-                    break;
+        // Phase 2: Grid-based NMS with min_distance radius check
+        let mut corner_list: Vec<(i32, i32, f32)> = Vec::new();
+        if radius <= 0 || radius_sq <= 0.0 {
+            // No distance constraint, keep all
+            corner_list = candidates;
+        } else {
+            // Use a grid for efficient proximity checking
+            let cell_size = (radius as usize).max(1);
+            let grid_w = (width + cell_size - 1) / cell_size;
+            let grid_h = (height + cell_size - 1) / cell_size;
+            // grid stores (x, y) of the placed corner in each cell
+            let mut grid: Vec<(i32, i32)> = vec![(-1i32, -1i32); grid_w * grid_h];
+
+            for &(x, y, strength) in &candidates {
+                let cx = (x as usize) / cell_size;
+                let cy = (y as usize) / cell_size;
+
+                // Check this cell and neighboring cells (within radius)
+                let mut too_close = false;
+                let search_range = 2; // corners can only be in adjacent cells
+                for gy in cy.saturating_sub(search_range)..=(cy + search_range).min(grid_h - 1) {
+                    for gx in cx.saturating_sub(search_range)..=(cx + search_range).min(grid_w - 1) {
+                        let (px, py) = grid[gy * grid_w + gx];
+                        if px >= 0 {
+                            let dx = x - px;
+                            let dy = y - py;
+                            if (dx * dx + dy * dy) as f32 <= radius_sq {
+                                too_close = true;
+                                break;
+                            }
+                        }
+                    }
+                    if too_close { break; }
                 }
-            }
-            if !too_close {
-                corner_list.push((x as i32, y as i32, r));
+
+                if !too_close {
+                    corner_list.push((x, y, strength));
+                    grid[cy * grid_w + cx] = (x, y);
+                }
             }
         }
 
@@ -2929,8 +3167,8 @@ pub fn vxu_harris_corners_impl(
                 let offset = i * keypoint_size;
                 if offset + keypoint_size <= arr_data.len() {
                     let kp = vx_keypoint_t {
-                        x: x as i32,
-                        y: y as i32,
+                        x,
+                        y,
                         strength,
                         scale: 0.0,
                         orientation: 0.0,
@@ -2942,7 +3180,8 @@ pub fn vxu_harris_corners_impl(
                 }
             }
             // Zero out remaining data
-            for i in corner_list.len() * keypoint_size..arr_data.len().min(output_size + keypoint_size) {
+            let end = (corner_list.len() * keypoint_size).min(arr_data.len());
+            for i in (corner_list.len() * keypoint_size)..end {
                 arr_data[i] = 0;
             }
         }
@@ -2962,89 +3201,148 @@ pub fn vxu_harris_corners_impl(
     }
 }
 
-/// Compute Sobel gradients with the given kernel size
-/// Returns gradient values scaled by the OpenVX normalization factor
-fn compute_sobel(image: &Image, width: usize, height: usize, kernel_size: usize, is_x: bool) -> Vec<i16> {
-    let mut result = vec![0i16; width * height];
-    let half = kernel_size / 2;
-
-    // Sobel kernels for different sizes
-    // 3x3: Gx = [[-1,0,1],[-2,0,2],[-1,0,1]] / 8 (2^(3-1) = 4, but spec uses 8)
-    // 5x5 and 7x7: use the spec-defined kernels
-    let kernel: Vec<i32> = match kernel_size {
-        3 => {
-            if is_x {
-                vec![-1, 0, 1, -2, 0, 2, -1, 0, 1]
-            } else {
-                vec![-1, -2, -1, 0, 0, 0, 1, 2, 1]
-            }
-        }
-        5 => {
-            // 5x5 Sobel kernels from OpenVX spec
-            if is_x {
-                vec![-1, -2, 0, 2, 1,
-                     -4, -8, 0, 8, 4,
-                     -6, -12, 0, 12, 6,
-                     -4, -8, 0, 8, 4,
-                     -1, -2, 0, 2, 1]
-            } else {
-                vec![-1, -4, -6, -4, -1,
-                     -2, -8, -12, -8, -2,
-                      0,  0,  0,  0,  0,
-                      2,  8,  12,  8,  2,
-                      1,  4,  6,  4, 1]
-            }
-        }
-        7 => {
-            // 7x7 Sobel kernels
-            if is_x {
-                vec![-1, -4, -5, 0, 5, 4, 1,
-                     -6, -24, -30, 0, 30, 24, 6,
-                     -15, -60, -75, 0, 75, 60, 15,
-                     -20, -80, -100, 0, 100, 80, 20,
-                     -15, -60, -75, 0, 75, 60, 15,
-                     -6, -24, -30, 0, 30, 24, 6,
-                     -1, -4, -5, 0, 5, 4, 1]
-            } else {
-                vec![-1, -6, -15, -20, -15, -6, -1,
-                     -4, -24, -60, -80, -60, -24, -4,
-                     -5, -30, -75, -100, -75, -30, -5,
-                      0,  0,  0,  0,  0,  0,  0,
-                      5,  30,  75,  100, 75, 30,  5,
-                      4,  24,  60,  80,  60,  24,  4,
-                      1,  6,  15,  20,  15,  6,  1]
-            }
-        }
-        _ => {
-            // Default to 3x3
-            if is_x {
-                vec![-1, 0, 1, -2, 0, 2, -1, 0, 1]
-            } else {
-                vec![-1, -2, -1, 0, 0, 0, 1, 2, 1]
-            }
-        }
-    };
-
-    for y in half..height - half {
-        for x in half..width - half {
-            let mut sum: i32 = 0;
-            for ky in 0..kernel_size {
-                for kx in 0..kernel_size {
-                    let px = x + kx - half;
-                    let py = y + ky - half;
-                    let pixel = image.get_pixel(px, py) as i32;
-                    sum += pixel * kernel[ky * kernel_size + kx];
-                }
-            }
-            // Divide by 2^(kernel_size-1) for normalization as per OpenVX spec
-            let shift = (kernel_size - 1) as u32; // divide by 2^shift
-            result[y * width + x] = (sum >> shift) as i16;
-        }
-    }
-
-    result
+/// Structure tensor component per pixel
+#[derive(Clone, Copy, Default)]
+struct GxyComponent {
+    ixx: f32,
+    ixy: f32,
+    iyy: f32,
 }
 
+/// Separable Sobel 3x3 + structure tensor computation
+/// Gx: horizontal = [-1, 0, 1], vertical = [1, 2, 1]
+/// Gy: horizontal = [1, 2, 1], vertical = [-1, 0, 1]
+/// Computes Gx*Gx, Gx*Gy, Gy*Gy per pixel
+fn harris_sobel_3x3(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent], div_factor: f32) {
+    let inv_df = 1.0 / div_factor;
+
+    for y in 1..height - 1 {
+        let row_m = (y - 1) * width;
+        let row_c = y * width;
+        let row_p = (y + 1) * width;
+
+        for x in 1..width - 1 {
+            // Separable Sobel 3x3:
+            // Gx = (I[y+1][x+1] - I[y+1][x-1]) + 2*(I[y][x+1] - I[y][x-1]) + (I[y-1][x+1] - I[y-1][x-1])
+            // Gy = (I[y+1][x+1] + 2*I[y+1][x] + I[y+1][x-1]) - (I[y-1][x+1] + 2*I[y-1][x] + I[y-1][x-1])
+            let p_m_l = img_data[row_m + x - 1] as i32;
+            let p_m_c = img_data[row_m + x] as i32;
+            let p_m_r = img_data[row_m + x + 1] as i32;
+            let p_c_l = img_data[row_c + x - 1] as i32;
+            let p_c_r = img_data[row_c + x + 1] as i32;
+            let p_p_l = img_data[row_p + x - 1] as i32;
+            let p_p_c = img_data[row_p + x] as i32;
+            let p_p_r = img_data[row_p + x + 1] as i32;
+
+            let gx: i32 = (p_p_r - p_p_l) + 2 * (p_c_r - p_c_l) + (p_m_r - p_m_l);
+            let gy: i32 = (p_p_r + 2 * p_p_c + p_p_l) - (p_m_r + 2 * p_m_c + p_m_l);
+
+            let gxf = gx as f32 * inv_df;
+            let gyf = gy as f32 * inv_df;
+
+            let idx = y * width + x;
+            gxy[idx].ixx = gxf * gxf;
+            gxy[idx].ixy = gxf * gyf;
+            gxy[idx].iyy = gyf * gyf;
+        }
+    }
+}
+
+/// 5x5 Sobel + structure tensor computation
+fn harris_sobel_5x5(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent], div_factor: f32) {
+    let inv_df = 1.0 / div_factor;
+
+    // 5x5 Sobel kernels (from OpenVX spec)
+    let gx_kernel: [[i32; 5]; 5] = [
+        [-1, -2,  0,  2,  1],
+        [-4, -8,  0,  8,  4],
+        [-6,-12,  0, 12,  6],
+        [-4, -8,  0,  8,  4],
+        [-1, -2,  0,  2,  1],
+    ];
+    let gy_kernel: [[i32; 5]; 5] = [
+        [-1, -4, -6, -4, -1],
+        [-2, -8,-12, -8, -2],
+        [ 0,  0,  0,  0,  0],
+        [ 2,  8, 12,  8,  2],
+        [ 1,  4,  6,  4,  1],
+    ];
+
+    for y in 2..height - 2 {
+        for x in 2..width - 2 {
+            let mut gx: i32 = 0;
+            let mut gy: i32 = 0;
+            for ky in 0..5 {
+                let row = (y + ky - 2) * width;
+                for kx in 0..5 {
+                    let px = row + x + kx - 2;
+                    let p = img_data[px] as i32;
+                    gx += p * gx_kernel[ky][kx];
+                    gy += p * gy_kernel[ky][kx];
+                }
+            }
+
+            // Divide by 2^(5-1) = 16 for normalization
+            let gxf = (gx >> 4) as f32 * inv_df;
+            let gyf = (gy >> 4) as f32 * inv_df;
+
+            let idx = y * width + x;
+            gxy[idx].ixx = gxf * gxf;
+            gxy[idx].ixy = gxf * gyf;
+            gxy[idx].iyy = gyf * gyf;
+        }
+    }
+}
+
+/// 7x7 Sobel + structure tensor computation
+fn harris_sobel_7x7(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent], div_factor: f32) {
+    let inv_df = 1.0 / div_factor;
+
+    // 7x7 Sobel kernels
+    let gx_kernel: [[i32; 7]; 7] = [
+        [-1, -4, -5,  0,  5,  4,  1],
+        [-6,-24,-30,  0, 30, 24,  6],
+        [-15,-60,-75, 0, 75, 60, 15],
+        [-20,-80,-100,0,100, 80, 20],
+        [-15,-60,-75, 0, 75, 60, 15],
+        [ -6,-24,-30,  0, 30, 24,  6],
+        [ -1, -4, -5,  0,  5,  4,  1],
+    ];
+    let gy_kernel: [[i32; 7]; 7] = [
+        [-1, -6,-15,-20,-15, -6, -1],
+        [-4,-24,-60,-80,-60,-24, -4],
+        [-5,-30,-75,-100,-75,-30, -5],
+        [ 0,  0,  0,  0,  0,  0,  0],
+        [ 5, 30, 75,100, 75, 30,  5],
+        [ 4, 24, 60, 80, 60, 24,  4],
+        [ 1,  6, 15, 20, 15,  6,  1],
+    ];
+
+    for y in 3..height - 3 {
+        for x in 3..width - 3 {
+            let mut gx: i32 = 0;
+            let mut gy: i32 = 0;
+            for ky in 0..7 {
+                let row = (y + ky - 3) * width;
+                for kx in 0..7 {
+                    let px = row + x + kx - 3;
+                    let p = img_data[px] as i32;
+                    gx += p * gx_kernel[ky][kx];
+                    gy += p * gy_kernel[ky][kx];
+                }
+            }
+
+            // Divide by 2^(7-1) = 64 for normalization
+            let gxf = (gx >> 6) as f32 * inv_df;
+            let gyf = (gy >> 6) as f32 * inv_df;
+
+            let idx = y * width + x;
+            gxy[idx].ixx = gxf * gxf;
+            gxy[idx].ixy = gxf * gyf;
+            gxy[idx].iyy = gyf * gyf;
+        }
+    }
+}
 pub fn vxu_fast_corners_impl(
     context: vx_context,
     input: vx_image,
