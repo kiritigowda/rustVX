@@ -2996,62 +2996,29 @@ pub fn vxu_harris_corners_impl(
             _ => harris_sobel_3x3(&img_data, width, height, &mut gxy),
         }
 
-        // Compute Harris response using sliding window accumulation over blockSize
+        // Compute Harris response using block window accumulation
+        // Direct windowing matching MIVisionX: for each pixel, sum the structure
+        // tensor components over a bs×bs window centered at that pixel
         let half_block = bs / 2;
-        let block_area = (bs * bs) as f32; // normalization by window size
         let mut responses = vec![0.0f32; width * height];
 
-        // Sliding window: first compute column sums, then slide horizontally
-        // This reduces O(W*H*B^2) to O(W*H*B)
-        let mut col_sums_ixx = vec![0.0f32; width];
-        let mut col_sums_ixy = vec![0.0f32; width];
-        let mut col_sums_iyy = vec![0.0f32; width];
-
         for y in half_block..height - half_block {
-            // Initialize column sums for this row
-            // Each col_sum[c] = sum of gxy[y-half_block..=y+half_block][c].component
-            col_sums_ixx.fill(0.0);
-            col_sums_ixy.fill(0.0);
-            col_sums_iyy.fill(0.0);
-
-            for row in y - half_block..=y + half_block {
-                let row_off = row * width;
-                for col in half_block..width - half_block {
-                    col_sums_ixx[col] += gxy[row_off + col].ixx;
-                    col_sums_ixy[col] += gxy[row_off + col].ixy;
-                    col_sums_iyy[col] += gxy[row_off + col].iyy;
+            for x in half_block..width - half_block {
+                let mut ixx = 0.0f32;
+                let mut ixy = 0.0f32;
+                let mut iyy = 0.0f32;
+                for j in 0..bs {
+                    let row = y + j - half_block;
+                    let row_off = row * width;
+                    for i in 0..bs {
+                        let col = x + i - half_block;
+                        ixx += gxy[row_off + col].ixx;
+                        ixy += gxy[row_off + col].ixy;
+                        iyy += gxy[row_off + col].iyy;
+                    }
                 }
-            }
-
-            // Now slide horizontally across the row
-            // Initialize window sum from first position
-            let mut win_ixx = 0.0f32;
-            let mut win_ixy = 0.0f32;
-            let mut win_iyy = 0.0f32;
-            for col in half_block..half_block + bs {
-                win_ixx += col_sums_ixx[col];
-                win_ixy += col_sums_ixy[col];
-                win_iyy += col_sums_iyy[col];
-            }
-
-            // First position
-            let x = half_block;
-            let det = win_ixx * win_iyy - win_ixy * win_ixy;
-            let trace = win_ixx + win_iyy;
-            let mc = det - k * trace * trace;
-            responses[y * width + x] = mc;
-
-            // Slide the window right
-            for x in (half_block + 1)..width - half_block {
-                // Subtract leftmost column, add new rightmost column
-                let left_col = x - 1 - half_block;
-                let right_col = x + half_block;
-                win_ixx += col_sums_ixx[right_col] - col_sums_ixx[left_col];
-                win_ixy += col_sums_ixy[right_col] - col_sums_ixy[left_col];
-                win_iyy += col_sums_iyy[right_col] - col_sums_iyy[left_col];
-
-                let det = win_ixx * win_iyy - win_ixy * win_ixy;
-                let trace = win_ixx + win_iyy;
+                let det = ixx * iyy - ixy * ixy;
+                let trace = ixx + iyy;
                 let mc = det - k * trace * trace;
                 responses[y * width + x] = mc;
             }
@@ -3066,70 +3033,87 @@ pub fn vxu_harris_corners_impl(
             *r /= norm_factor;
         }
 
-        // Non-maximum suppression with min_distance using grid-based approach
-        let radius = min_dist as i32;
-        let radius_sq = (min_dist * min_dist) as f32;
+        // Harris corner detection pipeline (matching MIVisionX reference):
+        // 1. Threshold the Vc score image
+        // 2. 3x3 non-max suppression (asymmetric >= / > comparison)
+        // 3. Sort candidates by strength descending
+        // 4. Distance-based NMS with grid (ceilf for radius check)
+        // 5. Collect final corners
 
-        // Phase 1: Find all local maxima above threshold (3x3 NMS)
+        // Step 1: Threshold — set sub-threshold responses to 0
+        for r in responses.iter_mut() {
+            if *r <= threshold {
+                *r = 0.0;
+            }
+        }
+
+        // Step 2: 3x3 non-max suppression matching MIVisionX HafCpu_NonMaxSupp_XY_ANY_3x3
+        // Asymmetric comparison: >= for top/left neighbors, > for bottom/right
+        // This gives raster-scan order bias: first pixel in scan order wins ties
         let mut candidates: Vec<(i32, i32, f32)> = Vec::new();
         for y in 1..(height as i32 - 1) {
             for x in 1..(width as i32 - 1) {
                 let idx = (y as usize) * width + (x as usize);
-                let r = responses[idx];
-                if r <= threshold {
+                let vc = responses[idx];
+                if vc <= 0.0 {
                     continue;
                 }
-                // Check 3x3 neighborhood for local max (strictly greater, not equal)
-                let mut is_max = true;
-                'nms: for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        if dx == 0 && dy == 0 { continue; }
-                        let nx = x + dx;
-                        let ny = y + dy;
-                        if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                            if responses[(ny as usize) * width + (nx as usize)] >= r {
-                                is_max = false;
-                                break 'nms;
-                            }
-                        }
-                    }
-                }
-                if is_max {
-                    candidates.push((x, y, r));
+                // MIVisionX 3x3 NMS: >= for top row + left, > for right + bottom row
+                // p0[1] >= p9[0] && p0[1] >= p9[1] && p0[1] >= p9[2] &&  (top-left, top, top-right)
+                // p0[1] >= p0[0] &&                                 (left)
+                // p0[1] > p0[2] &&                                  (right)
+                // p0[1] > p1[0] && p0[1] > p1[1] && p0[1] > p1[2]   (bottom-left, bottom, bottom-right)
+                let top_left     = responses[((y-1) as usize) * width + (x-1) as usize];
+                let top          = responses[((y-1) as usize) * width + x as usize];
+                let top_right    = responses[((y-1) as usize) * width + (x+1) as usize];
+                let left         = responses[(y as usize) * width + (x-1) as usize];
+                let right        = responses[(y as usize) * width + (x+1) as usize];
+                let bottom_left  = responses[((y+1) as usize) * width + (x-1) as usize];
+                let bottom       = responses[((y+1) as usize) * width + x as usize];
+                let bottom_right = responses[((y+1) as usize) * width + (x+1) as usize];
+
+                if vc >= top_left && vc >= top && vc >= top_right &&
+                   vc >= left &&
+                   vc > right &&
+                   vc > bottom_left && vc > bottom && vc > bottom_right
+                {
+                    candidates.push((x, y, vc));
                 }
             }
         }
 
-        // Sort by strength descending
+        // Step 3: Sort candidates by strength descending
+        // MIVisionX uses std::sort with greater<int64> on packed (x,y,strength) values
         candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Phase 2: Grid-based NMS with min_distance radius check
+        // Step 4: Distance-based NMS with grid (MIVisionX HafCpu_HarrisMergeSortAndPick_XY_XYS)
+        // Uses ceilf(min_distance²) for radius check, not floor
+        let min_dist2 = (min_dist * min_dist).ceil() as i32;
         let mut corner_list: Vec<(i32, i32, f32)> = Vec::new();
-        if radius <= 0 || radius_sq <= 0.0 {
-            // No distance constraint, keep all
+
+        if min_dist2 <= 0 {
+            // No distance constraint, keep all 3x3 NMS survivors
+            // But limit to array capacity like MIVisionX's AddToTheSortedKeypointList
             corner_list = candidates;
         } else {
-            // Use a grid for efficient proximity checking
-            let cell_size = (radius as usize).max(1);
+            // Grid-based distance suppression matching MIVisionX
+            let cell_size = (min_dist as usize).max(1);
             let grid_w = (width + cell_size - 1) / cell_size;
             let grid_h = (height + cell_size - 1) / cell_size;
-            // grid stores (x, y) of the placed corner in each cell
             let mut grid: Vec<(i32, i32)> = vec![(-1i32, -1i32); grid_w * grid_h];
 
             for &(x, y, strength) in &candidates {
                 let cx = (x as usize) / cell_size;
                 let cy = (y as usize) / cell_size;
 
-                // Check this cell and neighboring cells (within radius)
                 let mut too_close = false;
-                let search_range = 2; // corners can only be in adjacent cells
-                for gy in cy.saturating_sub(search_range)..=(cy + search_range).min(grid_h - 1) {
-                    for gx in cx.saturating_sub(search_range)..=(cx + search_range).min(grid_w - 1) {
+                for gy in cy.saturating_sub(2)..=(cy + 2).min(grid_h - 1) {
+                    for gx in cx.saturating_sub(2)..=(cx + 2).min(grid_w - 1) {
                         let (px, py) = grid[gy * grid_w + gx];
                         if px >= 0 {
                             let dx = x - px;
                             let dy = y - py;
-                            if (dx * dx + dy * dy) as f32 <= radius_sq {
+                            if dx * dx + dy * dy < min_dist2 {
                                 too_close = true;
                                 break;
                             }

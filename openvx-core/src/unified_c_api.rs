@@ -2630,17 +2630,28 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         }
         // FAST Corners
         "org.khronos.openvx.fast_corners" => {
-            if params.len() >= 4 {
+            if params.len() >= 5 {
                 let input = params[0] as vx_image;
+                let strength_thresh_scalar = if !params[1].is_null() { params[1] as vx_scalar } else { std::ptr::null_mut() };
+                let nonmax_suppression: i32 = if params.len() > 2 && !params[2].is_null() {
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[2] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, 0x0
+                    );
+                    if status == VX_SUCCESS { val } else { 1 }
+                } else { 1 };
                 let corners = params[3] as vx_array;
+                let num_corners = if params.len() > 4 && !params[4].is_null() { params[4] as vx_scalar } else { std::ptr::null_mut() };
                 if !input.is_null() && !corners.is_null() {
                     crate::vxu_impl::vxu_fast_corners_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
-                        std::ptr::null_mut(), // strength_thresh
-                        1, // nonmax_suppression
+                        strength_thresh_scalar,
+                        nonmax_suppression,
                         corners,
-                        std::ptr::null_mut() // num_corners
+                        num_corners
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
