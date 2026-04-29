@@ -362,14 +362,14 @@ pub struct VxCConvolution {
 /// LUT data
 /// Distribution data
 pub struct VxCDistribution {
-    bins: usize,
-    offset: u32,
-    range: u32,
-    data: RwLock<Vec<u32>>,
+    pub bins: usize,
+    pub offset: u32,
+    pub range: u32,
+    pub data: RwLock<Vec<i32>>,
     ref_count: AtomicUsize,
     /// Structure for tracking mapped distributions
     /// Fields: (map_id, mapped_data, usage)
-    pub mapped_distributions: Arc<RwLock<Vec<(usize, Vec<u32>, vx_enum)>>>,
+    pub mapped_distributions: Arc<RwLock<Vec<(usize, Vec<i32>, vx_enum)>>>,
 }
 
 /// Threshold data
@@ -4879,7 +4879,9 @@ pub const VX_LUT_OFFSET: vx_enum = 0x80703;
 pub const VX_DISTRIBUTION_BINS: vx_enum = 0x80803;
 pub const VX_DISTRIBUTION_OFFSET: vx_enum = 0x80801;
 pub const VX_DISTRIBUTION_RANGE: vx_enum = 0x80802;
-pub const VX_DISTRIBUTION_SIZE: vx_enum = 0x80800;
+pub const VX_DISTRIBUTION_DIMENSIONS: vx_enum = 0x80800;
+pub const VX_DISTRIBUTION_WINDOW: vx_enum = 0x80804;
+pub const VX_DISTRIBUTION_SIZE: vx_enum = 0x80805;
 
 // Threshold attributes
 pub const VX_THRESHOLD_TYPE: vx_enum = 0x80A00;
@@ -5250,7 +5252,7 @@ pub extern "C" fn vxCreateDistribution(
         bins,
         offset,
         range,
-        data: RwLock::new(vec![0u32; bins]),
+        data: RwLock::new(vec![0i32; bins]),
         ref_count: AtomicUsize::new(1),
         mapped_distributions: Arc::new(RwLock::new(Vec::new())),
     });
@@ -5270,7 +5272,7 @@ pub extern "C" fn vxCreateDistribution(
                 bins,
                 offset,
                 range,
-                data: RwLock::new(vec![0u32; bins]),
+                data: RwLock::new(vec![0i32; bins]),
                 ref_count: AtomicUsize::new(1),
                 mapped_distributions: Arc::new(RwLock::new(Vec::new())),
             }));
@@ -5294,9 +5296,10 @@ pub extern "C" fn vxQueryDistribution(
     unsafe {
         let dist = &*(distribution as *const VxCDistribution);
         match attribute {
-            0x80803 | VX_DISTRIBUTION_BINS => {
+            0x80800 | VX_DISTRIBUTION_DIMENSIONS => {
+                // VX_DISTRIBUTION_DIMENSIONS: always 1 (1D distribution)
                 if size >= std::mem::size_of::<vx_size>() {
-                    *(ptr as *mut vx_size) = dist.bins;
+                    *(ptr as *mut vx_size) = 1;
                     return VX_SUCCESS;
                 }
             }
@@ -5312,10 +5315,23 @@ pub extern "C" fn vxQueryDistribution(
                     return VX_SUCCESS;
                 }
             }
-            0x80800 => {
-                // VX_DISTRIBUTION_SIZE (window size)
+            0x80803 | VX_DISTRIBUTION_BINS => {
                 if size >= std::mem::size_of::<vx_size>() {
                     *(ptr as *mut vx_size) = dist.bins;
+                    return VX_SUCCESS;
+                }
+            }
+            0x80804 | VX_DISTRIBUTION_WINDOW => {
+                // VX_DISTRIBUTION_WINDOW: range / nbins
+                if size >= std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = dist.range / dist.bins as u32;
+                    return VX_SUCCESS;
+                }
+            }
+            0x80805 | VX_DISTRIBUTION_SIZE => {
+                // VX_DISTRIBUTION_SIZE: nbins * sizeof(vx_int32)
+                if size >= std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = dist.bins * std::mem::size_of::<vx_int32>();
                     return VX_SUCCESS;
                 }
             }
@@ -5334,9 +5350,43 @@ pub extern "C" fn vxCopyDistribution(
     user_mem_type: i32,
 ) -> i32 {
     if distribution.is_null() || user_ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    0
+
+    let dist = unsafe { &*(distribution as *const VxCDistribution) };
+
+    // VX_READ_ONLY = 0x11001 (read from object to user memory)
+    // VX_WRITE_ONLY = 0x11002 (write from user memory to object)
+    const VX_READ_ONLY: i32 = 0x11001;
+    const VX_WRITE_ONLY: i32 = 0x11002;
+
+    if usage == VX_READ_ONLY {
+        // Read from distribution into user memory
+        let data = match dist.data.read() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        unsafe {
+            let ptr = user_ptr as *mut i32;
+            for i in 0..dist.bins {
+                *ptr.add(i) = data[i];
+            }
+        }
+    } else if usage == VX_WRITE_ONLY {
+        // Write from user memory into distribution
+        let mut data = match dist.data.write() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        unsafe {
+            let ptr = user_ptr as *const i32;
+            for i in 0..dist.bins {
+                data[i] = *ptr.add(i);
+            }
+        }
+    }
+
+    VX_SUCCESS as i32
 }
 
 /// Map distribution for CPU access

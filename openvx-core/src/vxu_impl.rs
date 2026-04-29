@@ -2538,9 +2538,9 @@ pub fn vxu_min_max_loc_impl(
 pub fn vxu_histogram_impl(
     context: vx_context,
     input: vx_image,
-    _distribution: vx_distribution,
+    distribution: vx_distribution,
 ) -> vx_status {
-    if context.is_null() || input.is_null() {
+    if context.is_null() || input.is_null() || distribution.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
@@ -2550,13 +2550,39 @@ pub fn vxu_histogram_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match histogram(&src) {
-            Ok(_hist) => {
-                // In a full implementation, would write to distribution
-                VX_SUCCESS
-            }
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        let dist = &*(distribution as *const crate::unified_c_api::VxCDistribution);
+
+        // Compute a full 256-bin histogram
+        let full_hist = match histogram(&src) {
+            Ok(h) => h,
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Map the 256-bin histogram to the distribution's bins/offset/range
+        let nbins = dist.bins;
+        let offset = dist.offset as usize;
+        let range = dist.range as usize;
+
+        let mut dist_data = match dist.data.write() {
+            Ok(d) => d,
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Clear distribution data
+        for i in 0..nbins {
+            dist_data[i] = 0;
         }
+
+        // Map pixel values to distribution bins
+        // bin_index = (pixel_value - offset) * nbins / range
+        for i in offset..(offset + range).min(256) {
+            let bin_idx = (i - offset) * nbins / range;
+            if bin_idx < nbins {
+                dist_data[bin_idx] += full_hist[i] as i32;
+            }
+        }
+
+        VX_SUCCESS
     }
 }
 
@@ -2908,6 +2934,7 @@ pub fn vxu_harris_corners_impl(
                         strength,
                         scale: 0.0,
                         orientation: 0.0,
+                        tracking_status: 1,
                         error: 0.0,
                     };
                     let kp_ptr = arr_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
@@ -3021,10 +3048,10 @@ fn compute_sobel(image: &Image, width: usize, height: usize, kernel_size: usize,
 pub fn vxu_fast_corners_impl(
     context: vx_context,
     input: vx_image,
-    _strength_thresh: vx_scalar,
-    _nonmax_suppression: vx_bool,
-    _corners: vx_array,
-    _num_corners: vx_scalar,
+    strength_thresh: vx_scalar,
+    nonmax_suppression: i32,
+    corners: vx_array,
+    num_corners: vx_scalar,
 ) -> vx_status {
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -3036,16 +3063,256 @@ pub fn vxu_fast_corners_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Default threshold
-        let threshold = 20u8;
+        // Read threshold from scalar
+        let threshold: f32 = if !strength_thresh.is_null() {
+            let mut val: f32 = 20.0;
+            let status = crate::c_api_data::vxCopyScalarData(
+                strength_thresh,
+                &mut val as *mut f32 as *mut c_void,
+                0x11001, 0x0
+            );
+            if status == VX_SUCCESS { val } else { 20.0 }
+        } else { 20.0 };
 
-        match fast9(&src, threshold) {
-            Ok(_corners) => {
-                // In a full implementation, would write to array/scalar outputs
-                VX_SUCCESS
+        let threshold_val = threshold.max(0.0).min(255.0) as u8;
+        let do_nms = nonmax_suppression != 0;
+
+        let width = src.width;
+        let height = src.height;
+
+        // FAST-9 corner detection
+        const CIRCLE_OFFSETS: [(isize, isize); 16] = [
+            (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
+            (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
+        ];
+
+        // Phase 1: Detect all FAST corners and compute strengths
+        let mut corner_list: Vec<(f32, f32, f32)> = Vec::new(); // (x, y, strength)
+
+        for y in 3..height - 3 {
+            for x in 3..width - 3 {
+                let center = src.get_pixel(x, y);
+
+                // Sample the circle pixels
+                let mut circle = [0u8; 16];
+                for (i, (dx, dy)) in CIRCLE_OFFSETS.iter().enumerate() {
+                    let px = (x as isize + dx) as usize;
+                    let py = (y as isize + dy) as usize;
+                    circle[i] = src.get_pixel(px, py);
+                }
+
+                // Quick test: check if at least 3 of the 4 cardinal pixels
+                // are brighter or darker than center +/- threshold
+                let high = center.saturating_add(threshold_val);
+                let low = center.saturating_sub(threshold_val);
+
+                // Check pixels 0, 4, 8, 12 (top, right, bottom, left)
+                let n_bright = [
+                    circle[0] > high, circle[4] > high,
+                    circle[8] > high, circle[12] > high
+                ].iter().filter(|&&b| b).count();
+                let n_dark = [
+                    circle[0] < low, circle[4] < low,
+                    circle[8] < low, circle[12] < low
+                ].iter().filter(|&&b| b).count();
+
+                if n_bright < 3 && n_dark < 3 {
+                    continue; // Not a corner
+                }
+
+                // Full contiguous arc check (9 of 16)
+                // Concatenate circle onto itself to handle wrap-around
+                let mut is_corner = false;
+
+                // Check for brighter arc
+                let mut max_bright_run = 0u32;
+                let mut bright_run = 0u32;
+                for i in 0..32 {
+                    if circle[i % 16] > high {
+                        bright_run += 1;
+                        if bright_run > max_bright_run {
+                            max_bright_run = bright_run;
+                        }
+                    } else {
+                        bright_run = 0;
+                    }
+                }
+                if max_bright_run >= 9 {
+                    is_corner = true;
+                }
+
+                if !is_corner {
+                    // Check for darker arc
+                    let mut max_dark_run = 0u32;
+                    let mut dark_run = 0u32;
+                    for i in 0..32 {
+                        if circle[i % 16] < low {
+                            dark_run += 1;
+                            if dark_run > max_dark_run {
+                                max_dark_run = dark_run;
+                            }
+                        } else {
+                            dark_run = 0;
+                        }
+                    }
+                    if max_dark_run >= 9 {
+                        is_corner = true;
+                    }
+                }
+
+                if !is_corner {
+                    continue;
+                }
+
+                // Compute corner strength using binary search (like reference)
+                let mut lo_t = threshold_val as i32;
+                let mut hi_t = 255i32;
+                while hi_t - lo_t > 1 {
+                    let mid_t = (hi_t + lo_t) / 2;
+                    let mid_high = (center as i32 + mid_t) as u8;
+                    let mid_low = (center as i32 - mid_t).max(0) as u8;
+
+                    // Check if still a corner at this threshold
+                    let mut is_corner_mid = false;
+
+                    // Brighter check
+                    let mut max_bright = 0u32;
+                    let mut bright_run = 0u32;
+                    for i in 0..32 {
+                        if circle[i % 16] > mid_high {
+                            bright_run += 1;
+                            if bright_run > max_bright { max_bright = bright_run; }
+                        } else {
+                            bright_run = 0;
+                        }
+                    }
+                    if max_bright >= 9 { is_corner_mid = true; }
+
+                    if !is_corner_mid {
+                        // Darker check
+                        let mut max_dark = 0u32;
+                        let mut dark_run = 0u32;
+                        for i in 0..32 {
+                            if circle[i % 16] < mid_low {
+                                dark_run += 1;
+                                if dark_run > max_dark { max_dark = dark_run; }
+                            } else {
+                                dark_run = 0;
+                            }
+                        }
+                        if max_dark >= 9 { is_corner_mid = true; }
+                    }
+
+                    if is_corner_mid {
+                        lo_t = mid_t;
+                    } else {
+                        hi_t = mid_t;
+                    }
+                }
+                let strength = lo_t;
+
+                corner_list.push((x as f32, y as f32, strength as f32));
             }
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
+
+        // Phase 2: Non-maximum suppression (if requested)
+        if do_nms {
+            // Create strength image for NMS
+            let img_size = width * height;
+            let mut strength_img = vec![0u8; img_size];
+            for &(x, y, s) in &corner_list {
+                let ix = x as usize;
+                let iy = y as usize;
+                if ix < width && iy < height {
+                    strength_img[iy * width + ix] = s.max(0.0).min(255.0) as u8;
+                }
+            }
+
+            // NMS: keep only local maxima in 3x3 neighborhood
+            let mut nms_corners: Vec<(f32, f32, f32)> = Vec::new();
+            for &(x, y, s) in &corner_list {
+                let ix = x as usize;
+                let iy = y as usize;
+                if ix < 1 || ix >= width - 1 || iy < 1 || iy >= height - 1 {
+                    continue;
+                }
+                let my_strength = strength_img[iy * width + ix];
+                let mut is_max = true;
+                'outer: for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 { continue; }
+                        let nx = (ix as i32 + dx) as usize;
+                        let ny = (iy as i32 + dy) as usize;
+                        if strength_img[ny * width + nx] > my_strength {
+                            is_max = false;
+                            break 'outer;
+                        }
+                    }
+                }
+                if is_max && my_strength > 0 {
+                    nms_corners.push((x, y, my_strength as f32));
+                }
+            }
+            corner_list = nms_corners;
+        }
+
+        // Sort corners by strength (descending)
+        corner_list.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Write corners to output array
+        if !corners.is_null() {
+            let arr = &*(corners as *const crate::unified_c_api::VxCArray);
+            let mut arr_data = match arr.items.write() {
+                Ok(d) => d,
+                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+            };
+
+            let keypoint_size = std::mem::size_of::<vx_keypoint_t>();
+            let output_size = corner_list.len() * keypoint_size;
+            if arr_data.len() < output_size {
+                arr_data.resize(output_size, 0);
+            }
+
+            for (i, &(x, y, strength)) in corner_list.iter().enumerate() {
+                let offset = i * keypoint_size;
+                if offset + keypoint_size <= arr_data.len() {
+                    let kp = vx_keypoint_t {
+                        x,
+                        y,
+                        strength,
+                        scale: 0.0,
+                        orientation: 0.0,
+                        error: 0.0,
+                        tracking_status: 1,
+                    };
+                    let kp_ptr = arr_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
+                    *kp_ptr = kp;
+                }
+            }
+            // Zero out remaining data
+            for i in corner_list.len() * keypoint_size..arr_data.len() {
+                arr_data[i] = 0;
+            }
+
+            // Update array capacity/size
+            unsafe {
+                let arr_mut = arr as *const crate::unified_c_api::VxCArray as *mut crate::unified_c_api::VxCArray;
+                (*arr_mut).capacity = corner_list.len();
+            }
+        }
+
+        // Write num_corners to scalar
+        if !num_corners.is_null() {
+            let num = corner_list.len() as u32;
+            crate::c_api_data::vxCopyScalarData(
+                num_corners,
+                &num as *const u32 as *mut c_void,
+                0x11002, // VX_WRITE_ONLY
+                0x0
+            );
+        }
+
+        VX_SUCCESS
     }
 }
 
@@ -4126,10 +4393,10 @@ fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
     Ok((mean, stddev))
 }
 
-fn histogram(src: &Image) -> VxResult<[u32; 256]> {
+fn histogram(src: &Image) -> VxResult<[i32; 256]> {
     let width = src.width;
     let height = src.height;
-    let mut hist = [0u32; 256];
+    let mut hist = [0i32; 256];
 
     for y in 0..height {
         for x in 0..width {
@@ -5189,7 +5456,7 @@ pub fn vxu_equalize_histogram_impl(
         let mut cdf = [0u32; 256];
         let mut sum: u32 = 0;
         for i in 0..256 {
-            sum += hist[i];
+            sum += hist[i] as u32;
             cdf[i] = sum;
         }
 
@@ -5529,6 +5796,7 @@ pub struct vx_keypoint_t {
     pub strength: f32,
     pub scale: f32,
     pub orientation: f32,
+    pub tracking_status: i32,
     pub error: f32,
 }
 
@@ -5676,6 +5944,7 @@ pub fn vxu_optical_flow_pyr_lk_impl(
                 strength: if valid { 1.0 } else { 0.0 },
                 scale: 1.0,
                 orientation: 0.0,
+                tracking_status: if valid { 1 } else { 0 },
                 error: if valid { 0.0 } else { f32::MAX },
             });
         }
