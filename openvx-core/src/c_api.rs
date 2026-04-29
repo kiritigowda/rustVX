@@ -802,6 +802,10 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                                             // Free based on type
                                                             if val_type == Some(VX_TYPE_SCALAR) {
                                                                 let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
+                                                            } else if val_type == Some(VX_TYPE_PYRAMID) {
+                                                                extern "C" { fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status; }
+                                                                let mut pyr = *val as vx_pyramid;
+                                                                unsafe { vxReleasePyramid(&mut pyr); }
                                                             }
                                                         }
                                                     }
