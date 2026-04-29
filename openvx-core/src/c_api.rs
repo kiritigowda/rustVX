@@ -779,57 +779,30 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                                 let val_type = if let Ok(types) = REFERENCE_TYPES.lock() {
                                                     types.get(&(*val as usize)).copied()
                                                 } else { None };
-                                                if val_type == Some(VX_TYPE_SCALAR) {
-                                                    // Scalars created by convenience functions
-                                                    // have count=2 (creation + param ref).
-                                                    // Decrement twice to fully free them.
-                                                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                                                        if let Some(cnt) = counts.get_mut(&(*val as usize)) {
-                                                            let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
-                                                            if current >= 2 {
-                                                                cnt.store(current - 2, std::sync::atomic::Ordering::SeqCst);
-                                                                if current - 2 == 0 {
-                                                                    // Fully freed - remove from registries and free memory
-                                                                    let addr = *val as usize;
-                                                                    drop(counts);
-                                                                    if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
-                                                                        counts2.remove(&addr);
-                                                                    }
-                                                                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                                                                        types.remove(&addr);
-                                                                    }
-                                                                    // Free the memory
-                                                                    let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
-                                                                }
-                                                            } else if current == 1 {
-                                                                // Only one ref - remove and free
-                                                                let addr = *val as usize;
-                                                                drop(counts);
-                                                                    if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
-                                                                        counts2.remove(&addr);
-                                                                    }
-                                                                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                                                                        types.remove(&addr);
-                                                                    }
+                                                // Decrement ref count by 1 for the node's reference.
+                                                // The caller owns their own reference and will release it.
+                                                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                                                    if let Some(cnt) = counts.get_mut(&(*val as usize)) {
+                                                        let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                                        if current > 1 {
+                                                            cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                                                        } else if current == 1 {
+                                                            // Last reference - free the object
+                                                            let addr = *val as usize;
+                                                            let val_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                                                                types.get(&addr).copied()
+                                                            } else { None };
+                                                            drop(counts);
+                                                            if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
+                                                                counts2.remove(&addr);
+                                                            }
+                                                            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                                                types.remove(&addr);
+                                                            }
+                                                            // Free based on type
+                                                            if val_type == Some(VX_TYPE_SCALAR) {
                                                                 let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
                                                             }
-                                                        }
-                                                    }
-                                                } else {
-                                                    // For non-scalar types, decrement ref count.
-                                                    // If ref count reaches 0, collect for type-specific release.
-                                                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                                                        if let Some(cnt) = counts.get_mut(&(*val as usize)) {
-                                                            let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
-                                                            if current > 1 {
-                                                                cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                                                            } else if current == 1 {
-                                                                // Last reference - will need type-specific cleanup
-                                                                // Collect address for later release (can't do it while holding locks)
-                                                                non_scalar_last_refs.push(*val as usize);
-                                                                cnt.store(0, std::sync::atomic::Ordering::SeqCst);
-                                                            }
-                                                            // If current == 0, object already freed elsewhere
                                                         }
                                                     }
                                                 }
