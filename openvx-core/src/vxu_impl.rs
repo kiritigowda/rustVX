@@ -2569,6 +2569,7 @@ pub fn vxu_scale_image_impl(
     input: vx_image,
     output: vx_image,
     _interpolation: vx_enum,
+    override_border: Option<BorderMode>,
 ) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -2585,8 +2586,8 @@ pub fn vxu_scale_image_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Get border mode from context
-        let border = get_border_from_context(context);
+        // Use override border from graph mode, or fall back to context border
+        let border = override_border.unwrap_or_else(|| get_border_from_context(context));
 
         // Parse interpolation type
         // VX_INTERPOLATION_NEAREST_NEIGHBOR = 0x4000
@@ -4411,9 +4412,9 @@ fn area_interpolate(img: &Image, x: f32, y: f32, x_scale: f32, y_scale: f32, bor
                     }
                     BorderMode::Undefined => {
                         // For BORDER_UNDEFINED with valid region,
-                        // count invalid pixels as 0 in the average
-                        sum += 0;
-                        count += 1;
+                        // skip invalid pixels entirely (don't include in sum or count)
+                        // This matches CTS behavior: pixels outside valid region
+                        // are excluded from the area average
                     }
                 }
             }

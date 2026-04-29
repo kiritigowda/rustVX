@@ -2265,11 +2265,13 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 // Read interpolation type from params[1] (a scalar enum)
                 let interpolation = read_scalar_enum(params[1] as vx_scalar).unwrap_or(0x4001); // default bilinear
                 if !input.is_null() && !output.is_null() {
+                    let border_mode = border_from_vx(&border);
                     crate::vxu_impl::vxu_scale_image_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        interpolation
+                        interpolation,
+                        Some(border_mode)
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -8264,7 +8266,7 @@ pub extern "C" fn vxuScaleImage(
     output: vx_image,
     _interpolation: i32,
 ) -> i32 {
-    crate::vxu_impl::vxu_scale_image_impl(context, input, output, _interpolation)
+    crate::vxu_impl::vxu_scale_image_impl(context, input, output, _interpolation, None)
 }
 
 #[no_mangle]
