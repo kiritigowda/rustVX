@@ -2929,8 +2929,8 @@ pub fn vxu_harris_corners_impl(
                 let offset = i * keypoint_size;
                 if offset + keypoint_size <= arr_data.len() {
                     let kp = vx_keypoint_t {
-                        x: x as f32,
-                        y: y as f32,
+                        x: x as i32,
+                        y: y as i32,
                         strength,
                         scale: 0.0,
                         orientation: 0.0,
@@ -3087,7 +3087,7 @@ pub fn vxu_fast_corners_impl(
         ];
 
         // Phase 1: Detect all FAST corners and compute strengths
-        let mut corner_list: Vec<(f32, f32, f32)> = Vec::new(); // (x, y, strength)
+        let mut corner_list: Vec<(usize, usize, f32)> = Vec::new(); // (x, y, strength)
 
         for y in 3..height - 3 {
             for x in 3..width - 3 {
@@ -3211,7 +3211,7 @@ pub fn vxu_fast_corners_impl(
                 }
                 let strength = lo_t;
 
-                corner_list.push((x as f32, y as f32, strength as f32));
+                corner_list.push((x, y, strength as f32));
             }
         }
 
@@ -3229,7 +3229,7 @@ pub fn vxu_fast_corners_impl(
             }
 
             // NMS: keep only local maxima in 3x3 neighborhood
-            let mut nms_corners: Vec<(f32, f32, f32)> = Vec::new();
+            let mut nms_corners: Vec<(usize, usize, f32)> = Vec::new();
             for &(x, y, s) in &corner_list {
                 let ix = x as usize;
                 let iy = y as usize;
@@ -3277,8 +3277,8 @@ pub fn vxu_fast_corners_impl(
                 let offset = i * keypoint_size;
                 if offset + keypoint_size <= arr_data.len() {
                     let kp = vx_keypoint_t {
-                        x,
-                        y,
+                        x: x as i32,
+                        y: y as i32,
                         strength,
                         scale: 0.0,
                         orientation: 0.0,
@@ -5779,8 +5779,8 @@ pub fn vxu_not_impl(
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct vx_keypoint_t {
-    pub x: f32,
-    pub y: f32,
+    pub x: i32,
+    pub y: i32,
     pub strength: f32,
     pub scale: f32,
     pub orientation: f32,
@@ -5853,7 +5853,7 @@ pub fn vxu_optical_flow_pyr_lk_impl(
             if offset + keypoint_size <= old_pts_data.len() {
                 let kp_ptr = old_pts_data.as_ptr().add(offset) as *const vx_keypoint_t;
                 let kp = &*kp_ptr;
-                keypoints.push((kp.x, kp.y));
+                keypoints.push((kp.x as f32, kp.y as f32));
             }
         }
 
@@ -5870,7 +5870,7 @@ pub fn vxu_optical_flow_pyr_lk_impl(
                 if offset + keypoint_size <= est_data.len() {
                     let kp_ptr = est_data.as_ptr().add(offset) as *const vx_keypoint_t;
                     let kp = &*kp_ptr;
-                    initial_flow.push((kp.x, kp.y));
+                    initial_flow.push((kp.x as f32, kp.y as f32));
                 }
             }
         }
@@ -5927,8 +5927,8 @@ pub fn vxu_optical_flow_pyr_lk_impl(
 
             // Create output keypoint
             output_keypoints.push(vx_keypoint_t {
-                x: px + u,
-                y: py + v,
+                x: (px + u) as i32,
+                y: (py + v) as i32,
                 strength: if valid { 1.0 } else { 0.0 },
                 scale: 1.0,
                 orientation: 0.0,

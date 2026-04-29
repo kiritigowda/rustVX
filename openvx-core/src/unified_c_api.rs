@@ -7866,24 +7866,26 @@ pub extern "C" fn vxHarrisCornersNode(
 
     // gradient_size and block_size are enum values, need to be wrapped in scalars
     let mut gs_val = gradient_size;
-    let gs_scalar = vxCreateScalar(context, 0x0A, &mut gs_val as *mut vx_enum as *mut c_void);
+    let mut gs_scalar = vxCreateScalar(context, 0x0A, &mut gs_val as *mut vx_enum as *mut c_void);
     if gs_scalar.is_null() {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
     status = crate::c_api::vxSetParameterByIndex(node, 4, gs_scalar as vx_reference);
+    vxReleaseScalar(&mut gs_scalar as *mut _);
     if status != VX_SUCCESS {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
 
     let mut bs_val = block_size;
-    let bs_scalar = vxCreateScalar(context, 0x0A, &mut bs_val as *mut vx_enum as *mut c_void);
+    let mut bs_scalar = vxCreateScalar(context, 0x0A, &mut bs_val as *mut vx_enum as *mut c_void);
     if bs_scalar.is_null() {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
     status = crate::c_api::vxSetParameterByIndex(node, 5, bs_scalar as vx_reference);
+    vxReleaseScalar(&mut bs_scalar as *mut _);
     if status != VX_SUCCESS {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
