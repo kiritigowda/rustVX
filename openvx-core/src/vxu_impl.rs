@@ -5073,12 +5073,20 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
     let width = src.width;
     let height = src.height;
 
-    // Use checked operations to prevent integer overflow
     let img_size = width
         .checked_mul(height)
         .ok_or(VxStatus::ErrorInvalidParameters)?;
 
-    // Step 1: Gaussian blur
+    if width < 3 || height < 3 {
+        // Too small for Sobel, output all zeros
+        let dst_data = dst.data_mut();
+        for i in dst_data.iter_mut() {
+            *i = 0;
+        }
+        return Ok(());
+    }
+
+    // Step 1: Gaussian blur (separable 1-2-1)
     let mut blurred = vec![0u8; img_size];
     {
         let kernel = [1, 2, 1];
@@ -5096,10 +5104,8 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
                         weight += kernel[k];
                     }
                 }
-                let idx = y.saturating_mul(width).saturating_add(x);
-                if let Some(p) = temp.get_mut(idx) {
-                    *p = clamp_u8(sum / weight.max(1));
-                }
+                let idx = y * width + x;
+                temp[idx] = clamp_u8(sum / weight.max(1));
             }
         }
 
@@ -5111,153 +5117,135 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
                 for k in 0..3 {
                     let py = y as isize + k as isize - 1;
                     if py >= 0 && py < height as isize {
-                        let idx = (py as usize).saturating_mul(width).saturating_add(x);
-                        if let Some(val) = temp.get(idx) {
-                            sum += *val as i32 * kernel[k];
-                            weight += kernel[k];
-                        }
+                        sum += temp[(py as usize) * width + x] as i32 * kernel[k];
+                        weight += kernel[k];
                     }
                 }
-                let idx = y.saturating_mul(width).saturating_add(x);
-                if let Some(p) = blurred.get_mut(idx) {
-                    *p = clamp_u8(sum / weight.max(1));
-                }
+                blurred[y * width + x] = clamp_u8(sum / weight.max(1));
             }
         }
     }
 
-    // Step 2: Compute gradients
-    let mut grad_x = vec![0i32; img_size];
-    let mut grad_y = vec![0i32; img_size];
-    let mut magnitude = vec![0f32; img_size];
-    let mut direction = vec![0f32; img_size];
+    // Step 2: Sobel gradients
+    // Store magnitude and direction packed: (magnitude << 2) | direction
+    // direction: 0=0°, 1=45°, 2=90°, 3=135°
+    let mut mag_and_dir = vec![0u16; img_size];
 
     for y in 1..height - 1 {
         for x in 1..width - 1 {
-            let mut gx: i32 = 0;
-            let mut gy: i32 = 0;
+            let p00 = blurred[(y - 1) * width + (x - 1)] as i16;
+            let p01 = blurred[(y - 1) * width + x] as i16;
+            let p02 = blurred[(y - 1) * width + (x + 1)] as i16;
+            let p10 = blurred[y * width + (x - 1)] as i16;
+            let p12 = blurred[y * width + (x + 1)] as i16;
+            let p20 = blurred[(y + 1) * width + (x - 1)] as i16;
+            let p21 = blurred[(y + 1) * width + x] as i16;
+            let p22 = blurred[(y + 1) * width + (x + 1)] as i16;
 
-            for ky in 0..3 {
-                for kx in 0..3 {
-                    let px = x + kx - 1;
-                    let py = y + ky - 1;
-                    let idx = (py as usize).saturating_mul(width).saturating_add(px);
-                    let pixel = *blurred.get(idx).unwrap_or(&0) as i32;
-                    gx += pixel * SOBEL_X[ky][kx];
-                    gy += pixel * SOBEL_Y[ky][kx];
-                }
-            }
+            let gx: i16 = -p00 + p02 - 2 * p10 + 2 * p12 - p20 + p22;
+            let gy: i16 = -p00 - 2 * p01 - p02 + p20 + 2 * p21 + p22;
 
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(gx_p) = grad_x.get_mut(idx) {
-                *gx_p = gx;
-            }
-            if let Some(gy_p) = grad_y.get_mut(idx) {
-                *gy_p = gy;
-            }
-            if let Some(mag_p) = magnitude.get_mut(idx) {
-                *mag_p = ((gx * gx + gy * gy) as f32).sqrt();
-            }
-            if let Some(dir_p) = direction.get_mut(idx) {
-                *dir_p = (gy as f32).atan2(gx as f32);
-            }
+            // L2 norm magnitude, clamped to fit in 14 bits (for <<2 packing into u16)
+            let mag = ((gx as i32 * gx as i32 + gy as i32 * gy as i32) as f32).sqrt();
+            let mag_u16 = if mag > 16383.0 { 16383u16 } else { mag as u16 };
+
+            // Direction quantization to 4 bins (0-3)
+            let angle_deg = (gy as f32).atan2(gx as f32).to_degrees();
+            let mut a = angle_deg;
+            if a < 0.0 { a += 180.0; }
+            let dir = if a < 22.5 || a >= 157.5 { 0u16 }       // 0° horizontal edge
+                       else if a < 67.5 { 1u16 }                // 45°
+                       else if a < 112.5 { 2u16 }               // 90° vertical edge
+                       else { 3u16 };                            // 135°
+
+            mag_and_dir[y * width + x] = (mag_u16 << 2) | dir;
         }
     }
 
-    // Step 3: Non-maximum suppression
-    let mut suppressed = vec![0u8; img_size];
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
-            let idx = y.saturating_mul(width).saturating_add(x);
-            let mag = *magnitude.get(idx).unwrap_or(&0.0);
-            let dir = *direction.get(idx).unwrap_or(&0.0);
+    // Step 3: Non-maximum suppression + threshold + hysteresis initialization
+    // NMS neighbor offsets for each direction:
+    //   dir 0 (0°): compare left/right neighbors (horizontal edge, gradient vertical)
+    //   dir 1 (45°): compare upper-right/lower-left
+    //   dir 2 (90°): compare up/down (vertical edge, gradient horizontal)
+    //   dir 3 (135°): compare upper-left/lower-right
+    let n_offset: [[(isize, isize); 2]; 4] = [
+        [(0, -1), (0, 1)],   // dir 0
+        [(-1, 1), (1, -1)],  // dir 1
+        [(-1, 0), (1, 0)],   // dir 2
+        [(-1, -1), (1, 1)],  // dir 3
+    ];
 
-            let angle = ((dir + std::f32::consts::PI) * 4.0 / std::f32::consts::PI) as i32 % 4;
-
-            let (dx1, dy1, dx2, dy2) = match angle {
-                0 | 2 => (1, 0, -1, 0),
-                1 => (1, 1, -1, -1),
-                3 => (1, -1, -1, 1),
-                _ => (0, 1, 0, -1),
-            };
-
-            let idx1 = ((y as isize + dy1) as usize)
-                .saturating_mul(width)
-                .saturating_add((x as isize + dx1) as usize);
-            let idx2 = ((y as isize + dy2) as usize)
-                .saturating_mul(width)
-                .saturating_add((x as isize + dy2) as usize);
-
-            let mag1 = *magnitude.get(idx1).unwrap_or(&0.0);
-            let mag2 = *magnitude.get(idx2).unwrap_or(&0.0);
-            if mag >= mag1 && mag >= mag2 {
-                if let Some(p) = suppressed.get_mut(idx) {
-                    *p = clamp_u8(mag as i32);
-                }
-            }
-        }
-    }
-
-    // Step 4: Double threshold and hysteresis
+    // edges: 0=non-edge, 127=weak, 255=strong
     let mut edges = vec![0u8; img_size];
-    let mut dst_data = dst.data_mut();
+    let low_t = low_threshold as u16;
+    let high_t = high_threshold as u16;
 
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y.saturating_mul(width).saturating_add(x);
-            let val = *suppressed.get(idx).unwrap_or(&0);
+    // Stack for flood-fill hysteresis
+    let mut stack: Vec<(usize, usize)> = Vec::new();
 
-            if let Some(e) = edges.get_mut(idx) {
-                if val >= high_threshold {
-                    *e = 2; // Strong edge
-                } else if val >= low_threshold {
-                    *e = 1; // Weak edge
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
+            let idx = y * width + x;
+            let packed = mag_and_dir[idx];
+            let mag = packed >> 2;
+            let dir = (packed & 3) as usize;
+
+            if mag == 0 {
+                continue;
+            }
+
+            // NMS: compare against two neighbors in gradient direction
+            let (dy0, dx0) = n_offset[dir][0];
+            let (dy1, dx1) = n_offset[dir][1];
+            let ny0 = (y as isize + dy0) as usize;
+            let nx0 = (x as isize + dx0) as usize;
+            let ny1 = (y as isize + dy1) as usize;
+            let nx1 = (x as isize + dx1) as usize;
+            let mag0 = mag_and_dir[ny0 * width + nx0] >> 2;
+            let mag1 = mag_and_dir[ny1 * width + nx1] >> 2;
+
+            // Only keep if this pixel is a local maximum along the gradient direction
+            if mag > mag0 && mag > mag1 {
+                if mag > high_t {
+                    edges[idx] = 255; // Strong edge
+                    stack.push((x, y));
+                } else if mag > low_t {
+                    edges[idx] = 127; // Weak edge (candidate)
                 }
             }
         }
     }
 
-    // Step 5: Edge tracking
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
-            let idx = y.saturating_mul(width).saturating_add(x);
-            let edge_val = *edges.get(idx).unwrap_or(&0);
+    // Step 4: Hysteresis edge tracking (flood fill from strong edges)
+    // Process stack: for each strong edge, check 8-connected neighbors.
+    // If neighbor is a weak edge (127), promote it to strong (255) and push to stack.
+    let dir_offsets_8: [(isize, isize); 8] = [
+        (-1, -1), (0, -1), (1, -1),
+        (-1, 0),          (1, 0),
+        (-1, 1),  (0, 1), (1, 1),
+    ];
 
-            if edge_val == 2 {
-                if let Some(d) = dst_data.get_mut(idx) {
-                    *d = 255;
+    let mut si = 0;
+    while si < stack.len() {
+        let (sx, sy) = stack[si];
+        si += 1;
+        for &(dy, dx) in &dir_offsets_8 {
+            let nx = (sx as isize + dx) as isize;
+            let ny = (sy as isize + dy) as isize;
+            if nx >= 0 && nx < width as isize && ny >= 0 && ny < height as isize {
+                let nidx = (ny as usize) * width + (nx as usize);
+                if edges[nidx] == 127 {
+                    edges[nidx] = 255; // Promote weak to strong
+                    stack.push((nx as usize, ny as usize));
                 }
-            } else if edge_val == 1 {
-                let mut connected = false;
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        if dx == 0 && dy == 0 {
-                            continue;
-                        }
-                        let nx = x as isize + dx;
-                        let ny = y as isize + dy;
-                        let nidx = (ny as usize).saturating_mul(width).saturating_add(nx as usize);
-                        if edges.get(nidx).copied().unwrap_or(0) == 2 {
-                            connected = true;
-                            break;
-                        }
-                    }
-                    if connected {
-                        break;
-                    }
-                }
-
-                if let Some(d) = dst_data.get_mut(idx) {
-                    if connected {
-                        *d = 255;
-                    } else {
-                        *d = 0;
-                    }
-                }
-            } else if let Some(d) = dst_data.get_mut(idx) {
-                *d = 0;
             }
         }
+    }
+
+    // Step 5: Final output — strong edges (255) stay, everything else becomes 0
+    let dst_data = dst.data_mut();
+    for i in 0..img_size {
+        dst_data[i] = if edges[i] == 255 { 255 } else { 0 };
     }
 
     Ok(())
