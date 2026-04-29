@@ -993,7 +993,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.halfscale_gaussian", vec![2]),
                 // 5-param kernels
                 ("org.khronos.openvx.canny_edge_detector", vec![4]),
-                ("org.khronos.openvx.fast_corners", vec![2, 3, 4]),  // [input, thresh, corners, num_corners, strength]
+                ("org.khronos.openvx.fast_corners", vec![3, 4]),  // [input, thresh, nonmax, corners, num_corners]
                 // 6-param kernels
                 ("org.khronos.openvx.minmaxloc", vec![1, 2, 3, 4, 5]),  // [input, min_val, max_val, min_loc, max_loc, num_min_max]
                 // 7-param kernels
@@ -9854,14 +9854,21 @@ pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_t
         }
 
         vxSetParameterByIndex(node, 0, input as vx_reference);
-        if !strength_thresh.is_null() {
-            vxSetParameterByIndex(node, 1, strength_thresh as vx_reference);
+        vxSetParameterByIndex(node, 1, strength_thresh as vx_reference);
+        // Parameter 2: nonmax_suppression (vx_bool as vx_scalar)
+        {
+            let mut nonmax_val: vx_enum = if nonmax_suppression != 0 { 1 } else { 0 };
+            let mut nonmax_scalar = vxCreateScalar(context, 0x0C, &mut nonmax_val as *mut vx_enum as *mut c_void); // VX_TYPE_BOOL
+            if !nonmax_scalar.is_null() {
+                vxSetParameterByIndex(node, 2, nonmax_scalar as vx_reference);
+                vxReleaseScalar(&mut nonmax_scalar as *mut _);
+            }
         }
         if !corners.is_null() {
-            vxSetParameterByIndex(node, 4, corners as vx_reference);
+            vxSetParameterByIndex(node, 3, corners as vx_reference);
         }
         if !num_corners.is_null() {
-            vxSetParameterByIndex(node, 5, num_corners as vx_reference);
+            vxSetParameterByIndex(node, 4, num_corners as vx_reference);
         }
 
         crate::c_api::vxReleaseKernel(&mut kernel);
@@ -9871,11 +9878,8 @@ pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_t
 
 /// Fast corners immediate mode
 #[no_mangle]
-pub extern "C" fn vxuFastCorners(context: vx_context, input: vx_image, strength_thresh: vx_float32, nonmax_suppression: vx_bool, num_corners: vx_array, corners: vx_array) -> vx_status {
-    if context.is_null() || input.is_null() {
-        return VX_ERROR_INVALID_REFERENCE;
-    }
-    VX_SUCCESS
+pub extern "C" fn vxuFastCorners(context: vx_context, input: vx_image, strength_thresh: vx_scalar, nonmax_suppression: vx_bool, corners: vx_array, num_corners: vx_scalar) -> vx_status {
+    crate::vxu_impl::vxu_fast_corners_impl(context, input, strength_thresh, nonmax_suppression as i32, corners, num_corners)
 }
 
 /// Table lookup implementation

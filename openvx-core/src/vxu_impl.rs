@@ -3377,67 +3377,32 @@ pub fn vxu_fast_corners_impl(
                     circle[i] = src.get_pixel(px, py);
                 }
 
-                // Quick test: check if at least 3 of the 4 cardinal pixels
-                // are brighter or darker than center +/- threshold
-                let high = center.saturating_add(threshold_val);
-                let low = center.saturating_sub(threshold_val);
+                // Full FAST-9 contiguous arc check (matching CTS reference)
+                // Check for 9+ contiguous pixels that are all brighter or all darker
+                // Use combined tracking like the CTS reference
+                let mut max_up = 0i32;
+                let mut max_lo = 0i32;
+                let mut up_count = 0i32;
+                let mut lo_count = 0i32;
 
-                // Check pixels 0, 4, 8, 12 (top, right, bottom, left)
-                let n_bright = [
-                    circle[0] > high, circle[4] > high,
-                    circle[8] > high, circle[12] > high
-                ].iter().filter(|&&b| b).count();
-                let n_dark = [
-                    circle[0] < low, circle[4] < low,
-                    circle[8] < low, circle[12] < low
-                ].iter().filter(|&&b| b).count();
-
-                if n_bright < 3 && n_dark < 3 {
-                    continue; // Not a corner
-                }
-
-                // Full contiguous arc check (9 of 16)
-                // Concatenate circle onto itself to handle wrap-around
-                let mut is_corner = false;
-
-                // Check for brighter arc
-                let mut max_bright_run = 0u32;
-                let mut bright_run = 0u32;
-                for i in 0..32 {
-                    if circle[i % 16] > high {
-                        bright_run += 1;
-                        if bright_run > max_bright_run {
-                            max_bright_run = bright_run;
-                        }
+                for i in 0..25 {
+                    let val = circle[i % 16] as i32;
+                    if val > (center as i32 + threshold_val as i32) {
+                        up_count += 1;
+                        lo_count = 0;
+                    } else if val < (center as i32 - threshold_val as i32) {
+                        lo_count += 1;
+                        up_count = 0;
                     } else {
-                        bright_run = 0;
+                        up_count = 0;
+                        lo_count = 0;
                     }
-                }
-                if max_bright_run >= 9 {
-                    is_corner = true;
-                }
-
-                if !is_corner {
-                    // Check for darker arc
-                    let mut max_dark_run = 0u32;
-                    let mut dark_run = 0u32;
-                    for i in 0..32 {
-                        if circle[i % 16] < low {
-                            dark_run += 1;
-                            if dark_run > max_dark_run {
-                                max_dark_run = dark_run;
-                            }
-                        } else {
-                            dark_run = 0;
-                        }
-                    }
-                    if max_dark_run >= 9 {
-                        is_corner = true;
-                    }
+                    if up_count > max_up { max_up = up_count; }
+                    if lo_count > max_lo { max_lo = lo_count; }
                 }
 
-                if !is_corner {
-                    continue;
+                if max_up < 9 && max_lo < 9 {
+                    continue; // Not a corner
                 }
 
                 // Compute corner strength using binary search (like reference)
@@ -3445,41 +3410,31 @@ pub fn vxu_fast_corners_impl(
                 let mut hi_t = 255i32;
                 while hi_t - lo_t > 1 {
                     let mid_t = (hi_t + lo_t) / 2;
-                    let mid_high = (center as i32 + mid_t) as u8;
-                    let mid_low = (center as i32 - mid_t).max(0) as u8;
+                    let mid_high = center as i32 + mid_t;
+                    let mid_low = center as i32 - mid_t;
 
-                    // Check if still a corner at this threshold
-                    let mut is_corner_mid = false;
-
-                    // Brighter check
-                    let mut max_bright = 0u32;
-                    let mut bright_run = 0u32;
-                    for i in 0..32 {
-                        if circle[i % 16] > mid_high {
-                            bright_run += 1;
-                            if bright_run > max_bright { max_bright = bright_run; }
+                    // Check if still a corner at this threshold (combined tracking)
+                    let mut max_up = 0i32;
+                    let mut max_lo = 0i32;
+                    let mut up_count = 0i32;
+                    let mut lo_count = 0i32;
+                    for i in 0..25 {
+                        let val = circle[i % 16] as i32;
+                        if val > mid_high {
+                            up_count += 1;
+                            lo_count = 0;
+                        } else if val < mid_low {
+                            lo_count += 1;
+                            up_count = 0;
                         } else {
-                            bright_run = 0;
+                            up_count = 0;
+                            lo_count = 0;
                         }
-                    }
-                    if max_bright >= 9 { is_corner_mid = true; }
-
-                    if !is_corner_mid {
-                        // Darker check
-                        let mut max_dark = 0u32;
-                        let mut dark_run = 0u32;
-                        for i in 0..32 {
-                            if circle[i % 16] < mid_low {
-                                dark_run += 1;
-                                if dark_run > max_dark { max_dark = dark_run; }
-                            } else {
-                                dark_run = 0;
-                            }
-                        }
-                        if max_dark >= 9 { is_corner_mid = true; }
+                        if up_count > max_up { max_up = up_count; }
+                        if lo_count > max_lo { max_lo = lo_count; }
                     }
 
-                    if is_corner_mid {
+                    if max_up >= 9 || max_lo >= 9 {
                         lo_t = mid_t;
                     } else {
                         hi_t = mid_t;
