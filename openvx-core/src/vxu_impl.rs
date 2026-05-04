@@ -1368,6 +1368,315 @@ pub fn vxu_color_convert_impl(
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
+            // NV21 to RGB
+            (ImageFormat::NV21, ImageFormat::Rgb) => {
+                let (y_size, _, total) = get_nv12_plane_info(src_width, src_height);
+                if src_data.len() >= total && dst_data.len() >= width * height * 3 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let y_val = src_data[y * width + x];
+                            // NV21: VU interleaved, V first
+                            let vu_x = (x / 2) * 2;
+                            let vu_y = y / 2;
+                            let vu_idx = y_size + vu_y * width + vu_x;
+                            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
+                            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+                            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+                            let dst_idx = (y * width + x) * 3;
+                            dst_data[dst_idx] = r;
+                            dst_data[dst_idx + 1] = g;
+                            dst_data[dst_idx + 2] = b;
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // NV21 to RGBA/RGBX
+            (ImageFormat::NV21, ImageFormat::Rgba) => {
+                let (y_size, _, total) = get_nv12_plane_info(src_width, src_height);
+                if src_data.len() >= total && dst_data.len() >= width * height * 4 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let y_val = src_data[y * width + x];
+                            // NV21: VU interleaved, V first
+                            let vu_x = (x / 2) * 2;
+                            let vu_y = y / 2;
+                            let vu_idx = y_size + vu_y * width + vu_x;
+                            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
+                            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+                            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+                            let dst_idx = (y * width + x) * 4;
+                            dst_data[dst_idx] = r;
+                            dst_data[dst_idx + 1] = g;
+                            dst_data[dst_idx + 2] = b;
+                            dst_data[dst_idx + 3] = 255;
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // NV21 to IYUV
+            (ImageFormat::NV21, ImageFormat::IYUV) => {
+                let (src_y_size, _, src_total) = get_nv12_plane_info(src_width, src_height);
+                let (dst_y_size, dst_u_size, _, dst_total) = get_iyuv_plane_info(src_width, src_height);
+                if src_data.len() >= src_total && dst_data.len() >= dst_total {
+                    let half_w = (width + 1) / 2;
+                    let half_h = (height + 1) / 2;
+                    // Copy Y plane
+                    for y in 0..height {
+                        for x in 0..width {
+                            dst_data[y * width + x] = src_data[y * width + x];
+                        }
+                    }
+                    // De-interleave VU plane (NV21: VU) into separate U and V planes (IYUV)
+                    for y in 0..half_h {
+                        for x in 0..half_w {
+                            let vu_idx = src_y_size + y * width + x * 2;
+                            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
+                            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+                            let u_idx = dst_y_size + y * half_w + x;
+                            let v_idx = dst_y_size + dst_u_size + y * half_w + x;
+                            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
+                            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // UYVY to RGB
+            (ImageFormat::UYVY, ImageFormat::Rgb) => {
+                if src_data.len() >= width * height * 2 && dst_data.len() >= width * height * 3 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            // UYVY: [U0, Y0, V0, Y1] per 2 pixels
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let u = src_data[pair_idx];
+                            let y0 = src_data[pair_idx + 1];
+                            let v = src_data[pair_idx + 2];
+                            let y1 = src_data[pair_idx + 3];
+                            let y_val = if x % 2 == 0 { y0 } else { y1 };
+                            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+                            let dst_idx = (y * width + x) * 3;
+                            dst_data[dst_idx] = r;
+                            dst_data[dst_idx + 1] = g;
+                            dst_data[dst_idx + 2] = b;
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // UYVY to RGBA/RGBX
+            (ImageFormat::UYVY, ImageFormat::Rgba) => {
+                if src_data.len() >= width * height * 2 && dst_data.len() >= width * height * 4 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            // UYVY: [U0, Y0, V0, Y1] per 2 pixels
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let u = src_data[pair_idx];
+                            let y0 = src_data[pair_idx + 1];
+                            let v = src_data[pair_idx + 2];
+                            let y1 = src_data[pair_idx + 3];
+                            let y_val = if x % 2 == 0 { y0 } else { y1 };
+                            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+                            let dst_idx = (y * width + x) * 4;
+                            dst_data[dst_idx] = r;
+                            dst_data[dst_idx + 1] = g;
+                            dst_data[dst_idx + 2] = b;
+                            dst_data[dst_idx + 3] = 255;
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // UYVY to NV12
+            (ImageFormat::UYVY, ImageFormat::NV12) => {
+                if src_data.len() >= width * height * 2 {
+                    let (y_size, _, _) = get_nv12_plane_info(src_width, src_height);
+                    // Y plane
+                    for y in 0..height {
+                        for x in 0..width {
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let y0 = src_data[pair_idx + 1];
+                            let y1 = src_data[pair_idx + 3];
+                            let y_val = if x % 2 == 0 { y0 } else { y1 };
+                            dst_data[y * width + x] = y_val;
+                        }
+                    }
+                    // UV plane (4:2:0 subsampling from 4:2:2)
+                    for y in (0..height).step_by(2) {
+                        for x in (0..width).step_by(2) {
+                            let pair_idx = (y * width + x) * 2;
+                            let u = src_data[pair_idx];
+                            let v = src_data[pair_idx + 2];
+                            let uv_idx = y_size + (y / 2) * width + x;
+                            if uv_idx + 1 < dst_data.len() {
+                                dst_data[uv_idx] = u;
+                                dst_data[uv_idx + 1] = v;
+                            }
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // UYVY to IYUV
+            (ImageFormat::UYVY, ImageFormat::IYUV) => {
+                if src_data.len() >= width * height * 2 {
+                    let (y_size, u_size, _, _) = get_iyuv_plane_info(src_width, src_height);
+                    let half_w = (width + 1) / 2;
+                    let half_h = (height + 1) / 2;
+                    // Y plane
+                    for y in 0..height {
+                        for x in 0..width {
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let y0 = src_data[pair_idx + 1];
+                            let y1 = src_data[pair_idx + 3];
+                            let y_val = if x % 2 == 0 { y0 } else { y1 };
+                            dst_data[y * width + x] = y_val;
+                        }
+                    }
+                    // U and V planes (4:2:0 subsampling from 4:2:2)
+                    for y in (0..height).step_by(2) {
+                        for x in (0..width).step_by(2) {
+                            let pair_idx = (y * width + x) * 2;
+                            let u = src_data[pair_idx];
+                            let v = src_data[pair_idx + 2];
+                            let uv_y = y / 2;
+                            let uv_x = x / 2;
+                            let u_idx = y_size + uv_y * half_w + uv_x;
+                            let v_idx = y_size + u_size + uv_y * half_w + uv_x;
+                            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
+                            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // YUYV to RGB
+            (ImageFormat::YUYV, ImageFormat::Rgb) => {
+                if src_data.len() >= width * height * 2 && dst_data.len() >= width * height * 3 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            // YUYV: [Y0, U, Y1, V] per 2 pixels
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let y0 = src_data[pair_idx];
+                            let u = src_data[pair_idx + 1];
+                            let y1 = src_data[pair_idx + 2];
+                            let v = src_data[pair_idx + 3];
+                            let y_val = if x % 2 == 0 { y0 } else { y1 };
+                            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+                            let dst_idx = (y * width + x) * 3;
+                            dst_data[dst_idx] = r;
+                            dst_data[dst_idx + 1] = g;
+                            dst_data[dst_idx + 2] = b;
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // YUYV to RGBA/RGBX
+            (ImageFormat::YUYV, ImageFormat::Rgba) => {
+                if src_data.len() >= width * height * 2 && dst_data.len() >= width * height * 4 {
+                    for y in 0..height {
+                        for x in 0..width {
+                            // YUYV: [Y0, U, Y1, V] per 2 pixels
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let y0 = src_data[pair_idx];
+                            let u = src_data[pair_idx + 1];
+                            let y1 = src_data[pair_idx + 2];
+                            let v = src_data[pair_idx + 3];
+                            let y_val = if x % 2 == 0 { y0 } else { y1 };
+                            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+                            let dst_idx = (y * width + x) * 4;
+                            dst_data[dst_idx] = r;
+                            dst_data[dst_idx + 1] = g;
+                            dst_data[dst_idx + 2] = b;
+                            dst_data[dst_idx + 3] = 255;
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // YUYV to NV12
+            (ImageFormat::YUYV, ImageFormat::NV12) => {
+                if src_data.len() >= width * height * 2 {
+                    let (y_size, _, _) = get_nv12_plane_info(src_width, src_height);
+                    // Y plane
+                    for y in 0..height {
+                        for x in 0..width {
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let y_val = if x % 2 == 0 { src_data[pair_idx] } else { src_data[pair_idx + 2] };
+                            dst_data[y * width + x] = y_val;
+                        }
+                    }
+                    // UV plane (4:2:0 subsampling from 4:2:2)
+                    for y in (0..height).step_by(2) {
+                        for x in (0..width).step_by(2) {
+                            let pair_idx = (y * width + x) * 2;
+                            let u = src_data[pair_idx + 1];
+                            let v = src_data[pair_idx + 3];
+                            let uv_idx = y_size + (y / 2) * width + x;
+                            if uv_idx + 1 < dst_data.len() {
+                                dst_data[uv_idx] = u;
+                                dst_data[uv_idx + 1] = v;
+                            }
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            // YUYV to IYUV
+            (ImageFormat::YUYV, ImageFormat::IYUV) => {
+                if src_data.len() >= width * height * 2 {
+                    let (y_size, u_size, _, _) = get_iyuv_plane_info(src_width, src_height);
+                    let half_w = (width + 1) / 2;
+                    let half_h = (height + 1) / 2;
+                    // Y plane
+                    for y in 0..height {
+                        for x in 0..width {
+                            let pair_idx = (y * width + (x & !1)) * 2;
+                            let y_val = if x % 2 == 0 { src_data[pair_idx] } else { src_data[pair_idx + 2] };
+                            dst_data[y * width + x] = y_val;
+                        }
+                    }
+                    // U and V planes (4:2:0 subsampling from 4:2:2)
+                    for y in (0..height).step_by(2) {
+                        for x in (0..width).step_by(2) {
+                            let pair_idx = (y * width + x) * 2;
+                            let u = src_data[pair_idx + 1];
+                            let v = src_data[pair_idx + 3];
+                            let uv_y = y / 2;
+                            let uv_x = x / 2;
+                            let u_idx = y_size + uv_y * half_w + uv_x;
+                            let v_idx = y_size + u_size + uv_y * half_w + uv_x;
+                            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
+                            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+                        }
+                    }
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
             // IYUV to YUV4
             (ImageFormat::IYUV, ImageFormat::YUV4) => {
                 let (src_y_size, src_u_size, _, src_total) = get_iyuv_plane_info(src_width, src_height);

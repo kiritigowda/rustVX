@@ -1799,16 +1799,17 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
 
     // Note: Some kernels have optional parameters that can be NULL
     // We'll validate required parameters in the dispatch function
-    // For now, just check that required param 0 is set
-    if param_ids.is_empty() || param_ids[0].is_none() {
+    // For ChannelCombine, all plane params can be null except the output
+    let is_channel_combine = kernel_name.contains("channel_combine");
+    if param_ids.is_empty() || (param_ids[0].is_none() && !is_channel_combine) {
 
         return Some(VX_ERROR_INVALID_PARAMETERS);
     }
 
     for (idx, param_id_opt) in param_ids.iter().enumerate() {
         if let Some(param_id) = param_id_opt {
-            // Validate parameter is not null pointer
-            if *param_id == 0 {
+            // Validate parameter is not null pointer (unless it's an optional param for ChannelCombine)
+            if *param_id == 0 && !is_channel_combine {
 
                 return Some(VX_ERROR_INVALID_PARAMETERS);
             }

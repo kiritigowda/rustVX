@@ -275,7 +275,7 @@ fn register_standard_kernels(context_id: u32) {
         // Color conversions
         ("org.khronos.openvx.color_convert", 0x01, 2),
         ("org.khronos.openvx.channel_extract", 0x02, 3),
-        ("org.khronos.openvx.channel_combine", 0x03, 4),
+        ("org.khronos.openvx.channel_combine", 0x03, 5),
         // Gradient operations
         ("org.khronos.openvx.sobel_3x3", 0x04, 3),
         ("org.khronos.openvx.magnitude", 0x05, 3),
@@ -1861,12 +1861,25 @@ pub extern "C" fn vxSetParameterByIndex(
     if node.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
+    let id = node as u64;
     // Check if trying to set NULL for required parameters
     // Param 0 is always a required input for vision kernels
     if value.is_null() && index == 0 {
-        return VX_ERROR_INVALID_PARAMETERS;
+        // Allow null for ChannelCombine kernel which has optional planes
+        // All other kernels require param 0
+        let is_channel_combine = if let Ok(nodes) = NODES.lock() {
+            if let Some(node_data) = nodes.get(&id) {
+                node_data.kernel_id == 0x03 // VX_KERNEL_CHANNEL_COMBINE
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !is_channel_combine {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
     }
-    let id = node as u64;
     
     // Store node data before dropping the lock
     let (context_id, kernel_id) = if let Ok(nodes) = NODES.lock() {
