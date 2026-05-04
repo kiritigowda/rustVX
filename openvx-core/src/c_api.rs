@@ -1469,7 +1469,7 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
         
         let context_id = context as u32;
         
-        // Look up kernel by name
+        // Look up kernel by name in built-in kernels
         if let Ok(kernels) = KERNELS.lock() {
             for (id, kernel) in kernels.iter() {
                 if kernel.name == kernel_name && kernel.context_id == context_id {
@@ -1481,6 +1481,28 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
                         }
                     }
                     return *id as *mut VxKernel;
+                }
+            }
+        }
+
+        // Look up in user kernels
+        if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
+            for (enum_id, kernel) in user_kernels.iter() {
+                if kernel.name == kernel_name {
+                    // Return pointer based on enumeration ID
+                    let kernel_ptr = *enum_id as usize as vx_kernel;
+                    // Ensure the reference type is registered as VX_TYPE_KERNEL
+                    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                        types.insert(kernel_ptr as usize, crate::unified_c_api::VX_TYPE_KERNEL);
+                    }
+                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                        if let Some(count) = counts.get(&(kernel_ptr as usize)) {
+                            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        } else {
+                            counts.insert(kernel_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+                        }
+                    }
+                    return kernel_ptr;
                 }
             }
         }

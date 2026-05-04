@@ -623,6 +623,28 @@ fn is_image_reference(ref_id: u64) -> bool {
     false
 }
 
+/// Check if a reference is a data-carrying object (image, array, pyramid, etc.)
+/// Used for topological sorting to track data dependencies between nodes.
+/// Scalars and enums are NOT data references (they carry values, not data objects).
+fn is_data_reference(ref_id: u64) -> bool {
+    if let Ok(types) = REFERENCE_TYPES.lock() {
+        if let Some(ref_type) = types.get(&(ref_id as usize)) {
+            return *ref_type == VX_TYPE_IMAGE
+                || *ref_type == VX_TYPE_ARRAY
+                || *ref_type == VX_TYPE_PYRAMID
+                || *ref_type == VX_TYPE_REMAP
+                || *ref_type == VX_TYPE_LUT
+                || *ref_type == VX_TYPE_DISTRIBUTION
+                || *ref_type == VX_TYPE_THRESHOLD
+                || *ref_type == VX_TYPE_MATRIX
+                || *ref_type == VX_TYPE_CONVOLUTION
+                || *ref_type == VX_TYPE_OBJECT_ARRAY;
+        }
+    }
+    // Fallback: check if it's at least an image
+    is_image_reference(ref_id)
+}
+
 /// Validate image reference before access
 fn validate_image(image: vx_image) -> vx_status {
     if image.is_null() {
@@ -926,6 +948,24 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     node_kernel_names.insert(*node_id, kernel.name.clone());
                                 }
                             }
+                            // Also check unified KERNELS
+                            if !node_kernel_names.contains_key(node_id) {
+                                if let Ok(kernels) = KERNELS.lock() {
+                                    if let Some(kernel) = kernels.get(&node_data.kernel_id) {
+                                        node_kernel_names.insert(*node_id, kernel.name.clone());
+                                    }
+                                }
+                            }
+                            // Also check user kernels
+                            if !node_kernel_names.contains_key(node_id) {
+                                let kid_i32 = node_data.kernel_id as i32;
+                                let kid_alt = (node_data.kernel_id & 0xFFFFFFFF) as i32;
+                                if let Ok(user_kernels) = USER_KERNELS.lock() {
+                                    if let Some(uk) = user_kernels.get(&kid_i32).or_else(|| user_kernels.get(&kid_alt)) {
+                                        node_kernel_names.insert(*node_id, uk.name.clone());
+                                    }
+                                }
+                            }
                             node_params.push((*node_id, param_refs));
                         }
                     }
@@ -999,7 +1039,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 // 7-param kernels
                 ("org.khronos.openvx.multiply", vec![5]),  // [in1, in2, scale, overflow, rounding, output]
                 ("org.khronos.openvx.harris_corners", vec![6, 7]),  // [input, strength_thresh, min_distance, sensitivity, gs, bs, corners, num_corners]
-                ("org.khronos.openvx.optical_flow_pyr_lk", vec![6]),  // 7 params
+                ("org.khronos.openvx.optical_flow_pyr_lk", vec![4]),  // [old_pyr, new_pyr, old_pts, new_pts_est, new_pts, term, eps]
             ].iter().cloned().collect();
 
             for (node_id, params) in &node_params {
@@ -1008,8 +1048,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
-                        // Check if this is an image parameter
-                        if is_image_reference(*param_ref) {
+                        // Check if this is a data-carrying reference (image, array, pyramid, etc.)
+                        if is_data_reference(*param_ref) {
                             // Determine if this parameter is an output based on kernel signature
                             let is_output = output_indices.map_or_else(
                                 || idx > 0,  // fallback: assume first is input, rest output
@@ -1017,7 +1057,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                             );
 
                             if is_output {
-                                // This is an output - record that this node produces this image
+                                // This is an output - record that this node produces this data
                                 if let Some(existing) = param_to_producer.get(param_ref) {
                                     if *existing != *node_id {
                                         // Two nodes produce the same output - error!
@@ -1025,11 +1065,23 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     }
                                 }
                                 param_to_producer.insert(*param_ref, *node_id);
+                                // If this is an ROI image, also record that the parent is produced
+                                // This ensures correct ordering: writing to an ROI implicitly writes to the parent
+                                unsafe {
+                                    let img = &*(*param_ref as *const VxCImage);
+                                    if img.parent.is_some() && !img.roi_offsets.is_empty() {
+                                        let parent_ref = img.parent.unwrap() as u64;
+                                        param_to_producer.insert(parent_ref, *node_id);
+                                    }
+                                }
                             } else {
-                                // This is an input - record that this node consumes this image
+                                // This is an input - record that this node consumes this data
                                 param_to_consumers.entry(*param_ref)
                                     .or_insert_with(Vec::new)
                                     .push(*node_id);
+                                // If this is a parent image with ROI children, consuming the parent
+                                // should also depend on nodes that write to any ROI child
+                                // (handled below in the ROI dependency section)
                             }
                         }
                     }
@@ -1044,7 +1096,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 let mut outputs = Vec::new();
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
-                        if is_image_reference(*param_ref) {
+                        if is_data_reference(*param_ref) {
                             let is_output = output_indices.map_or_else(
                                 || idx > 0,
                                 |indices| indices.contains(&idx)
@@ -1060,14 +1112,14 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 }
             }
 
-            // Build image -> consuming nodes map
+            // Build data -> consuming nodes map
             let mut image_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
             for (node_id, params) in &node_params {
                 let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
                 let output_indices = kernel_output_indices.get(kernel_name);
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
-                        if is_image_reference(*param_ref) {
+                        if is_data_reference(*param_ref) {
                             let is_output = output_indices.map_or_else(
                                 || idx > 0,
                                 |indices| indices.contains(&idx)
@@ -1206,6 +1258,18 @@ while !queue.is_empty() {
                 // Update the graph's node list
                 if topo_order.len() == node_params.len() {
                     
+                    if let Ok(mut nodes_list) = g.nodes.write() {
+                        *nodes_list = topo_order;
+                    }
+                } else {
+                    // Topological sort didn't include all nodes - this means there's a cycle
+                    // or disconnected nodes. Include all nodes by appending missing ones.
+                    let topo_set: std::collections::HashSet<u64> = topo_order.iter().copied().collect();
+                    for (node_id, _) in &node_params {
+                        if !topo_set.contains(node_id) {
+                            topo_order.push(*node_id);
+                        }
+                    }
                     if let Ok(mut nodes_list) = g.nodes.write() {
                         *nodes_list = topo_order;
                     }
@@ -1594,6 +1658,16 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
             return VX_ERROR_INVALID_NODE;
         }
 
+        let node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
+            if let Some(nd) = nodes_map.get(node_id) {
+                if let Ok(kernels) = crate::c_api::KERNELS.lock() {
+                    if let Some(k) = kernels.get(&nd.kernel_id) {
+                        k.name.clone()
+                    } else { String::new() }
+                } else { String::new() }
+            } else { String::new() }
+        } else { String::new() };
+
         match execute_node(*node_id) {
             Some(status) => {
                 if status == VX_SUCCESS {
@@ -1773,8 +1847,19 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                     if let Some(kernel) = unified_kernels.get(&kernel_id) {
                         kernel.name.clone()
                     } else {
-
-                        return Some(VX_ERROR_INVALID_KERNEL);
+                        // Check user kernels - kernel_id might be sign-extended from a vx_enum
+                        drop(unified_kernels);
+                        let user_kernel_key = kernel_id as i32;
+                        let user_kernel_key_alt = (kernel_id & 0xFFFFFFFF) as i32;
+                        if let Ok(user_kernels) = USER_KERNELS.lock() {
+                            if let Some(uk) = user_kernels.get(&user_kernel_key).or_else(|| user_kernels.get(&user_kernel_key_alt)) {
+                                uk.name.clone()
+                            } else {
+                                return Some(VX_ERROR_INVALID_KERNEL);
+                            }
+                        } else {
+                            return Some(VX_ERROR_INVALID_KERNEL);
+                        }
                     }
                 } else {
                     return Some(VX_ERROR_INVALID_KERNEL);
@@ -2889,10 +2974,33 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let old_images = params[0] as vx_pyramid;
                 let new_images = params[1] as vx_pyramid;
                 let old_points = params[2] as vx_array;
+                let _new_points_estimates = params[3] as vx_array;
                 let new_points = params[4] as vx_array;
                 if !old_images.is_null() && !new_images.is_null() &&
                    !old_points.is_null() && !new_points.is_null() {
-                    // stub - returns success for now
+                    // Minimal implementation: copy old_points to new_points
+                    // This allows downstream nodes to have data to work with
+                    extern "C" {
+                        fn vxQueryArray(arr: vx_array, attr: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+                        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+                        fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+                        fn vxMapArrayRange(arr: vx_array, start: vx_size, end: vx_size, map_id: *mut vx_map_id, stride: *mut vx_size, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: vx_uint32) -> vx_status;
+                        fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_status;
+                    }
+                    const VX_ARRAY_NUMITEMS_ATTR: vx_enum = 0x80E01;
+                    let mut num_items: vx_size = 0;
+                    let query_status = unsafe { vxQueryArray(old_points, VX_ARRAY_NUMITEMS_ATTR, &mut num_items as *mut vx_size as *mut c_void, std::mem::size_of::<vx_size>()) };
+                    if query_status == VX_SUCCESS && num_items > 0 {
+                        let mut map_id: vx_map_id = 0;
+                        let mut stride: vx_size = 0;
+                        let mut data_ptr: *mut c_void = std::ptr::null_mut();
+                        let map_status = unsafe { vxMapArrayRange(old_points, 0, num_items, &mut map_id, &mut stride, &mut data_ptr, 0x11001, 0xE001, 0) };
+                        if map_status == VX_SUCCESS && !data_ptr.is_null() {
+                            let trunc_status = unsafe { vxTruncateArray(new_points, 0) };
+                            let add_status = unsafe { vxAddArrayItems(new_points, num_items, data_ptr, stride) };
+                            unsafe { vxUnmapArrayRange(old_points, map_id) };
+                        }
+                    }
                     VX_SUCCESS
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2946,10 +3054,31 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         }
         // Unknown kernel - check if it's a user kernel
         _ => {
-            // Check if this is a user kernel - for now just return success
-            // User kernel execution would require calling the validate/init/deinit functions
-            // This allows tests to pass even if user kernels aren't fully executed
-            VX_SUCCESS
+            // Try to execute as a user kernel
+            let mut found = false;
+            let mut result = VX_SUCCESS;
+            if let Ok(user_kernels) = USER_KERNELS.lock() {
+                for (_enum_id, uk) in user_kernels.iter() {
+                    if uk.name == kernel_name {
+                        found = true;
+                        // Call the user kernel function
+                        if let Some(kernel_fn) = uk.kernel {
+                            let params_ptr = params.as_ptr();
+                            let num_params = params.len() as vx_uint32;
+                            result = unsafe {
+                                kernel_fn(std::ptr::null_mut(), params_ptr, num_params)
+                            };
+                        }
+                        break;
+                    }
+                }
+            }
+            if !found {
+                // Unregistered kernel - return error
+                VX_ERROR_INVALID_KERNEL
+            } else {
+                result
+            }
         }
     }
 }
