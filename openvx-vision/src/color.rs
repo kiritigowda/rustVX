@@ -96,6 +96,39 @@ impl KernelTrait for ColorConvertKernel {
             (ImageFormat::NV21, ImageFormat::YUV4) => {
                 nv21_to_yuv4(src, dst)?;
             }
+            (ImageFormat::NV21, ImageFormat::Rgb) => {
+                nv21_to_rgb(src, dst)?;
+            }
+            (ImageFormat::NV21, ImageFormat::Rgba) => {
+                nv21_to_rgba(src, dst)?;
+            }
+            (ImageFormat::NV21, ImageFormat::IYUV) => {
+                nv21_to_iyuv(src, dst)?;
+            }
+            (ImageFormat::UYVY, ImageFormat::Rgb) => {
+                uyvy_to_rgb(src, dst)?;
+            }
+            (ImageFormat::UYVY, ImageFormat::Rgba) => {
+                uyvy_to_rgba(src, dst)?;
+            }
+            (ImageFormat::UYVY, ImageFormat::NV12) => {
+                uyvy_to_nv12(src, dst)?;
+            }
+            (ImageFormat::UYVY, ImageFormat::IYUV) => {
+                uyvy_to_iyuv(src, dst)?;
+            }
+            (ImageFormat::YUYV, ImageFormat::Rgb) => {
+                yuyv_to_rgb(src, dst)?;
+            }
+            (ImageFormat::YUYV, ImageFormat::Rgba) => {
+                yuyv_to_rgba(src, dst)?;
+            }
+            (ImageFormat::YUYV, ImageFormat::NV12) => {
+                yuyv_to_nv12(src, dst)?;
+            }
+            (ImageFormat::YUYV, ImageFormat::IYUV) => {
+                yuyv_to_iyuv(src, dst)?;
+            }
             (ImageFormat::IYUV, ImageFormat::YUV4) => {
                 iyuv_to_yuv4(src, dst)?;
             }
@@ -289,10 +322,10 @@ impl KernelTrait for ChannelCombineKernel {
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
         // plane3 (alpha) is optional - only used for RGBX
-        let plane3: Option<&Image> = params.get(4)
+        let plane3: Option<&Image> = params.get(3)
             .and_then(|p| p.as_any().downcast_ref::<Image>());
-        // dst is the last parameter (index 3 or 4)
-        let dst = if params.len() > 4 {
+        // dst is the last parameter (index 4 for 5-param, or 3 for 4-param legacy)
+        let dst = if params.len() >= 5 {
             params.get(4)
                 .and_then(|p| p.as_any().downcast_ref::<Image>())
         } else {
@@ -443,6 +476,44 @@ impl KernelTrait for ChannelCombineKernel {
                     for x in 0..width {
                         let v_val = plane2.get_pixel(x, y);
                         dst_data[2 * y_size + y * width + x] = v_val;
+                    }
+                }
+            }
+            ImageFormat::UYVY => {
+                // UYVY: 3 planes (Y, U, V) -> packed UYVY
+                // UYVY layout: [U0, Y0, V0, Y1] per 2 pixels
+                for y in 0..height {
+                    for x in (0..width).step_by(2) {
+                        let y0 = plane0.get_pixel(x, y);
+                        let y1 = plane0.get_pixel(x + 1, y);
+                        let u = plane1.get_pixel(x / 2, y);
+                        let v = plane2.get_pixel(x / 2, y);
+                        let idx = (y * width + x) * 2;
+                        if idx + 3 < dst_data.len() {
+                            dst_data[idx] = u;
+                            dst_data[idx + 1] = y0;
+                            dst_data[idx + 2] = v;
+                            dst_data[idx + 3] = y1;
+                        }
+                    }
+                }
+            }
+            ImageFormat::YUYV => {
+                // YUYV: 3 planes (Y, U, V) -> packed YUYV
+                // YUYV layout: [Y0, U, Y1, V] per 2 pixels
+                for y in 0..height {
+                    for x in (0..width).step_by(2) {
+                        let y0 = plane0.get_pixel(x, y);
+                        let y1 = plane0.get_pixel(x + 1, y);
+                        let u = plane1.get_pixel(x / 2, y);
+                        let v = plane2.get_pixel(x / 2, y);
+                        let idx = (y * width + x) * 2;
+                        if idx + 3 < dst_data.len() {
+                            dst_data[idx] = y0;
+                            dst_data[idx + 1] = u;
+                            dst_data[idx + 2] = y1;
+                            dst_data[idx + 3] = v;
+                        }
                     }
                 }
             }
@@ -1339,5 +1410,309 @@ pub fn iyuv_to_yuv4(src: &Image, dst: &Image) -> VxResult<()> {
         }
     }
     
+    Ok(())
+}
+
+/// NV21 to RGB
+pub fn nv21_to_rgb(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::NV21 || dst.format() != ImageFormat::Rgb {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    let src_data = src.data();
+    let chroma_offset = width * height;
+    for y in 0..height {
+        for x in 0..width {
+            let y_val = src_data[y * width + x];
+            // NV21: VU order
+            let vu_x = (x / 2) * 2;
+            let vu_y = y / 2;
+            let vu_idx = chroma_offset + vu_y * width + vu_x;
+            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
+            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+            let idx = (y * width + x) * 3;
+            dst_data[idx] = r;
+            dst_data[idx + 1] = g;
+            dst_data[idx + 2] = b;
+        }
+    }
+    Ok(())
+}
+
+/// NV21 to RGBA
+pub fn nv21_to_rgba(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::NV21 || dst.format() != ImageFormat::Rgba {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    let src_data = src.data();
+    let chroma_offset = width * height;
+    for y in 0..height {
+        for x in 0..width {
+            let y_val = src_data[y * width + x];
+            let vu_x = (x / 2) * 2;
+            let vu_y = y / 2;
+            let vu_idx = chroma_offset + vu_y * width + vu_x;
+            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
+            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+            let idx = (y * width + x) * 4;
+            dst_data[idx] = r;
+            dst_data[idx + 1] = g;
+            dst_data[idx + 2] = b;
+            dst_data[idx + 3] = 255;
+        }
+    }
+    Ok(())
+}
+
+/// NV21 to IYUV
+pub fn nv21_to_iyuv(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::NV21 || dst.format() != ImageFormat::IYUV {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    let src_data = src.data();
+    let y_size = width * height;
+    let half_w = (width + 1) / 2;
+    let half_h = (height + 1) / 2;
+    let u_size = half_w * half_h;
+    // Copy Y plane
+    for y in 0..height {
+        for x in 0..width {
+            dst_data[y * width + x] = src_data[y * width + x];
+        }
+    }
+    // De-interleave VU plane (NV21: VU) into separate U and V planes (IYUV)
+    for y in 0..half_h {
+        for x in 0..half_w {
+            let vu_idx = y_size + y * width + x * 2;
+            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
+            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+            let u_idx = y_size + y * half_w + x;
+            let v_idx = y_size + u_size + y * half_w + x;
+            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
+            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+        }
+    }
+    Ok(())
+}
+
+/// UYVY to RGB
+pub fn uyvy_to_rgb(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::UYVY || dst.format() != ImageFormat::Rgb {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, u, v) = src.get_uyvy(x, y);
+            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+            let idx = (y * width + x) * 3;
+            dst_data[idx] = r;
+            dst_data[idx + 1] = g;
+            dst_data[idx + 2] = b;
+        }
+    }
+    Ok(())
+}
+
+/// UYVY to RGBA
+pub fn uyvy_to_rgba(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::UYVY || dst.format() != ImageFormat::Rgba {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, u, v) = src.get_uyvy(x, y);
+            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+            let idx = (y * width + x) * 4;
+            dst_data[idx] = r;
+            dst_data[idx + 1] = g;
+            dst_data[idx + 2] = b;
+            dst_data[idx + 3] = 255;
+        }
+    }
+    Ok(())
+}
+
+/// UYVY to NV12
+pub fn uyvy_to_nv12(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::UYVY || dst.format() != ImageFormat::NV12 {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    let y_size = width * height;
+    // Y plane
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, _, _) = src.get_uyvy(x, y);
+            dst_data[y * width + x] = y_val;
+        }
+    }
+    // UV plane (4:2:0 subsampling from 4:2:2)
+    for y in (0..height).step_by(2) {
+        for x in (0..width).step_by(2) {
+            let (_, u, v) = src.get_uyvy(x, y);
+            let uv_idx = y_size + (y / 2) * width + x;
+            if uv_idx + 1 < dst_data.len() {
+                dst_data[uv_idx] = u;
+                dst_data[uv_idx + 1] = v;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// UYVY to IYUV
+pub fn uyvy_to_iyuv(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::UYVY || dst.format() != ImageFormat::IYUV {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    let y_size = width * height;
+    let half_w = (width + 1) / 2;
+    let u_size = half_w * ((height + 1) / 2);
+    // Y plane
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, _, _) = src.get_uyvy(x, y);
+            dst_data[y * width + x] = y_val;
+        }
+    }
+    // U and V planes (4:2:0 subsampling from 4:2:2)
+    for y in (0..height).step_by(2) {
+        for x in (0..width).step_by(2) {
+            let (_, u, v) = src.get_uyvy(x, y);
+            let uv_y = y / 2;
+            let uv_x = x / 2;
+            let u_idx = y_size + uv_y * half_w + uv_x;
+            let v_idx = y_size + u_size + uv_y * half_w + uv_x;
+            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
+            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+        }
+    }
+    Ok(())
+}
+
+/// YUYV to RGB
+pub fn yuyv_to_rgb(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::YUYV || dst.format() != ImageFormat::Rgb {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, u, v) = src.get_yuyv(x, y);
+            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+            let idx = (y * width + x) * 3;
+            dst_data[idx] = r;
+            dst_data[idx + 1] = g;
+            dst_data[idx + 2] = b;
+        }
+    }
+    Ok(())
+}
+
+/// YUYV to RGBA
+pub fn yuyv_to_rgba(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::YUYV || dst.format() != ImageFormat::Rgba {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, u, v) = src.get_yuyv(x, y);
+            let (r, g, b) = yuv_to_rgb(y_val, u, v);
+            let idx = (y * width + x) * 4;
+            dst_data[idx] = r;
+            dst_data[idx + 1] = g;
+            dst_data[idx + 2] = b;
+            dst_data[idx + 3] = 255;
+        }
+    }
+    Ok(())
+}
+
+/// YUYV to NV12
+pub fn yuyv_to_nv12(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::YUYV || dst.format() != ImageFormat::NV12 {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    let y_size = width * height;
+    // Y plane
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, _, _) = src.get_yuyv(x, y);
+            dst_data[y * width + x] = y_val;
+        }
+    }
+    // UV plane (4:2:0 subsampling from 4:2:2)
+    for y in (0..height).step_by(2) {
+        for x in (0..width).step_by(2) {
+            let (_, u, v) = src.get_yuyv(x, y);
+            let uv_idx = y_size + (y / 2) * width + x;
+            if uv_idx + 1 < dst_data.len() {
+                dst_data[uv_idx] = u;
+                dst_data[uv_idx + 1] = v;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// YUYV to IYUV
+pub fn yuyv_to_iyuv(src: &Image, dst: &Image) -> VxResult<()> {
+    if src.format() != ImageFormat::YUYV || dst.format() != ImageFormat::IYUV {
+        return Err(openvx_core::VxStatus::ErrorInvalidFormat);
+    }
+    let width = src.width();
+    let height = src.height();
+    let mut dst_data = dst.data_mut();
+    let y_size = width * height;
+    let half_w = (width + 1) / 2;
+    let u_size = half_w * ((height + 1) / 2);
+    // Y plane
+    for y in 0..height {
+        for x in 0..width {
+            let (y_val, _, _) = src.get_yuyv(x, y);
+            dst_data[y * width + x] = y_val;
+        }
+    }
+    // U and V planes (4:2:0 subsampling from 4:2:2)
+    for y in (0..height).step_by(2) {
+        for x in (0..width).step_by(2) {
+            let (_, u, v) = src.get_yuyv(x, y);
+            let uv_y = y / 2;
+            let uv_x = x / 2;
+            let u_idx = y_size + uv_y * half_w + uv_x;
+            let v_idx = y_size + u_size + uv_y * half_w + uv_x;
+            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
+            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+        }
+    }
     Ok(())
 }

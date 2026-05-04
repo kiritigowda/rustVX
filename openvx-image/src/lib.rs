@@ -193,6 +193,44 @@ impl Image {
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect()
     }
+    
+    /// Get YUV packed pixel (for UYVY format)
+    /// Returns (Y, U, V) for the pixel at (x, y)
+    /// UYVY layout: U0 Y0 V0 Y1 U1 Y2 V1 Y3 ...
+    pub fn get_uyvy(&self, x: usize, y: usize) -> (u8, u8, u8) {
+        let data = self.data.read().unwrap();
+        // Each pair of pixels takes 4 bytes: [U, Y0, V, Y1]
+        let pair_idx = (y * self.width + (x & !1)) * 2;
+        if pair_idx + 3 < data.len() {
+            let u = data[pair_idx];
+            let y0 = data[pair_idx + 1];
+            let v = data[pair_idx + 2];
+            let y1 = data[pair_idx + 3];
+            let y_val = if x % 2 == 0 { y0 } else { y1 };
+            (y_val, u, v)
+        } else {
+            (128, 128, 128)
+        }
+    }
+    
+    /// Get YUV packed pixel (for YUYV format)
+    /// Returns (Y, U, V) for the pixel at (x, y)
+    /// YUYV layout: Y0 U Y1 V Y2 U2 Y3 V2 ...
+    pub fn get_yuyv(&self, x: usize, y: usize) -> (u8, u8, u8) {
+        let data = self.data.read().unwrap();
+        // Each pair of pixels takes 4 bytes: [Y0, U, Y1, V]
+        let pair_idx = (y * self.width + (x & !1)) * 2;
+        if pair_idx + 3 < data.len() {
+            let y0 = data[pair_idx];
+            let u = data[pair_idx + 1];
+            let y1 = data[pair_idx + 2];
+            let v = data[pair_idx + 3];
+            let y_val = if x % 2 == 0 { y0 } else { y1 };
+            (y_val, u, v)
+        } else {
+            (128, 128, 128)
+        }
+    }
 }
 
 impl Referenceable for Image {
