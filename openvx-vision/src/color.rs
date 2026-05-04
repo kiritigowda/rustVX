@@ -1565,13 +1565,26 @@ pub fn uyvy_to_nv12(src: &Image, dst: &Image) -> VxResult<()> {
         }
     }
     // UV plane (4:2:0 subsampling from 4:2:2)
+    // Average U/V from the 2 rows in each 2x2 block
     for y in (0..height).step_by(2) {
         for x in (0..width).step_by(2) {
-            let (_, u, v) = src.get_uyvy(x, y);
+            let mut sum_u: i32 = 0;
+            let mut sum_v: i32 = 0;
+            let mut count: i32 = 0;
+            for dy in 0..2 {
+                if y + dy < height {
+                    let (_, u, v) = src.get_uyvy(x, y + dy);
+                    sum_u += u as i32;
+                    sum_v += v as i32;
+                    count += 1;
+                }
+            }
+            let u_avg = (sum_u / count) as u8;
+            let v_avg = (sum_v / count) as u8;
             let uv_idx = y_size + (y / 2) * width + x;
             if uv_idx + 1 < dst_data.len() {
-                dst_data[uv_idx] = u;
-                dst_data[uv_idx + 1] = v;
+                dst_data[uv_idx] = u_avg;
+                dst_data[uv_idx + 1] = v_avg;
             }
         }
     }
@@ -1597,15 +1610,28 @@ pub fn uyvy_to_iyuv(src: &Image, dst: &Image) -> VxResult<()> {
         }
     }
     // U and V planes (4:2:0 subsampling from 4:2:2)
+    // Average U/V from 2 rows per 2x2 block
     for y in (0..height).step_by(2) {
         for x in (0..width).step_by(2) {
-            let (_, u, v) = src.get_uyvy(x, y);
+            let mut sum_u: i32 = 0;
+            let mut sum_v: i32 = 0;
+            let mut count: i32 = 0;
+            for dy in 0..2 {
+                if y + dy < height {
+                    let (_, u, v) = src.get_uyvy(x, y + dy);
+                    sum_u += u as i32;
+                    sum_v += v as i32;
+                    count += 1;
+                }
+            }
+            let u_avg = (sum_u / count) as u8;
+            let v_avg = (sum_v / count) as u8;
             let uv_y = y / 2;
             let uv_x = x / 2;
             let u_idx = y_size + uv_y * half_w + uv_x;
             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
-            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+            if u_idx < dst_data.len() { dst_data[u_idx] = u_avg; }
+            if v_idx < dst_data.len() { dst_data[v_idx] = v_avg; }
         }
     }
     Ok(())
@@ -1671,13 +1697,26 @@ pub fn yuyv_to_nv12(src: &Image, dst: &Image) -> VxResult<()> {
         }
     }
     // UV plane (4:2:0 subsampling from 4:2:2)
+    // Average U/V from 2 rows per 2x2 block
     for y in (0..height).step_by(2) {
         for x in (0..width).step_by(2) {
-            let (_, u, v) = src.get_yuyv(x, y);
+            let mut sum_u: i32 = 0;
+            let mut sum_v: i32 = 0;
+            let mut count: i32 = 0;
+            for dy in 0..2 {
+                if y + dy < height {
+                    let (_, u, v) = src.get_yuyv(x, y + dy);
+                    sum_u += u as i32;
+                    sum_v += v as i32;
+                    count += 1;
+                }
+            }
+            let u_avg = (sum_u / count) as u8;
+            let v_avg = (sum_v / count) as u8;
             let uv_idx = y_size + (y / 2) * width + x;
             if uv_idx + 1 < dst_data.len() {
-                dst_data[uv_idx] = u;
-                dst_data[uv_idx + 1] = v;
+                dst_data[uv_idx] = u_avg;
+                dst_data[uv_idx + 1] = v_avg;
             }
         }
     }
@@ -1703,15 +1742,28 @@ pub fn yuyv_to_iyuv(src: &Image, dst: &Image) -> VxResult<()> {
         }
     }
     // U and V planes (4:2:0 subsampling from 4:2:2)
+    // Average U/V from 2 rows per 2x2 block
     for y in (0..height).step_by(2) {
         for x in (0..width).step_by(2) {
-            let (_, u, v) = src.get_yuyv(x, y);
+            let mut sum_u: i32 = 0;
+            let mut sum_v: i32 = 0;
+            let mut count: i32 = 0;
+            for dy in 0..2 {
+                if y + dy < height {
+                    let (_, u, v) = src.get_yuyv(x, y + dy);
+                    sum_u += u as i32;
+                    sum_v += v as i32;
+                    count += 1;
+                }
+            }
+            let u_avg = (sum_u / count) as u8;
+            let v_avg = (sum_v / count) as u8;
             let uv_y = y / 2;
             let uv_x = x / 2;
             let u_idx = y_size + uv_y * half_w + uv_x;
             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
-            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+            if u_idx < dst_data.len() { dst_data[u_idx] = u_avg; }
+            if v_idx < dst_data.len() { dst_data[v_idx] = v_avg; }
         }
     }
     Ok(())

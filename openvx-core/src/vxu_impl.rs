@@ -1513,15 +1513,28 @@ pub fn vxu_color_convert_impl(
                         }
                     }
                     // UV plane (4:2:0 subsampling from 4:2:2)
+                    // Average U/V from 2 rows per 2x2 block
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            let pair_idx = (y * width + x) * 2;
-                            let u = src_data[pair_idx];
-                            let v = src_data[pair_idx + 2];
+                            let mut sum_u: i32 = 0;
+                            let mut sum_v: i32 = 0;
+                            let mut count: i32 = 0;
+                            for dy in 0..2 {
+                                if y + dy < height {
+                                    let pair_idx = ((y + dy) * width + x) * 2;
+                                    let u = src_data[pair_idx];
+                                    let v = src_data[pair_idx + 2];
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
+                                    count += 1;
+                                }
+                            }
+                            let u_avg = (sum_u / count) as u8;
+                            let v_avg = (sum_v / count) as u8;
                             let uv_idx = y_size + (y / 2) * width + x;
                             if uv_idx + 1 < dst_data.len() {
-                                dst_data[uv_idx] = u;
-                                dst_data[uv_idx + 1] = v;
+                                dst_data[uv_idx] = u_avg;
+                                dst_data[uv_idx + 1] = v_avg;
                             }
                         }
                     }
@@ -1547,17 +1560,30 @@ pub fn vxu_color_convert_impl(
                         }
                     }
                     // U and V planes (4:2:0 subsampling from 4:2:2)
+                    // Average U/V from 2 rows per 2x2 block
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            let pair_idx = (y * width + x) * 2;
-                            let u = src_data[pair_idx];
-                            let v = src_data[pair_idx + 2];
+                            let mut sum_u: i32 = 0;
+                            let mut sum_v: i32 = 0;
+                            let mut count: i32 = 0;
+                            for dy in 0..2 {
+                                if y + dy < height {
+                                    let pair_idx = ((y + dy) * width + x) * 2;
+                                    let u = src_data[pair_idx];
+                                    let v = src_data[pair_idx + 2];
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
+                                    count += 1;
+                                }
+                            }
+                            let u_avg = (sum_u / count) as u8;
+                            let v_avg = (sum_v / count) as u8;
                             let uv_y = y / 2;
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
-                            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+                            if u_idx < dst_data.len() { dst_data[u_idx] = u_avg; }
+                            if v_idx < dst_data.len() { dst_data[v_idx] = v_avg; }
                         }
                     }
                     VX_SUCCESS
@@ -1627,15 +1653,28 @@ pub fn vxu_color_convert_impl(
                         }
                     }
                     // UV plane (4:2:0 subsampling from 4:2:2)
+                    // Average U/V from 2 rows per 2x2 block
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            let pair_idx = (y * width + x) * 2;
-                            let u = src_data[pair_idx + 1];
-                            let v = src_data[pair_idx + 3];
+                            let mut sum_u: i32 = 0;
+                            let mut sum_v: i32 = 0;
+                            let mut count: i32 = 0;
+                            for dy in 0..2 {
+                                if y + dy < height {
+                                    let pair_idx = ((y + dy) * width + x) * 2;
+                                    let u = src_data[pair_idx + 1];
+                                    let v = src_data[pair_idx + 3];
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
+                                    count += 1;
+                                }
+                            }
+                            let u_avg = (sum_u / count) as u8;
+                            let v_avg = (sum_v / count) as u8;
                             let uv_idx = y_size + (y / 2) * width + x;
                             if uv_idx + 1 < dst_data.len() {
-                                dst_data[uv_idx] = u;
-                                dst_data[uv_idx + 1] = v;
+                                dst_data[uv_idx] = u_avg;
+                                dst_data[uv_idx + 1] = v_avg;
                             }
                         }
                     }
@@ -1659,17 +1698,30 @@ pub fn vxu_color_convert_impl(
                         }
                     }
                     // U and V planes (4:2:0 subsampling from 4:2:2)
+                    // Average U/V from 2 rows per 2x2 block
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
-                            let pair_idx = (y * width + x) * 2;
-                            let u = src_data[pair_idx + 1];
-                            let v = src_data[pair_idx + 3];
+                            let mut sum_u: i32 = 0;
+                            let mut sum_v: i32 = 0;
+                            let mut count: i32 = 0;
+                            for dy in 0..2 {
+                                if y + dy < height {
+                                    let pair_idx = ((y + dy) * width + x) * 2;
+                                    let u = src_data[pair_idx + 1];
+                                    let v = src_data[pair_idx + 3];
+                                    sum_u += u as i32;
+                                    sum_v += v as i32;
+                                    count += 1;
+                                }
+                            }
+                            let u_avg = (sum_u / count) as u8;
+                            let v_avg = (sum_v / count) as u8;
                             let uv_y = y / 2;
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
-                            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+                            if u_idx < dst_data.len() { dst_data[u_idx] = u_avg; }
+                            if v_idx < dst_data.len() { dst_data[v_idx] = v_avg; }
                         }
                     }
                     VX_SUCCESS
@@ -2048,7 +2100,7 @@ pub fn vxu_channel_combine_impl(
         };
 
         match format as u32 {
-            0x21000300 => { // VX_DF_IMAGE_RGB
+            0x32424752 => { // VX_DF_IMAGE_RGB
                 // Interleaved RGB: R, G, B per pixel
                 for y in 0..height {
                     for x in 0..width {
@@ -2064,7 +2116,7 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x21010400 => { // VX_DF_IMAGE_RGBX
+            0x41424752 => { // VX_DF_IMAGE_RGBX
                 // Interleaved RGBX: R, G, B, X per pixel
                 for y in 0..height {
                     for x in 0..width {
