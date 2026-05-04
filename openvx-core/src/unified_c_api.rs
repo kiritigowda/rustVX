@@ -1065,23 +1065,11 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     }
                                 }
                                 param_to_producer.insert(*param_ref, *node_id);
-                                // If this is an ROI image, also record that the parent is produced
-                                // This ensures correct ordering: writing to an ROI implicitly writes to the parent
-                                unsafe {
-                                    let img = &*(*param_ref as *const VxCImage);
-                                    if img.parent.is_some() && !img.roi_offsets.is_empty() {
-                                        let parent_ref = img.parent.unwrap() as u64;
-                                        param_to_producer.insert(parent_ref, *node_id);
-                                    }
-                                }
                             } else {
                                 // This is an input - record that this node consumes this data
                                 param_to_consumers.entry(*param_ref)
                                     .or_insert_with(Vec::new)
                                     .push(*node_id);
-                                // If this is a parent image with ROI children, consuming the parent
-                                // should also depend on nodes that write to any ROI child
-                                // (handled below in the ROI dependency section)
                             }
                         }
                     }
@@ -1128,6 +1116,74 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                 image_to_consumers.entry(*param_ref)
                                     .or_insert_with(Vec::new)
                                     .push(*node_id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ROI dependency tracking: when a node writes to an ROI image, it also
+            // implicitly writes to the parent image. When a node reads the parent image,
+            // it depends on the node that wrote to the ROI. Also, when a node reads an
+            // ROI image, it also reads the parent.
+            //
+            // Collect parent-child ROI relationships and add additional dependencies.
+            {
+                // First, find all ROI images and their parent images
+                let mut roi_to_parent: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+                for (_node_id, params) in &node_params {
+                    for param_opt in params.iter() {
+                        if let Some(param_ref) = param_opt {
+                            if is_data_reference(*param_ref) {
+                                unsafe {
+                                    let ref_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                                        *types.get(&(*param_ref as usize)).unwrap_or(&0)
+                                    } else {
+                                        0
+                                    };
+                                    if ref_type == VX_TYPE_IMAGE {
+                                        let img = &*(*param_ref as *const VxCImage);
+                                        if img.parent.is_some() && !img.roi_offsets.is_empty() {
+                                            let parent_ref = img.parent.unwrap() as u64;
+                                            roi_to_parent.insert(*param_ref, parent_ref);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                eprintln!("DEBUG ROI: roi_to_parent = {:?}", roi_to_parent.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>());
+
+                // For each ROI output, add that the node also produces the parent
+                for (roi_ref, parent_ref) in &roi_to_parent {
+                    if let Some(&producer_node) = param_to_producer.get(roi_ref) {
+                        // The node that produces the ROI also produces the parent
+                        param_to_producer.insert(*parent_ref, producer_node);
+                        // Also add parent to node_to_outputs so Kahn's algorithm can traverse it
+                        node_to_outputs.entry(producer_node)
+                            .or_insert_with(Vec::new)
+                            .push(*parent_ref);
+                    }
+                }
+
+                // For each ROI input, add that the node also consumes the parent
+                for (roi_ref, parent_ref) in &roi_to_parent {
+                    if let Some(consumers) = param_to_consumers.get(roi_ref).cloned() {
+                        let entry = param_to_consumers.entry(*parent_ref).or_insert_with(Vec::new);
+                        for consumer in consumers {
+                            if !entry.contains(&consumer) {
+                                entry.push(consumer);
+                            }
+                        }
+                    }
+                    // Also add to image_to_consumers so Kahn's algorithm can traverse it
+                    if let Some(consumers) = image_to_consumers.get(roi_ref).cloned() {
+                        let entry = image_to_consumers.entry(*parent_ref).or_insert_with(Vec::new);
+                        for consumer in consumers {
+                            if !entry.contains(&consumer) {
+                                entry.push(consumer);
                             }
                         }
                     }
@@ -1213,6 +1269,11 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                         }
                     }
                 }
+
+                eprintln!("DEBUG topo: in_degrees = {:?}", in_degree);
+                eprintln!("DEBUG topo: param_to_producer = {:?}", param_to_producer.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>());
+                eprintln!("DEBUG topo: node_to_outputs = {:?}", node_to_outputs.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>());
+                eprintln!("DEBUG topo: image_to_consumers = {:?}", image_to_consumers.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>());
 
                 // Kahn's algorithm: repeatedly take nodes with in-degree 0
                 let mut queue: Vec<u64> = Vec::new();
@@ -1651,6 +1712,15 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
 
     // Execute each node in order
     for (i, node_id) in nodes.iter().enumerate() {
+        let node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
+            if let Some(nd) = nodes_map.get(node_id) {
+                if let Ok(kernels) = crate::c_api::KERNELS.lock() {
+                    if let Some(k) = kernels.get(&nd.kernel_id) {
+                        eprintln!("DEBUG: Executing node {} ({})", i, k.name);
+                    }
+                }
+            }
+        };
         if *node_id == 0 {
             if let Ok(mut state) = g.state.lock() {
                 *state = VxGraphState::VxGraphStateAbandoned;
@@ -3198,24 +3268,38 @@ pub extern "C" fn vxWaitGraph(graph: vx_graph) -> vx_status {
 
     let graph_id = graph as u64;
 
-    if let Ok(graphs) = GRAPHS_DATA.lock() {
-        if let Some(g) = graphs.get(&graph_id) {
-            // Wait for graph to complete
-            loop {
-                let state = g.state.lock().unwrap();
-                match *state {
-                    VxGraphState::VxGraphStateCompleted => return VX_SUCCESS,
-                    VxGraphState::VxGraphStateAbandoned => return VX_ERROR_GRAPH_ABANDONED,
-                    _ => {
-                        drop(state);
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
-                }
+    // Clone the Arc<VxCGraphData> so we can drop the GRAPHS_DATA lock
+    // before entering the poll loop. This avoids deadlock: the background
+    // thread spawned by vxScheduleGraph also needs GRAPHS_DATA to execute nodes.
+    let g = {
+        if let Ok(graphs) = GRAPHS_DATA.lock() {
+            if let Some(g) = graphs.get(&graph_id) {
+                Some(Arc::clone(g))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    let g = match g {
+        Some(g) => g,
+        None => return VX_ERROR_INVALID_GRAPH,
+    };
+
+    // Poll for completion (no GRAPHS_DATA lock held)
+    loop {
+        let state = g.state.lock().unwrap();
+        match *state {
+            VxGraphState::VxGraphStateCompleted => return VX_SUCCESS,
+            VxGraphState::VxGraphStateAbandoned => return VX_ERROR_GRAPH_ABANDONED,
+            _ => {
+                drop(state);
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }
-
-    VX_ERROR_INVALID_GRAPH
 }
 
 /// Schedule graph for async execution
