@@ -1498,93 +1498,96 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
         return VX_ERROR_INVALID_GRAPH;
     }
 
-    // Get graph data with null check
-    let graph_data = {
-        match GRAPHS_DATA.lock() {
-            Ok(graphs) => {
-                match graphs.get(&graph_id) {
-                    Some(g) => {
-                        // Clone necessary data to avoid holding lock during execution
-                        Some(g.clone())
-                    }
-                    None => {
-                        error!("vxProcessGraph: graph {} not found in GRAPHS_DATA", graph_id);
-                        return VX_ERROR_INVALID_GRAPH;
-                    }
-                }
-            }
-            Err(_) => {
-                error!("vxProcessGraph: failed to acquire GRAPHS_DATA lock");
+    // Check if verified
+    {
+        let verified = if let Ok(graphs) = GRAPHS_DATA.lock() {
+            if let Some(g) = graphs.get(&graph_id) {
+                *g.verified.lock().unwrap()
+            } else {
                 return VX_ERROR_INVALID_GRAPH;
             }
-        }
-    };
-
-    let g = match graph_data {
-        Some(g) => g,
-        None => {
-            error!("vxProcessGraph: graph data is None");
+        } else {
             return VX_ERROR_INVALID_GRAPH;
-        }
-    };
+        };
 
-    // Check if verified
-    let verified = match g.verified.lock() {
-        Ok(v) => {
-            *v
-        }
-        Err(_) => {
-            error!("vxProcessGraph: failed to acquire verified lock");
-            return VX_ERROR_INVALID_GRAPH;
-        }
-    };
-
-    if !verified {
-        // Per OpenVX spec: vxProcessGraph should auto-verify if not already verified
-        let verify_status = vxVerifyGraph(graph);
-        if verify_status != VX_SUCCESS {
-            error!("vxProcessGraph: auto-verify failed with status {}", verify_status);
-            return verify_status;
+        if !verified {
+            // Per OpenVX spec: vxProcessGraph should auto-verify if not already verified
+            let verify_status = vxVerifyGraph(graph);
+            if verify_status != VX_SUCCESS {
+                error!("vxProcessGraph: auto-verify failed with status {}", verify_status);
+                return verify_status;
+            }
         }
     }
 
     // Re-resolve delay slot references in node parameters
-    // After vxAgeDelay rotates the circular buffer, node parameters that
-    // were set via vxGetReferenceFromDelay still point to the old physical
-    // slot object. Update them to point to the current logical slot object.
     resolve_delay_params_for_graph(graph_id);
 
     // Set state to running
-    if let Ok(mut state) = g.state.lock() {
-        *state = VxGraphState::VxGraphStateRunning;
+    if let Ok(graphs) = GRAPHS_DATA.lock() {
+        if let Some(g) = graphs.get(&graph_id) {
+            if let Ok(mut state) = g.state.lock() {
+                *state = VxGraphState::VxGraphStateRunning;
+            }
+        }
     }
 
-    // Get nodes and execute them
-    let nodes = match g.nodes.read() {
-        Ok(n) => {
-            n
+    // Execute the graph nodes
+    execute_graph_nodes(graph)
+}
+
+/// Execute the graph nodes (assumes graph is already verified and state is set to RUNNING)
+/// Returns the final status and updates graph state accordingly.
+fn execute_graph_nodes(graph: vx_graph) -> vx_status {
+    let graph_id = graph as u64;
+
+    // Get graph data
+    let g = if let Ok(graphs) = GRAPHS_DATA.lock() {
+        if let Some(g) = graphs.get(&graph_id) {
+            Some(g.clone())
+        } else {
+            None
         }
+    } else {
+        None
+    };
+
+    let g = match g {
+        Some(g) => g,
+        None => {
+            if let Ok(graphs) = GRAPHS_DATA.lock() {
+                if let Some(g) = graphs.get(&graph_id) {
+                    if let Ok(mut state) = g.state.lock() {
+                        *state = VxGraphState::VxGraphStateAbandoned;
+                    }
+                }
+            }
+            return VX_ERROR_INVALID_GRAPH;
+        }
+    };
+
+    // Get nodes
+    let nodes = match g.nodes.read() {
+        Ok(n) => n.clone(),
         Err(_) => {
-            error!("vxProcessGraph: failed to acquire nodes lock");
+            if let Ok(mut state) = g.state.lock() {
+                *state = VxGraphState::VxGraphStateAbandoned;
+            }
             return VX_ERROR_INVALID_GRAPH;
         }
     };
 
     // Check if there are any nodes to execute
     if nodes.is_empty() {
-        // Mark as completed (empty graph is valid)
         if let Ok(mut state) = g.state.lock() {
             *state = VxGraphState::VxGraphStateCompleted;
         }
         return VX_SUCCESS;
     }
 
-    // Execute each node in order with null checks
+    // Execute each node in order
     for (i, node_id) in nodes.iter().enumerate() {
-
-        // Validate node_id
         if *node_id == 0 {
-            error!("vxProcessGraph: node_id is 0 at index {}", i);
             if let Ok(mut state) = g.state.lock() {
                 *state = VxGraphState::VxGraphStateAbandoned;
             }
@@ -1593,7 +1596,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 
         match execute_node(*node_id) {
             Some(status) => {
-                // Increment node run count for performance tracking
                 if status == VX_SUCCESS {
                     if let Ok(nodes_map) = crate::c_api::NODES.lock() {
                         if let Some(node) = nodes_map.get(node_id) {
@@ -1602,8 +1604,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                     }
                 }
                 if status != VX_SUCCESS {
-                    // Mark as abandoned on failure
-                    error!("vxProcessGraph: node {} failed with status {}", node_id, status);
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
@@ -1614,8 +1614,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                     if let Ok(nodes_map) = crate::c_api::NODES.lock() {
                         if let Some(node_data) = nodes_map.get(node_id) {
                             if let Ok(cb) = node_data.callback.lock() {
-                                // callback field is Option<vx_nodecomplete_f> where vx_nodecomplete_f = Option<fn...>
-                                // So cb is Option<Option<fn...>>
                                 if let Some(Some(cb_fn)) = *cb {
                                     let action = unsafe { (cb_fn)(*node_id as vx_node) };
                                     action as vx_enum
@@ -1632,7 +1630,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                         0
                     }
                 };
-                if callback_action == 0x1001 { // VX_ACTION_ABANDON = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_ACTION) + 1
+                if callback_action == 0x1001 { // VX_ACTION_ABANDON
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
@@ -1640,8 +1638,6 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
                 }
             }
             None => {
-                // Node not found - mark as abandoned
-                error!("vxProcessGraph: execute_node returned None for node {}", node_id);
                 if let Ok(mut state) = g.state.lock() {
                     *state = VxGraphState::VxGraphStateAbandoned;
                 }
@@ -1655,7 +1651,7 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
         *state = VxGraphState::VxGraphStateCompleted;
     }
 
-    // Increment graph run count for performance tracking
+    // Increment graph run count
     g.run_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     // Auto-age any registered delays
@@ -3080,7 +3076,7 @@ pub extern "C" fn vxWaitGraph(graph: vx_graph) -> vx_status {
                 let state = g.state.lock().unwrap();
                 match *state {
                     VxGraphState::VxGraphStateCompleted => return VX_SUCCESS,
-                    VxGraphState::VxGraphStateAbandoned => return VX_ERROR_INVALID_GRAPH,
+                    VxGraphState::VxGraphStateAbandoned => return VX_ERROR_GRAPH_ABANDONED,
                     _ => {
                         drop(state);
                         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -3100,9 +3096,60 @@ pub extern "C" fn vxScheduleGraph(graph: vx_graph) -> vx_status {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // For now, just run synchronously in a background context
-    // In a real implementation, this would queue the graph
-    vxProcessGraph(graph)
+    let graph_id = graph as u64;
+
+    // Check current state and prepare for execution
+    {
+        let need_verify = if let Ok(graphs) = GRAPHS_DATA.lock() {
+            if let Some(g) = graphs.get(&graph_id) {
+                let verified = g.verified.lock().unwrap();
+                !*verified
+            } else {
+                return VX_ERROR_INVALID_GRAPH;
+            }
+        } else {
+            return VX_ERROR_INVALID_GRAPH;
+        };
+
+        if need_verify {
+            let verify_status = vxVerifyGraph(graph);
+            if verify_status != VX_SUCCESS {
+                return verify_status;
+            }
+        }
+
+        if let Ok(graphs) = GRAPHS_DATA.lock() {
+            if let Some(g) = graphs.get(&graph_id) {
+                // Check state - can schedule if not currently running
+                let mut state = g.state.lock().unwrap();
+                match *state {
+                    VxGraphState::VxGraphStateRunning => {
+                        return VX_ERROR_GRAPH_SCHEDULED; // Already scheduled/running
+                    }
+                    _ => {
+                        // Set state to RUNNING immediately so vxWaitGraph knows to wait
+                        *state = VxGraphState::VxGraphStateRunning;
+                    }
+                }
+            } else {
+                return VX_ERROR_INVALID_GRAPH;
+            }
+        } else {
+            return VX_ERROR_INVALID_GRAPH;
+        }
+    }
+
+    // Run the graph asynchronously in a background thread
+    // The state was already set to RUNNING, so vxWaitGraph will wait
+    let graph_ptr = graph as usize;
+    std::thread::spawn(move || {
+        let g = graph_ptr as vx_graph;
+        // Execute the graph nodes directly
+        // This will update the graph state to COMPLETED or ABANDONED
+        let _ = execute_graph_nodes(g);
+    });
+
+    VX_SUCCESS
 }
 
 /// Check if graph is verified

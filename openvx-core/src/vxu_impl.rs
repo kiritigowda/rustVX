@@ -255,6 +255,51 @@ unsafe fn c_image_to_rust(image: vx_image) -> Option<Image> {
     let img = &*(image as *const VxCImage);
     let data = img.data.read().ok()?.clone();
     let format = df_image_to_format(format)?;
+
+    // Handle ROI images: extract only the ROI portion from the parent's data
+    if img.parent.is_some() && !img.roi_offsets.is_empty() {
+        let bpp = match format {
+            ImageFormat::Gray | ImageFormat::GrayS16 => match format {
+                ImageFormat::GrayS16 => 2,
+                _ => 1,
+            },
+            ImageFormat::Rgb => 3,
+            ImageFormat::Rgba => 4,
+            _ => 1,
+        };
+        let parent_width = {
+            // Get parent dimensions from parent pointer
+            if let Some(parent_addr) = img.parent {
+                let parent_img = &*(parent_addr as *const VxCImage);
+                parent_img.width as usize
+            } else {
+                // Can't determine parent width, fall back to simple extraction
+                let result = Image::from_data(width as usize, height as usize, format, data);
+                return Some(result);
+            }
+        };
+        let (roi_start_x, roi_start_y) = img.roi_offsets[0];
+        let roi_w = width as usize;
+        let roi_h = height as usize;
+        let parent_stride = parent_width * bpp;
+        let roi_size = roi_w * roi_h * bpp;
+        let mut roi_data = vec![0u8; roi_size];
+        for y in 0..roi_h {
+            let src_offset = ((roi_start_y + y) * parent_stride) + roi_start_x * bpp;
+            let dst_offset = y * roi_w * bpp;
+            let copy_len = roi_w * bpp;
+            if src_offset + copy_len <= data.len() && dst_offset + copy_len <= roi_data.len() {
+                roi_data[dst_offset..dst_offset + copy_len]
+                    .copy_from_slice(&data[src_offset..src_offset + copy_len]);
+            }
+        }
+        let mut result = Image::from_data(roi_w, roi_h, format, roi_data);
+        if let Ok(vr) = img.valid_rect.read() {
+            result.set_valid_rect(vr.start_x as usize, vr.start_y as usize, vr.end_x as usize, vr.end_y as usize);
+        }
+        return Some(result);
+    }
+
     let mut result = Image::from_data(width as usize, height as usize, format, data);
     // Read valid rectangle from C image
     if let Ok(vr) = img.valid_rect.read() {
@@ -265,17 +310,8 @@ unsafe fn c_image_to_rust(image: vx_image) -> Option<Image> {
 
 /// Convert C API image to Rust Image using raw data access
 unsafe fn c_image_to_rust_raw(image: vx_image) -> Option<Image> {
-    let (width, height, format) = get_image_info(image)?;
-    let img = &*(image as *const VxCImage);
-    let format = df_image_to_format(format)?;
-    
-    let data = img.data.read().ok()?.clone();
-    let mut result = Image::from_data(width as usize, height as usize, format, data);
-    // Read valid rectangle from C image
-    if let Ok(vr) = img.valid_rect.read() {
-        result.set_valid_rect(vr.start_x as usize, vr.start_y as usize, vr.end_x as usize, vr.end_y as usize);
-    }
-    Some(result)
+    // Use the same logic as c_image_to_rust which now handles ROI images
+    c_image_to_rust(image)
 }
 
 /// Copy Rust Image data back to C API image
@@ -289,6 +325,39 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
         Ok(d) => d,
         Err(_) => return VX_ERROR_INVALID_REFERENCE,
     };
+
+    // Handle ROI images: write back to the correct offset in the parent's data buffer
+    if img.parent.is_some() && !img.roi_offsets.is_empty() {
+        let bpp = match src.format {
+            ImageFormat::GrayS16 => 2,
+            ImageFormat::Gray => 1,
+            ImageFormat::Rgb => 3,
+            ImageFormat::Rgba => 4,
+            _ => 1,
+        };
+        let parent_width = {
+            if let Some(parent_addr) = img.parent {
+                let parent_img = &*(parent_addr as *const VxCImage);
+                parent_img.width as usize
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+        };
+        let (roi_start_x, roi_start_y) = img.roi_offsets[0];
+        let roi_w = img.width as usize;
+        let roi_h = img.height as usize;
+        let parent_stride = parent_width * bpp;
+        for y in 0..roi_h {
+            let dst_offset = ((roi_start_y + y) * parent_stride) + roi_start_x * bpp;
+            let src_offset = y * roi_w * bpp;
+            let copy_len = roi_w * bpp;
+            if dst_offset + copy_len <= dst_data.len() && src_offset + copy_len <= src.data.len() {
+                dst_data[dst_offset..dst_offset + copy_len]
+                    .copy_from_slice(&src.data[src_offset..src_offset + copy_len]);
+            }
+        }
+        return VX_SUCCESS;
+    }
 
     if dst_data.len() == src.data.len() {
         // Same format - direct copy
@@ -324,6 +393,14 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
 /// Copy Rust Image data back to C API image - optimized version that handles
 /// RGB→RGBX (which has dst_data.len() == src.data.len() / 3 * 4, not exactly *4/3 due to integer division)
 unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_status {
+    // For ROI images, delegate to the ROI-aware copy function
+    if !dst.is_null() {
+        let img = &*(dst as *const VxCImage);
+        if img.parent.is_some() && !img.roi_offsets.is_empty() {
+            return copy_rust_to_c_image(src, dst);
+        }
+    }
+
     if dst.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }

@@ -270,12 +270,22 @@ pub extern "C" fn vxCreateVirtualArray(
     }
     
     // Virtual arrays can have capacity 0 (unspecified), so default to something reasonable
-    let actual_capacity = if capacity == 0 { 1024 } else { capacity };
+    let actual_capacity = if capacity == 0 { 4096 } else { capacity };
     if actual_capacity == 0 {
         return std::ptr::null_mut();
     }
 
-    let item_size = VxCArray::type_to_size(item_type);
+    // For virtual arrays with unspecified item_type (0), use a large default item size
+    // The item type and size will be resolved when the array is connected to a node.
+    // We need to allocate enough space for the largest common item type (vx_keypoint_t = 28 bytes)
+    let (actual_item_type, item_size) = if item_type == 0 {
+        // Unspecified - use a generous default that can hold keypoints and other common types
+        // The actual item_type will be resolved by graph verification or node execution
+        (VX_TYPE_KEYPOINT, std::mem::size_of::<vx_keypoint_t>())
+    } else {
+        (item_type, VxCArray::type_to_size(item_type))
+    };
+
     let total_size = actual_capacity
         .checked_mul(item_size)
         .and_then(|s| s.try_into().ok())
@@ -285,7 +295,7 @@ pub extern "C" fn vxCreateVirtualArray(
     }
 
     let array = Box::new(VxCArray {
-        item_type,
+        item_type: actual_item_type,
         item_size,
         capacity: actual_capacity,
         num_items: RwLock::new(0),

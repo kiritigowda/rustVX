@@ -1121,33 +1121,82 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
         }
         let id = n as u64;
         
-        // Remove from graph's node list (c_api registry)
+        // Collect parameter references before removing the node
+        // so we can decrement their ref counts
+        let mut param_refs: Vec<usize> = Vec::new();
+        let mut graph_id: u64 = 0;
+        
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
-                let graph_id = node_data.graph_id;
-                drop(nodes);
-                if let Ok(graphs) = GRAPHS.lock() {
-                    if let Some(graph) = graphs.get(&graph_id) {
-                        if let Ok(mut graph_nodes) = graph.nodes.lock() {
-                            graph_nodes.retain(|&nid| nid != id);
-                        }
-                    }
-                }
-                
-                // Also remove from unified GRAPHS_DATA registry (where vxQueryGraph reads from)
-                if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
-                    if let Some(graph) = graphs_data.get(&graph_id) {
-                        if let Ok(mut graph_nodes) = graph.nodes.write() {
-                            graph_nodes.retain(|&nid| nid != id);
+                graph_id = node_data.graph_id;
+                if let Ok(params) = node_data.parameters.lock() {
+                    for param_opt in params.iter() {
+                        if let Some(ref_id) = param_opt {
+                            if *ref_id != 0 {
+                                param_refs.push(*ref_id as usize);
+                            }
                         }
                     }
                 }
             }
         }
         
-        // Release the node
-        vxReleaseNode(node)
+        // Remove from graph's node list (c_api registry)
+        if graph_id != 0 {
+            if let Ok(graphs) = GRAPHS.lock() {
+                if let Some(graph) = graphs.get(&graph_id) {
+                    if let Ok(mut graph_nodes) = graph.nodes.lock() {
+                        graph_nodes.retain(|&nid| nid != id);
+                    }
+                }
+            }
+            
+            // Also remove from unified GRAPHS_DATA registry (where vxQueryGraph reads from)
+            if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                if let Some(graph) = graphs_data.get(&graph_id) {
+                    if let Ok(mut graph_nodes) = graph.nodes.write() {
+                        graph_nodes.retain(|&nid| nid != id);
+                    }
+                    // Mark graph as unverified since structure changed
+                    if let Ok(mut verified) = graph.verified.lock() {
+                        *verified = false;
+                    }
+                    if let Ok(mut state) = graph.state.lock() {
+                        *state = crate::unified_c_api::VxGraphState::VxGraphStateUnverified;
+                    }
+                }
+            }
+        }
+        
+        // Remove the node from NODES registry and clean up
+        if let Ok(mut nodes_mut) = NODES.lock() {
+            nodes_mut.remove(&id);
+        }
+        
+        // Remove from reference counting and type registries
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.remove(&(id as usize));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.remove(&(id as usize));
+        }
+        
+        // Decrement ref counts of parameter references
+        // Per OpenVX spec, vxRemoveNode releases all parameter references
+        for ref_addr in param_refs {
+            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&ref_addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 0 {
+                        cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+        
+        *node = std::ptr::null_mut();
     }
+    VX_SUCCESS
 }
 
 #[no_mangle]
