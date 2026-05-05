@@ -1154,8 +1154,6 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     }
                 }
 
-                eprintln!("DEBUG ROI: roi_to_parent = {:?}", roi_to_parent.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>());
-
                 // For each ROI output, add that the node also produces the parent
                 for (roi_ref, parent_ref) in &roi_to_parent {
                     if let Some(&producer_node) = param_to_producer.get(roi_ref) {
@@ -1269,11 +1267,6 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                         }
                     }
                 }
-
-                eprintln!("DEBUG topo: in_degrees = {:?}", in_degree);
-                eprintln!("DEBUG topo: param_to_producer = {:?}", param_to_producer.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>());
-                eprintln!("DEBUG topo: node_to_outputs = {:?}", node_to_outputs.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>());
-                eprintln!("DEBUG topo: image_to_consumers = {:?}", image_to_consumers.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>());
 
                 // Kahn's algorithm: repeatedly take nodes with in-degree 0
                 let mut queue: Vec<u64> = Vec::new();
@@ -1716,11 +1709,11 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
             if let Some(nd) = nodes_map.get(node_id) {
                 if let Ok(kernels) = crate::c_api::KERNELS.lock() {
                     if let Some(k) = kernels.get(&nd.kernel_id) {
-                        eprintln!("DEBUG: Executing node {} ({})", i, k.name);
-                    }
-                }
-            }
-        };
+                        k.name.clone()
+                    } else { String::new() }
+                } else { String::new() }
+            } else { String::new() }
+        } else { String::new() };
         if *node_id == 0 {
             if let Ok(mut state) = g.state.lock() {
                 *state = VxGraphState::VxGraphStateAbandoned;

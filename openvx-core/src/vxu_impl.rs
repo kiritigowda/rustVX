@@ -15,7 +15,7 @@ use crate::c_api::{
     VX_DF_IMAGE_S16, VX_DF_IMAGE_U16, VX_DF_IMAGE_U8,  // Add S16/U16/U8 format constants
     vx_coordinates2d_t,
 };
-use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage, vx_border_t};
+use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage, VxCPyramid, vx_border_t};
 
 /// OpenVX enum constants for convert policy
 const VX_CONVERT_POLICY_WRAP: vx_enum = 0xA000;
@@ -3079,7 +3079,6 @@ pub fn vxu_mean_std_dev_impl(
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
-
         match mean_std_dev(&src) {
             Ok((mean_val, stddev_val)) => {
                 if !mean_scalar.is_null() {
@@ -4090,9 +4089,56 @@ pub fn vxu_gaussian_pyramid_impl(
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // Pyramid generation would require multiple images
-    // For now, stub implementation
-    VX_SUCCESS
+    unsafe {
+        let pyramid = &*(output as *const VxCPyramid);
+        let num_levels = pyramid.num_levels;
+
+        // Copy input to level 0 of the pyramid
+        let level0 = pyramid.levels.get(0).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+        if level0.is_null() {
+            return VX_ERROR_INVALID_REFERENCE;
+        }
+
+        // Copy input image data to level 0
+        let src = match c_image_to_rust(input) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut dst0 = match create_matching_image(level0) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Copy input to level 0
+        let (src_w, src_h) = (src.width(), src.height());
+        let (dst_w, dst_h) = (dst0.width(), dst0.height());
+        if src_w != dst_w || src_h != dst_h {
+            for y in 0..dst_h.min(src_h) {
+                for x in 0..dst_w.min(src_w) {
+                    dst0.set_pixel(x, y, src.get_pixel(x, y));
+                }
+            }
+        } else {
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    dst0.set_pixel(x, y, src.get_pixel(x, y));
+                }
+            }
+        }
+        copy_rust_to_c_image(&dst0, level0);
+
+        // Generate subsequent levels using half-scale gaussian
+        for level_idx in 1..num_levels {
+            let prev_level = pyramid.levels.get(level_idx - 1).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+            let curr_level = pyramid.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+            if prev_level.is_null() || curr_level.is_null() {
+                break;
+            }
+            vxu_half_scale_gaussian_impl(context, prev_level, curr_level, 5);
+        }
+
+        VX_SUCCESS
+    }
 }
 
 /// ===========================================================================
@@ -6478,6 +6524,7 @@ pub fn vxu_not_impl(
         // Bitwise NOT implementation
         let width = dst.width();
         let height = dst.height();
+
         let mut dst_data = dst.data_mut();
 
         for y in 0..height {
