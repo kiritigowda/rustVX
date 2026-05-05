@@ -18,8 +18,8 @@ use crate::c_api::{
 use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage, VxCPyramid, vx_border_t};
 
 /// OpenVX enum constants for norm type
-const VX_NORM_L1: vx_enum = 0x110000;
-const VX_NORM_L2: vx_enum = 0x110001;
+const VX_NORM_L1: vx_enum = 0x10000;
+const VX_NORM_L2: vx_enum = 0x10001;
 
 /// OpenVX enum constants for convert policy
 const VX_CONVERT_POLICY_WRAP: vx_enum = 0xA000;
@@ -4072,10 +4072,8 @@ pub fn vxu_canny_edge_detector_impl(
         // Read threshold values from threshold object
         let (low_thresh, high_thresh) = if !hyst_threshold.is_null() {
             let t = &*(hyst_threshold as *const crate::c_api_data::VxCThresholdData);
-            eprintln!("DEBUG: Canny thresh: lower={}, upper={}, gsz={}, norm={}", t.lower, t.upper, gradient_size, norm_type);
             (t.lower, t.upper)
         } else {
-            eprintln!("DEBUG: Canny null threshold, defaults gsz={}, norm={}", gradient_size, norm_type);
             (50i32, 150i32)
         };
 
@@ -5977,18 +5975,12 @@ fn canny_edge_detector(
                 } else {
                     // diagonal
                     let s = if (dx ^ dy) < 0 { -1i32 } else { 1i32 };
-                    let i1 = if s < 0 {
-                        i.saturating_sub(1)
-                    } else {
-                        i + 1
-                    };
-                    let i2 = if s >= 0 {
-                        i.saturating_sub(1)
-                    } else {
-                        i + 1
-                    };
-                    m1 = compute_magnitude(i1, j.saturating_sub(1)).0;
-                    let m2_raw = compute_magnitude(i2, j + 1).0;
+                    // m1 = magnitude(i - s, j - 1)
+                    // m2 = magnitude(i + s, j + 1) + 1
+                    let m1_i = if s < 0 { i + 1 } else { i.saturating_sub(1) };
+                    let m2_i = if s >= 0 { i + 1 } else { i.saturating_sub(1) };
+                    m1 = compute_magnitude(m1_i, j.saturating_sub(1)).0;
+                    let m2_raw = compute_magnitude(m2_i, j + 1).0;
                     // OpenCV gotcha: +1 for m2 in diagonal case
                     // But we compare m > m1 && m >= m2, so +1 makes m2 slightly larger
                     // This means fewer pixels pass NMS, matching OpenCV/CTS behavior

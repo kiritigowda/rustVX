@@ -2930,9 +2930,9 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == VX_SUCCESS { val } else { 0x110000 }
+                    if status == VX_SUCCESS { val } else { 0x10000 }
                 } else {
-                    0x110000 // VX_NORM_L1
+                    0x10000 // VX_NORM_L1
                 };
                 
                 if !input.is_null() && !hyst_threshold.is_null() && !output.is_null() {
