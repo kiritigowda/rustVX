@@ -10267,12 +10267,14 @@ pub extern "C" fn vxHalfScaleGaussianNode(graph: vx_graph, input: vx_image, outp
     }
     // kernel_size parameter as a scalar
     let mut ks_val = kernel_size as i32;
-    let ks_scalar = vxCreateScalar(context, 0x0A, &mut ks_val as *mut i32 as *mut c_void); // VX_TYPE_ENUM
+    let mut ks_scalar = vxCreateScalar(context, 0x0A, &mut ks_val as *mut i32 as *mut c_void); // VX_TYPE_ENUM
     if ks_scalar.is_null() {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
     status = crate::c_api::vxSetParameterByIndex(node, 2, ks_scalar as vx_reference);
+    // Release the scalar after setting the parameter (node now holds the ref)
+    let _ = crate::c_api_data::vxReleaseScalar(&mut ks_scalar as *mut _);
     if status != VX_SUCCESS {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
