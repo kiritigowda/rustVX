@@ -10035,7 +10035,7 @@ pub extern "C" fn vxuTableLookup(context: vx_context, input: vx_image, lut: vx_l
 
 /// Create matrix from pattern and origin
 #[no_mangle]
-pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, pattern: vx_enum, origin_x: vx_size, origin_y: vx_size, rows: vx_size, cols: vx_size) -> vx_matrix {
+pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, pattern: vx_enum, rows: vx_size, cols: vx_size, origin_x: vx_size, origin_y: vx_size) -> vx_matrix {
     if context.is_null() {
         return std::ptr::null_mut();
     }
