@@ -17,6 +17,10 @@ use crate::c_api::{
 };
 use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage, VxCPyramid, vx_border_t};
 
+/// OpenVX enum constants for norm type
+const VX_NORM_L1: vx_enum = 0x110000;
+const VX_NORM_L2: vx_enum = 0x110001;
+
 /// OpenVX enum constants for convert policy
 const VX_CONVERT_POLICY_WRAP: vx_enum = 0xA000;
 const VX_CONVERT_POLICY_SATURATE: vx_enum = 0xA001;
@@ -4045,9 +4049,9 @@ pub fn vxu_fast_corners_impl(
 pub fn vxu_canny_edge_detector_impl(
     context: vx_context,
     input: vx_image,
-    _hyst_threshold: vx_threshold,
-    _gradient_size: vx_enum,
-    _norm_type: vx_enum,
+    hyst_threshold: vx_threshold,
+    gradient_size: vx_enum,
+    norm_type: vx_enum,
     output: vx_image,
 ) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
@@ -4065,11 +4069,20 @@ pub fn vxu_canny_edge_detector_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Default thresholds
-        let low_thresh = 50u8;
-        let high_thresh = 150u8;
+        // Read threshold values from threshold object
+        let (low_thresh, high_thresh) = if !hyst_threshold.is_null() {
+            let t = &*(hyst_threshold as *const crate::c_api_data::VxCThresholdData);
+            eprintln!("DEBUG: Canny thresh: lower={}, upper={}, gsz={}, norm={}", t.lower, t.upper, gradient_size, norm_type);
+            (t.lower, t.upper)
+        } else {
+            eprintln!("DEBUG: Canny null threshold, defaults gsz={}, norm={}", gradient_size, norm_type);
+            (50i32, 150i32)
+        };
 
-        match canny_edge_detector(&src, &mut dst, low_thresh, high_thresh) {
+        let gsz = gradient_size as i32;
+        let norm = norm_type;
+
+        match canny_edge_detector(&src, &mut dst, low_thresh, high_thresh, gsz, norm) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -5838,7 +5851,11 @@ fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
 // Object Detection
 // ============================================================================
 
-fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_threshold: u8) -> VxResult<()> {
+fn canny_edge_detector(
+    src: &Image, dst: &mut Image,
+    low_thresh: i32, high_thresh: i32,
+    gsz: i32, norm: vx_enum,
+) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
 
@@ -5846,8 +5863,7 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
         .checked_mul(height)
         .ok_or(VxStatus::ErrorInvalidParameters)?;
 
-    if width < 3 || height < 3 {
-        // Too small for Sobel, output all zeros
+    if width < gsz as usize || height < gsz as usize {
         let dst_data = dst.data_mut();
         for i in dst_data.iter_mut() {
             *i = 0;
@@ -5855,166 +5871,200 @@ fn canny_edge_detector(src: &Image, dst: &mut Image, low_threshold: u8, high_thr
         return Ok(());
     }
 
-    // Step 1: Gaussian blur (separable 1-2-1)
-    let mut blurred = vec![0u8; img_size];
-    {
-        let kernel = [1, 2, 1];
-        let mut temp = vec![0u8; img_size];
+    let bsz = (gsz / 2 + 1) as usize;
 
-        // Horizontal pass
-        for y in 0..height {
-            for x in 0..width {
-                let mut sum: i32 = 0;
-                let mut weight: i32 = 0;
-                for k in 0..3 {
-                    let px = x as isize + k as isize - 1;
-                    if px >= 0 && px < width as isize {
-                        sum += src.get_pixel(px as usize, y) as i32 * kernel[k];
-                        weight += kernel[k];
-                    }
-                }
-                let idx = y * width + x;
-                temp[idx] = clamp_u8(sum / weight.max(1));
-            }
-        }
-
-        // Vertical pass
-        for y in 0..height {
-            for x in 0..width {
-                let mut sum: i32 = 0;
-                let mut weight: i32 = 0;
-                for k in 0..3 {
-                    let py = y as isize + k as isize - 1;
-                    if py >= 0 && py < height as isize {
-                        sum += temp[(py as usize) * width + x] as i32 * kernel[k];
-                        weight += kernel[k];
-                    }
-                }
-                blurred[y * width + x] = clamp_u8(sum / weight.max(1));
-            }
-        }
-    }
-
-    // Step 2: Sobel gradients
-    // Store magnitude and direction packed: (magnitude << 2) | direction
-    // direction: 0=0°, 1=45°, 2=90°, 3=135°
-    let mut mag_and_dir = vec![0u16; img_size];
-
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
-            let p00 = blurred[(y - 1) * width + (x - 1)] as i16;
-            let p01 = blurred[(y - 1) * width + x] as i16;
-            let p02 = blurred[(y - 1) * width + (x + 1)] as i16;
-            let p10 = blurred[y * width + (x - 1)] as i16;
-            let p12 = blurred[y * width + (x + 1)] as i16;
-            let p20 = blurred[(y + 1) * width + (x - 1)] as i16;
-            let p21 = blurred[(y + 1) * width + x] as i16;
-            let p22 = blurred[(y + 1) * width + (x + 1)] as i16;
-
-            let gx: i16 = -p00 + p02 - 2 * p10 + 2 * p12 - p20 + p22;
-            let gy: i16 = -p00 - 2 * p01 - p02 + p20 + 2 * p21 + p22;
-
-            // L2 norm magnitude, clamped to fit in 14 bits (for <<2 packing into u16)
-            let mag = ((gx as i32 * gx as i32 + gy as i32 * gy as i32) as f32).sqrt();
-            let mag_u16 = if mag > 16383.0 { 16383u16 } else { mag as u16 };
-
-            // Direction quantization to 4 bins (0-3)
-            let angle_deg = (gy as f32).atan2(gx as f32).to_degrees();
-            let mut a = angle_deg;
-            if a < 0.0 { a += 180.0; }
-            let dir = if a < 22.5 || a >= 157.5 { 0u16 }       // 0° horizontal edge
-                       else if a < 67.5 { 1u16 }                // 45°
-                       else if a < 112.5 { 2u16 }               // 90° vertical edge
-                       else { 3u16 };                            // 135°
-
-            mag_and_dir[y * width + x] = (mag_u16 << 2) | dir;
-        }
-    }
-
-    // Step 3: Non-maximum suppression + threshold + hysteresis initialization
-    // NMS neighbor offsets for each direction:
-    //   dir 0 (0°): compare left/right neighbors (horizontal edge, gradient vertical)
-    //   dir 1 (45°): compare upper-right/lower-left
-    //   dir 2 (90°): compare up/down (vertical edge, gradient horizontal)
-    //   dir 3 (135°): compare upper-left/lower-right
-    let n_offset: [[(isize, isize); 2]; 4] = [
-        [(0, -1), (0, 1)],   // dir 0
-        [(-1, 1), (1, -1)],  // dir 1
-        [(-1, 0), (1, 0)],   // dir 2
-        [(-1, -1), (1, 1)],  // dir 3
+    // Sobel separable kernels per OpenVX spec / CTS reference
+    // dim1 = smoothing kernel, dim2 = derivative kernel
+    let dim1: [[i32; 7]; 3] = [
+        [1, 2, 1, 0, 0, 0, 0],
+        [1, 4, 6, 4, 1, 0, 0],
+        [1, 6, 15, 20, 15, 6, 1],
     ];
+    let dim2: [[i32; 7]; 3] = [
+        [-1, 0, 1, 0, 0, 0, 0],
+        [-1, -2, 0, 2, 1, 0, 0],
+        [-1, -4, -5, 0, 5, 4, 1],
+    ];
+    let k_idx = (gsz as usize / 2) - 1;
+    let w1 = &dim1[k_idx][..gsz as usize];
+    let w2 = &dim2[k_idx][..gsz as usize];
 
-    // edges: 0=non-edge, 127=weak, 255=strong
-    let mut edges = vec![0u8; img_size];
-    let low_t = low_threshold as u16;
-    let high_t = high_threshold as u16;
+    // Compute lo/hi thresholds according to norm
+    let lo: u64 = if norm == VX_NORM_L1 {
+        low_thresh as u64
+    } else {
+        (low_thresh as i64 * low_thresh as i64) as u64
+    };
+    let hi: u64 = if norm == VX_NORM_L1 {
+        high_thresh as u64
+    } else {
+        (high_thresh as i64 * high_thresh as i64) as u64
+    };
 
-    // Stack for flood-fill hysteresis
-    let mut stack: Vec<(usize, usize)> = Vec::new();
+    // Working edge image: 0=none, 1=link(weak), 2=edge(strong)
+    let mut tmp = vec![0u8; img_size];
 
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
-            let idx = y * width + x;
-            let packed = mag_and_dir[idx];
-            let mag = packed >> 2;
-            let dir = (packed & 3) as usize;
-
-            if mag == 0 {
-                continue;
-            }
-
-            // NMS: compare against two neighbors in gradient direction
-            let (dy0, dx0) = n_offset[dir][0];
-            let (dy1, dx1) = n_offset[dir][1];
-            let ny0 = (y as isize + dy0) as usize;
-            let nx0 = (x as isize + dx0) as usize;
-            let ny1 = (y as isize + dy1) as usize;
-            let nx1 = (x as isize + dx1) as usize;
-            let mag0 = mag_and_dir[ny0 * width + nx0] >> 2;
-            let mag1 = mag_and_dir[ny1 * width + nx1] >> 2;
-
-            // Only keep if this pixel is a local maximum along the gradient direction
-            if mag > mag0 && mag > mag1 {
-                if mag > high_t {
-                    edges[idx] = 255; // Strong edge
-                    stack.push((x, y));
-                } else if mag > low_t {
-                    edges[idx] = 127; // Weak edge (candidate)
-                }
-            }
+    // Border pixels: set to white (255) like the reference does
+    for j in 0..bsz {
+        for i in 0..width {
+            tmp[j * width + i] = 255;
+            tmp[(height - 1 - j) * width + i] = 255;
+        }
+    }
+    for j in bsz..height - bsz {
+        for i in 0..bsz {
+            tmp[j * width + i] = 255;
+            tmp[j * width + width - 1 - i] = 255;
         }
     }
 
-    // Step 4: Hysteresis edge tracking (flood fill from strong edges)
-    // Process stack: for each strong edge, check 8-connected neighbors.
-    // If neighbor is a weak edge (127), promote it to strong (255) and push to stack.
-    let dir_offsets_8: [(isize, isize); 8] = [
+    // Helper to compute magnitude at (x, y) with the given kernel size and norm
+    let compute_magnitude = |x: usize, y: usize| -> (u64, i32, i32) {
+        let mut dx: i32 = 0;
+        let mut dy: i32 = 0;
+        let half = gsz as isize / 2;
+        for i in 0..gsz as isize {
+            let mut xx: i32 = 0;
+            let mut yy: i32 = 0;
+            for j in 0..gsz as isize {
+                let py = y as isize + i - half;
+                let px = x as isize + j - half;
+                let v = if px >= 0 && px < width as isize && py >= 0 && py < height as isize {
+                    src.get_pixel(px as usize, py as usize) as i32
+                } else {
+                    // Replicate border
+                    let bx = px.max(0).min(width as isize - 1) as usize;
+                    let by = py.max(0).min(height as isize - 1) as usize;
+                    src.get_pixel(bx, by) as i32
+                };
+                xx += v * w2[j as usize];
+                yy += v * w1[j as usize];
+            }
+            dx += xx * w1[i as usize];
+            dy += yy * w2[i as usize];
+        }
+
+        let mag = if norm == VX_NORM_L2 {
+            (dx as i64 * dx as i64 + dy as i64 * dy as i64) as u64
+        } else {
+            (dx.abs() + dy.abs()) as u64
+        };
+        (mag, dx, dy)
+    };
+
+    // threshold + NMS
+    for j in bsz..height - bsz {
+        for i in bsz..width - bsz {
+            let (m, dx, dy) = compute_magnitude(i, j);
+
+            let mut e: u8 = 0; // CREF_NONE
+
+            if m > lo {
+                let l1 = (dx.abs() + dy.abs()) as u64;
+                let dx64 = dx.abs() as u64;
+                let dy64 = dy.abs() as u64;
+
+                // Determine NMS direction based on |dx| vs |dy| comparison
+                let (m1, m2): (u64, u64);
+                if l1 * l1 < 2 * dx64 * dx64 {
+                    // |y| < |x| * tan(pi/8)  → horizontal edge, compare left/right
+                    m1 = compute_magnitude(i.saturating_sub(1), j).0;
+                    m2 = compute_magnitude(i + 1, j).0;
+                } else if l1 * l1 < 2 * dy64 * dy64 {
+                    // |x| < |y| * tan(pi/8)  → vertical edge, compare up/down
+                    m1 = compute_magnitude(i, j.saturating_sub(1)).0;
+                    m2 = compute_magnitude(i, j + 1).0;
+                } else {
+                    // diagonal
+                    let s = if (dx ^ dy) < 0 { -1i32 } else { 1i32 };
+                    let i1 = if s < 0 {
+                        i.saturating_sub(1)
+                    } else {
+                        i + 1
+                    };
+                    let i2 = if s >= 0 {
+                        i.saturating_sub(1)
+                    } else {
+                        i + 1
+                    };
+                    m1 = compute_magnitude(i1, j.saturating_sub(1)).0;
+                    let m2_raw = compute_magnitude(i2, j + 1).0;
+                    // OpenCV gotcha: +1 for m2 in diagonal case
+                    // But we compare m > m1 && m >= m2, so +1 makes m2 slightly larger
+                    // This means fewer pixels pass NMS, matching OpenCV/CTS behavior
+                    m2 = m2_raw + 1;
+                }
+
+                if m > m1 && m >= m2 {
+                    e = if m > hi { 2 } else { 1 }; // CREF_EDGE or CREF_LINK
+                }
+            }
+
+            tmp[j * width + i] = e;
+        }
+    }
+
+    // Recursive edge tracing (follow_edge)
+    let offsets: [(isize, isize); 8] = [
         (-1, -1), (0, -1), (1, -1),
-        (-1, 0),          (1, 0),
-        (-1, 1),  (0, 1), (1, 1),
+        (-1,  0),          (1,  0),
+        (-1,  1), (0,  1), (1,  1),
     ];
 
-    let mut si = 0;
-    while si < stack.len() {
-        let (sx, sy) = stack[si];
-        si += 1;
-        for &(dy, dx) in &dir_offsets_8 {
-            let nx = (sx as isize + dx) as isize;
-            let ny = (sy as isize + dy) as isize;
-            if nx >= 0 && nx < width as isize && ny >= 0 && ny < height as isize {
-                let nidx = (ny as usize) * width + (nx as usize);
-                if edges[nidx] == 127 {
-                    edges[nidx] = 255; // Promote weak to strong
-                    stack.push((nx as usize, ny as usize));
+    fn follow_edge(tmp: &mut [u8], width: usize, height: usize, x: usize, y: usize, offsets: &[(isize, isize); 8]) {
+        tmp[y * width + x] = 255;
+        for &(oy, ox) in offsets.iter() {
+            let ny = y as isize + oy;
+            let nx = x as isize + ox;
+            if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
+                let idx = (ny as usize) * width + (nx as usize);
+                if tmp[idx] == 1 {
+                    // Use explicit stack to avoid deep recursion
+                    let mut stack: Vec<(usize, usize)> = vec![(nx as usize, ny as usize)];
+                    while let Some((sx, sy)) = stack.pop() {
+                        let sidx = sy * width + sx;
+                        if tmp[sidx] == 1 {
+                            tmp[sidx] = 255;
+                            for &(oy2, ox2) in offsets.iter() {
+                                let ny2 = sy as isize + oy2;
+                                let nx2 = sx as isize + ox2;
+                                if ny2 >= 0 && ny2 < height as isize && nx2 >= 0 && nx2 < width as isize {
+                                    let nidx = (ny2 as usize) * width + (nx2 as usize);
+                                    if tmp[nidx] == 1 {
+                                        stack.push((nx2 as usize, ny2 as usize));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Step 5: Final output — strong edges (255) stay, everything else becomes 0
+    // trace edges from all strong edge pixels
+    for j in bsz..height - bsz {
+        for i in bsz..width - bsz {
+            if tmp[j * width + i] == 2 {
+                follow_edge(&mut tmp, width, height, i, j, &offsets);
+            }
+        }
+    }
+
+    // clear non-edges: anything < 255 becomes 0
+    for j in bsz..height - bsz {
+        for i in bsz..width - bsz {
+            let idx = j * width + i;
+            if tmp[idx] < 255 {
+                tmp[idx] = 0;
+            }
+        }
+    }
+
+    // Copy to destination
     let dst_data = dst.data_mut();
     for i in 0..img_size {
-        dst_data[i] = if edges[i] == 255 { 255 } else { 0 };
+        dst_data[i] = tmp[i];
     }
 
     Ok(())

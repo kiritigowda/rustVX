@@ -2906,13 +2906,42 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let input = params[0] as vx_image;
                 let hyst_threshold = params[1] as vx_threshold;
                 let output = params[4] as vx_image;
+                
+                // Read gradient_size from scalar param[2]
+                let gradient_size: vx_enum = if params.len() > 2 && !params[2].is_null() {
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[2] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, // VX_READ_ONLY
+                        0x0,     // VX_MEMORY_TYPE_HOST
+                    );
+                    if status == VX_SUCCESS { val } else { 3 }
+                } else {
+                    3
+                };
+                
+                // Read norm_type from scalar param[3]
+                let norm_type: vx_enum = if params.len() > 3 && !params[3].is_null() {
+                    let mut val: i32 = 0;
+                    let status = crate::c_api_data::vxCopyScalarData(
+                        params[3] as vx_scalar,
+                        &mut val as *mut i32 as *mut c_void,
+                        0x11001, // VX_READ_ONLY
+                        0x0,     // VX_MEMORY_TYPE_HOST
+                    );
+                    if status == VX_SUCCESS { val } else { 0x110000 }
+                } else {
+                    0x110000 // VX_NORM_L1
+                };
+                
                 if !input.is_null() && !hyst_threshold.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_canny_edge_detector_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         hyst_threshold,
-                        3, // gradient_size
-                        0, // norm_type (L1)
+                        gradient_size,
+                        norm_type,
                         output
                     )
                 } else {
