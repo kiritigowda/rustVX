@@ -1188,6 +1188,67 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 }
             }
 
+            // Pyramid dependency tracking: when a node writes to a pyramid, it implicitly
+            // writes to all level images within that pyramid. When a node reads a pyramid level,
+            // it depends on the node that wrote to the pyramid.
+            {
+                let mut level_to_pyramid: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+                for (_node_id, params) in &node_params {
+                    for param_opt in params.iter() {
+                        if let Some(param_ref) = param_opt {
+                            if is_data_reference(*param_ref) {
+                                unsafe {
+                                    let ref_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                                        *types.get(&(*param_ref as usize)).unwrap_or(&0)
+                                    } else {
+                                        0
+                                    };
+                                    if ref_type == VX_TYPE_IMAGE {
+                                        if let Ok(pyramid_levels) = PYRAMID_LEVEL_IMAGES.lock() {
+                                            if let Some(&(pyr_ref, _level)) = pyramid_levels.get(&(*param_ref as usize)) {
+                                                level_to_pyramid.insert(*param_ref, pyr_ref as u64);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // For each pyramid output, add that the node also produces all its level images
+                for (level_ref, pyr_ref) in &level_to_pyramid {
+                    if let Some(&producer_node) = param_to_producer.get(pyr_ref) {
+                        // The node that produces the pyramid also produces the level
+                        param_to_producer.insert(*level_ref, producer_node);
+                        // Also add level to node_to_outputs so Kahn's algorithm can traverse it
+                        node_to_outputs.entry(producer_node)
+                            .or_insert_with(Vec::new)
+                            .push(*level_ref);
+                    }
+                }
+
+                // For each pyramid level input, add that the node also consumes the pyramid
+                for (level_ref, pyr_ref) in &level_to_pyramid {
+                    if let Some(consumers) = param_to_consumers.get(level_ref).cloned() {
+                        let entry = param_to_consumers.entry(*pyr_ref).or_insert_with(Vec::new);
+                        for consumer in consumers {
+                            if !entry.contains(&consumer) {
+                                entry.push(consumer);
+                            }
+                        }
+                    }
+                    if let Some(consumers) = image_to_consumers.get(level_ref).cloned() {
+                        let entry = image_to_consumers.entry(*pyr_ref).or_insert_with(Vec::new);
+                        for consumer in consumers {
+                            if !entry.contains(&consumer) {
+                                entry.push(consumer);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Detect cycles using DFS following data flow: producer -> output image -> consumer
             // Note: Delay-based feedback patterns are NOT cycles. A node consuming from delay slot -1
             // and producing to delay slot 0 is valid temporal filtering, not a circular dependency.
@@ -1261,7 +1322,41 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     if let Some(deg) = in_degree.get_mut(node_id) {
                                         *deg += 1;
                                     }
-                                    
+                                }
+                            }
+                            // Also check if this param is an ROI and its parent has a producer
+                            unsafe {
+                                let ref_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                                    *types.get(&(*param_ref as usize)).unwrap_or(&0)
+                                } else {
+                                    0
+                                };
+                                if ref_type == VX_TYPE_IMAGE {
+                                    let img = &*(*param_ref as *const VxCImage);
+                                    if img.parent.is_some() && !img.roi_offsets.is_empty() {
+                                        let parent_ref = img.parent.unwrap() as u64;
+                                        if let Some(&producer) = param_to_producer.get(&parent_ref) {
+                                            if producer != *node_id {
+                                                // Parent has a producer, this node depends on it
+                                                if let Some(deg) = in_degree.get_mut(node_id) {
+                                                    *deg += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Also check if this image is a pyramid level and its pyramid has a producer
+                                    if let Ok(pyramid_levels) = PYRAMID_LEVEL_IMAGES.lock() {
+                                        if let Some(&(pyr_ref, _level)) = pyramid_levels.get(&(*param_ref as usize)) {
+                                            let pyr_ref_u64 = pyr_ref as u64;
+                                            if let Some(&producer) = param_to_producer.get(&pyr_ref_u64) {
+                                                if producer != *node_id {
+                                                    if let Some(deg) = in_degree.get_mut(node_id) {
+                                                        *deg += 1;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
