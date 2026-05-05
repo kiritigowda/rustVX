@@ -2676,35 +2676,108 @@ pub fn vxu_median3x3_impl_with_border(
 pub fn vxu_convolve_impl(
     context: vx_context,
     input: vx_image,
-    _conv: vx_convolution,
+    conv: vx_convolution,
     output: vx_image,
+    border: Option<crate::unified_c_api::vx_border_t>,
 ) -> vx_status {
-    if context.is_null() || input.is_null() || _conv.is_null() || output.is_null() {
+    if context.is_null() || input.is_null() || conv.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // For now, apply a simple sharpening kernel
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        let mut dst = match create_matching_image(output) {
-            Some(img) => img,
+        let (_, _, dst_format) = match get_image_info(output) {
+            Some(info) => info,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Default sharpening kernel
-        let kernel: [[i32; 3]; 3] = [
-            [0, -1, 0],
-            [-1, 5, -1],
-            [0, -1, 0],
-        ];
+        // Read convolution data
+        let conv_data = &*(conv as *const crate::c_api_data::VxCConvolutionData);
+        let cols = conv_data.columns;
+        let rows = conv_data.rows;
+        let scale = conv_data.scale;
+        if scale == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
 
-        match convolve_generic(&src, &mut dst, &kernel, BorderMode::Replicate) {
-            Ok(_) => copy_rust_to_c_image(&dst, output),
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        let coeffs = match conv_data.data.read() {
+            Ok(d) => d.clone(),
+            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Determine border mode
+        let border_mode = match border {
+            Some(b) => crate::unified_c_api::border_from_vx(&Some(b)),
+            None => get_border_from_context(context),
+        };
+
+        let width = src.width;
+        let height = src.height;
+
+        // OpenVX convolve: coefficients are reversed (data[cols*rows-1-i])
+        // Kernel center is at (cols/2, rows/2)
+        let origin_x = cols / 2;
+        let origin_y = rows / 2;
+
+        if dst_format == VX_DF_IMAGE_S16 {
+            let mut dst = match Image::new(width, height, ImageFormat::GrayS16) {
+                Some(img) => img,
+                None => return VX_ERROR_INVALID_PARAMETERS,
+            };
+
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum: i32 = 0;
+                    for ky in 0..rows {
+                        for kx in 0..cols {
+                            let coeff_idx = (rows - 1 - ky) * cols + (cols - 1 - kx);
+                            let coeff = coeffs[coeff_idx] as i32;
+                            let px = x as isize + kx as isize - origin_x as isize;
+                            let py = y as isize + ky as isize - origin_y as isize;
+                            let pixel = get_pixel_bordered(&src, px, py, border_mode) as i32;
+                            sum += pixel * coeff;
+                        }
+                    }
+                    let value = sum / scale as i32;
+                    let clamped = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                    dst.set_pixel_s16(x, y, clamped);
+                }
+            }
+            copy_rust_to_c_image(&dst, output)
+        } else {
+            // U8 output
+            let mut dst = match create_matching_image(output) {
+                Some(img) => img,
+                None => return VX_ERROR_INVALID_PARAMETERS,
+            };
+            let dst_data = dst.data_mut();
+
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum: i32 = 0;
+                    for ky in 0..rows {
+                        for kx in 0..cols {
+                            let coeff_idx = (rows - 1 - ky) * cols + (cols - 1 - kx);
+                            let coeff = coeffs[coeff_idx] as i32;
+                            let px = x as isize + kx as isize - origin_x as isize;
+                            let py = y as isize + ky as isize - origin_y as isize;
+                            let pixel = get_pixel_bordered(&src, px, py, border_mode) as i32;
+                            sum += pixel * coeff;
+                        }
+                    }
+                    let value = sum / scale as i32;
+                    let clamped = value.clamp(0, 255) as u8;
+                    let idx = y * width + x;
+                    if let Some(p) = dst_data.get_mut(idx) {
+                        *p = clamped;
+                    }
+                }
+            }
+            copy_rust_to_c_image(&dst, output)
         }
     }
 }
@@ -6446,9 +6519,9 @@ pub fn vxu_non_linear_filter_impl(
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // VX_NONLINEAR_FILTER_MEDIAN = 40960
-    // VX_NONLINEAR_FILTER_MIN = 40961
-    // VX_NONLINEAR_FILTER_MAX = 40962
+    // VX_NONLINEAR_FILTER_MEDIAN = 0x16000 = 90112
+    // VX_NONLINEAR_FILTER_MIN = 0x16001 = 90113
+    // VX_NONLINEAR_FILTER_MAX = 0x16002 = 90114
     
     // Convert border mode
     let border_mode = crate::unified_c_api::border_from_vx(&border);
@@ -6510,15 +6583,15 @@ pub fn vxu_non_linear_filter_impl(
                 }
                 
                 let value = match function {
-                    // VX_NONLINEAR_FILTER_MIN = 40961
-                    40961 => {
+                    // VX_NONLINEAR_FILTER_MIN = 0x16001 = 90113
+                    90113 => {
                         values.iter().copied().min().unwrap_or(0)
                     }
-                    // VX_NONLINEAR_FILTER_MAX = 40962
-                    40962 => {
+                    // VX_NONLINEAR_FILTER_MAX = 0x16002 = 90114
+                    90114 => {
                         values.iter().copied().max().unwrap_or(0)
                     }
-                    // VX_NONLINEAR_FILTER_MEDIAN = 40960 (default)
+                    // VX_NONLINEAR_FILTER_MEDIAN = 0x16000 = 90112 (default)
                     _ => {
                         values.sort_unstable();
                         values[values.len() / 2]

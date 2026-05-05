@@ -280,11 +280,11 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
 
 /// Convolution structure for C API
 pub struct VxCConvolutionData {
-    columns: vx_size,
-    rows: vx_size,
-    scale: vx_uint32,
-    data: RwLock<Vec<i16>>,
-    context: vx_context,
+    pub columns: vx_size,
+    pub rows: vx_size,
+    pub scale: vx_uint32,
+    pub data: RwLock<Vec<i16>>,
+    pub context: vx_context,
 }
 
 /// Create a convolution

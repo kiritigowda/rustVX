@@ -2788,7 +2788,8 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         conv,
-                        output
+                        output,
+                        border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3547,15 +3548,16 @@ pub const VX_CONTEXT_ATTRIBUTE_VERSION: vx_enum = 0x00080101;          // +0x1
 pub const VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS: vx_enum = 0x00080102;  // +0x2
 pub const VX_CONTEXT_ATTRIBUTE_MODULES: vx_enum = 0x00080103;        // +0x3
 pub const VX_CONTEXT_ATTRIBUTE_REFERENCES: vx_enum = 0x00080104;       // +0x4
-pub const VX_CONTEXT_ATTRIBUTE_USER_MEMORY: vx_enum = 0x00080105;      // +0x5
-pub const VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION: vx_enum = 0x00080106; // +0x6
-pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS_SIZE: vx_enum = 0x00080107; // +0x7
-pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS: vx_enum = 0x00080108;       // +0x8
-pub const VX_CONTEXT_ATTRIBUTE_USER_MEMORY_FREE: vx_enum = 0x00080109; // +0x9 (callback for user memory deallocation)
-pub const VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER: vx_enum = 0x0008010A; // +0xA
-pub const VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER_POLICY: vx_enum = 0x0008010C; // +0xC
+pub const VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION: vx_enum = 0x00080105; // +0x5
+pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS_SIZE: vx_enum = 0x00080106; // +0x6
+pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS: vx_enum = 0x00080107;       // +0x7
 pub const VX_CONTEXT_ATTRIBUTE_CONVOLUTION_MAX_DIMENSION: vx_enum = 0x00080108; // +0x8
 pub const VX_CONTEXT_ATTRIBUTE_OPTICAL_FLOW_MAX_WINDOW: vx_enum = 0x00080109; // +0x9
+pub const VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER: vx_enum = 0x0008010A; // +0xA
+pub const VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNEL_TABLE: vx_enum = 0x0008010B; // +0xB
+pub const VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER_POLICY: vx_enum = 0x0008010C; // +0xC
+pub const VX_CONTEXT_ATTRIBUTE_NONLINEAR_MAX_DIMENSION: vx_enum = 0x0008010D; // +0xD
+pub const VX_CONTEXT_ATTRIBUTE_MAX_TENSOR_DIMS: vx_enum = 0x0008010E; // +0xE
 
 // Context version (OpenVX 1.3.1 = 1.3)
 // Packed as (major << 8) | minor, with patch in upper bits for 1.3.x
@@ -3694,6 +3696,16 @@ pub extern "C" fn vxQueryContext(
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
+            VX_CONTEXT_ATTRIBUTE_CONVOLUTION_MAX_DIMENSION => {
+                // vx_size is expected per spec
+                if size == std::mem::size_of::<vx_size>() {
+                    // Return max convolution dimension (must be >= 9 per spec)
+                    *(ptr as *mut vx_size) = 15;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
             VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER => {
                 // vx_border_t is expected per spec
                 if size != std::mem::size_of::<vx_border_t>() {
@@ -3749,9 +3761,9 @@ pub extern "C" fn vxSetContextAttribute(
     }
 
     match attribute {
-        VX_CONTEXT_ATTRIBUTE_USER_MEMORY => {
-            // Handle user memory settings
-            VX_SUCCESS
+        VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION => {
+            // Implementation string is read-only per spec
+            VX_ERROR_NOT_SUPPORTED
         }
         VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER => {
             // Handle immediate border mode - store for later use
@@ -5273,10 +5285,10 @@ pub const VX_MATRIX_PATTERN: vx_enum = 0x80b05;
 pub const VX_MATRIX_ELEMENT_SIZE: vx_enum = 0x80b06;
 
 // Convolution attributes
-pub const VX_CONVOLUTION_ROWS: vx_enum = 0x00;
-pub const VX_CONVOLUTION_COLUMNS: vx_enum = 0x01;
-pub const VX_CONVOLUTION_SCALE: vx_enum = 0x02;
-pub const VX_CONVOLUTION_SIZE: vx_enum = 0x03;
+pub const VX_CONVOLUTION_ROWS: vx_enum = 0x80C00;
+pub const VX_CONVOLUTION_COLUMNS: vx_enum = 0x80C01;
+pub const VX_CONVOLUTION_SCALE: vx_enum = 0x80C02;
+pub const VX_CONVOLUTION_SIZE: vx_enum = 0x80C03;
 
 // LUT attributes
 pub const VX_LUT_TYPE: vx_enum = 0x80700;
@@ -5628,9 +5640,47 @@ pub extern "C" fn vxQueryConvolution(
     size: usize,
 ) -> i32 {
     if conv.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+    unsafe {
+        let c = &*(conv as *const crate::c_api_data::VxCConvolutionData);
+        match attribute {
+            VX_CONVOLUTION_ROWS => {
+                if size == std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = c.rows;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_CONVOLUTION_COLUMNS => {
+                if size == std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = c.columns;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_CONVOLUTION_SCALE => {
+                if size == std::mem::size_of::<vx_uint32>() {
+                    *(ptr as *mut vx_uint32) = c.scale;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            VX_CONVOLUTION_SIZE => {
+                if size == std::mem::size_of::<vx_size>() {
+                    let data_size = c.columns * c.rows * std::mem::size_of::<i16>();
+                    *(ptr as *mut vx_size) = data_size;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            _ => VX_ERROR_NOT_SUPPORTED
+        }
+    }
 }
 
 #[no_mangle]
@@ -5641,9 +5691,22 @@ pub extern "C" fn vxSetConvolutionAttribute(
     size: usize,
 ) -> i32 {
     if conv.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    -30
+    unsafe {
+        let c = &mut *(conv as *mut crate::c_api_data::VxCConvolutionData);
+        match attribute {
+            VX_CONVOLUTION_SCALE => {
+                if size == std::mem::size_of::<vx_uint32>() {
+                    c.scale = *(ptr as *const vx_uint32);
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
+            _ => VX_ERROR_NOT_SUPPORTED
+        }
+    }
 }
 
 #[no_mangle]
@@ -8795,7 +8858,7 @@ pub extern "C" fn vxuConvolve(
     conv: vx_convolution,
     output: vx_image,
 ) -> i32 {
-    crate::vxu_impl::vxu_convolve_impl(context, input, conv, output)
+    crate::vxu_impl::vxu_convolve_impl(context, input, conv, output, None)
 }
 
 #[no_mangle]
@@ -9521,7 +9584,7 @@ pub extern "C" fn vxNonLinearFilterNode(
         return std::ptr::null_mut();
     }
 
-    let function_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &function as *const _ as *const c_void);
+    let mut function_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &function as *const _ as *const c_void);
     if function_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -9532,6 +9595,11 @@ pub extern "C" fn vxNonLinearFilterNode(
         &[function_scalar as vx_reference, input as vx_reference,
           matrix as vx_reference, output as vx_reference],
     );
+
+    // Release the scalar since create_node_with_params retains it via vxSetParameterByIndex
+    if !function_scalar.is_null() {
+        crate::c_api_data::vxReleaseScalar(&mut function_scalar as *mut _ as *mut vx_scalar);
+    }
 
     node
 }

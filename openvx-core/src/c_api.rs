@@ -290,6 +290,7 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.gaussian_3x3", 0x13, 2),
         ("org.khronos.openvx.box_3x3", 0x12, 2),
         ("org.khronos.openvx.median_3x3", 0x11, 2),
+        ("org.khronos.openvx.convolve", 0x16, 3),
         ("org.khronos.openvx.custom_convolution", 0x14, 3),
         ("org.khronos.openvx.gaussian_pyramid", 0x15, 2),
         // Morphology
@@ -1542,7 +1543,7 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
         // 2-parameter kernels
         0x0E | 0x11 | 0x12 | 0x13 | 0x15 | 0x1C | 0x1D | 0x1E | 0x1F => 2,
         // 3-parameter kernels
-        0x01 | 0x04 | 0x05 | 0x06 | 0x10 | 0x0B | 0x0D | 0x22 | 0x29 | 0x2B => 3,
+        0x01 | 0x04 | 0x05 | 0x06 | 0x10 | 0x0B | 0x0D | 0x16 | 0x22 | 0x29 | 0x2B => 3,
         // 4-parameter kernels
         0x02 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0C | 0x14 | 0x1A | 0x21 | 0x23 | 0x24 | 0x28 | 0x2C | 0x40 => 4,
         // 5-parameter kernels (fast_corners, canny_edge)
