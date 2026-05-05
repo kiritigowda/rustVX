@@ -257,8 +257,54 @@ unsafe fn get_image_info(image: vx_image) -> Option<(u32, u32, vx_df_image)> {
 unsafe fn c_image_to_rust(image: vx_image) -> Option<Image> {
     let (width, height, format) = get_image_info(image)?;
     let img = &*(image as *const VxCImage);
-    let data = img.data.read().ok()?.clone();
     let format = df_image_to_format(format)?;
+
+    // Handle external memory images (created from handle)
+    // For these images, data buffer is empty and we must read from external_ptrs
+    let data = if img.is_external_memory {
+        let num_planes = VxCImage::num_planes(img.format);
+        let total_size = VxCImage::calculate_size(width, height, img.format);
+        if total_size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; total_size];
+        // Copy each plane from external memory into contiguous buffer
+        for plane_idx in 0..num_planes {
+            let plane_offset = VxCImage::plane_offset(width, height, img.format, plane_idx);
+            let plane_size = VxCImage::plane_size(width, height, img.format, plane_idx);
+            let ext_ptr = if plane_idx < img.external_ptrs.len() {
+                img.external_ptrs[plane_idx]
+            } else {
+                std::ptr::null_mut()
+            };
+            if !ext_ptr.is_null() {
+                let ext_stride = if plane_idx < img.external_strides.len() {
+                    img.external_strides[plane_idx] as usize
+                } else {
+                    plane_size
+                };
+                // For planar formats with potentially different external strides,
+                // copy row by row using the external stride
+                let (pw, ph) = VxCImage::plane_dimensions(width, height, img.format, plane_idx);
+                let stride_x = VxCImage::plane_stride_x(img.format, plane_idx);
+                for y in 0..(ph as usize) {
+                    let src_offset = y * ext_stride;
+                    let dst_offset = plane_offset + y * (pw as usize) * stride_x;
+                    let row_bytes = (pw as usize) * stride_x;
+                    if dst_offset + row_bytes <= buf.len() {
+                        std::ptr::copy_nonoverlapping(
+                            ext_ptr.add(src_offset),
+                            buf.as_mut_ptr().add(dst_offset),
+                            row_bytes,
+                        );
+                    }
+                }
+            }
+        }
+        buf
+    } else {
+        img.data.read().ok()?.clone()
+    };
 
     // Handle ROI images: extract only the ROI portion from the parent's data
     if img.parent.is_some() && !img.roi_offsets.is_empty() {
@@ -325,13 +371,10 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
     }
 
     let img = &*(dst as *const VxCImage);
-    let mut dst_data = match img.data.write() {
-        Ok(d) => d,
-        Err(_) => return VX_ERROR_INVALID_REFERENCE,
-    };
 
     // Handle ROI images: write back to the correct offset in the parent's data buffer
     if img.parent.is_some() && !img.roi_offsets.is_empty() {
+        // For ROI of external memory, get parent's external data and write back
         let bpp = match src.format {
             ImageFormat::GrayS16 => 2,
             ImageFormat::Gray => 1,
@@ -351,17 +394,102 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
         let roi_w = img.width as usize;
         let roi_h = img.height as usize;
         let parent_stride = parent_width * bpp;
-        for y in 0..roi_h {
-            let dst_offset = ((roi_start_y + y) * parent_stride) + roi_start_x * bpp;
-            let src_offset = y * roi_w * bpp;
-            let copy_len = roi_w * bpp;
-            if dst_offset + copy_len <= dst_data.len() && src_offset + copy_len <= src.data.len() {
-                dst_data[dst_offset..dst_offset + copy_len]
-                    .copy_from_slice(&src.data[src_offset..src_offset + copy_len]);
+
+        // Check if the parent image uses external memory
+        let parent_is_external = {
+            if let Some(parent_addr) = img.parent {
+                let parent_img = &*(parent_addr as *const VxCImage);
+                parent_img.is_external_memory
+            } else {
+                false
+            }
+        };
+
+        if parent_is_external {
+            let parent_img = if let Some(parent_addr) = img.parent {
+                &*(parent_addr as *const VxCImage)
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            };
+            let ext_ptr = if !parent_img.external_ptrs.is_empty() {
+                parent_img.external_ptrs[0]
+            } else {
+                std::ptr::null_mut()
+            };
+            if ext_ptr.is_null() {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+            for y in 0..roi_h {
+                let dst_offset = ((roi_start_y + y) * parent_stride) + roi_start_x * bpp;
+                let src_offset = y * roi_w * bpp;
+                let copy_len = roi_w * bpp;
+                if src_offset + copy_len <= src.data.len() {
+                    std::ptr::copy_nonoverlapping(
+                        src.data.as_ptr().add(src_offset),
+                        ext_ptr.add(dst_offset),
+                        copy_len,
+                    );
+                }
+            }
+        } else {
+            let mut dst_data = match img.data.write() {
+                Ok(d) => d,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            for y in 0..roi_h {
+                let dst_offset = ((roi_start_y + y) * parent_stride) + roi_start_x * bpp;
+                let src_offset = y * roi_w * bpp;
+                let copy_len = roi_w * bpp;
+                if dst_offset + copy_len <= dst_data.len() && src_offset + copy_len <= src.data.len() {
+                    dst_data[dst_offset..dst_offset + copy_len]
+                        .copy_from_slice(&src.data[src_offset..src_offset + copy_len]);
+                }
             }
         }
         return VX_SUCCESS;
     }
+
+    // Handle external memory images (created from handle)
+    if img.is_external_memory {
+        let num_planes = VxCImage::num_planes(img.format);
+        for plane_idx in 0..num_planes {
+            let plane_offset = VxCImage::plane_offset(img.width, img.height, img.format, plane_idx);
+            let ext_ptr = if plane_idx < img.external_ptrs.len() {
+                img.external_ptrs[plane_idx]
+            } else {
+                std::ptr::null_mut()
+            };
+            if ext_ptr.is_null() {
+                continue;
+            }
+            let ext_stride = if plane_idx < img.external_strides.len() {
+                img.external_strides[plane_idx] as usize
+            } else {
+                VxCImage::plane_size(img.width, img.height, img.format, plane_idx)
+            };
+            let (pw, ph) = VxCImage::plane_dimensions(img.width, img.height, img.format, plane_idx);
+            let stride_x = VxCImage::plane_stride_x(img.format, plane_idx);
+            for y in 0..(ph as usize) {
+                let src_offset = plane_offset + y * (pw as usize) * stride_x;
+                let dst_offset = y * ext_stride;
+                let row_bytes = (pw as usize) * stride_x;
+                if src_offset + row_bytes <= src.data.len() {
+                    std::ptr::copy_nonoverlapping(
+                        src.data.as_ptr().add(src_offset),
+                        ext_ptr.add(dst_offset),
+                        row_bytes,
+                    );
+                }
+            }
+        }
+        return VX_SUCCESS;
+    }
+
+    // For internal memory images, proceed with the original logic
+    let mut dst_data = match img.data.write() {
+        Ok(d) => d,
+        Err(_) => return VX_ERROR_INVALID_REFERENCE,
+    };
 
     if dst_data.len() == src.data.len() {
         // Same format - direct copy
@@ -397,19 +525,22 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
 /// Copy Rust Image data back to C API image - optimized version that handles
 /// RGB→RGBX (which has dst_data.len() == src.data.len() / 3 * 4, not exactly *4/3 due to integer division)
 unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_status {
-    // For ROI images, delegate to the ROI-aware copy function
-    if !dst.is_null() {
-        let img = &*(dst as *const VxCImage);
-        if img.parent.is_some() && !img.roi_offsets.is_empty() {
-            return copy_rust_to_c_image(src, dst);
-        }
-    }
-
     if dst.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
     let img = &*(dst as *const VxCImage);
+
+    // For ROI images or external memory images, delegate to the general copy function
+    if img.parent.is_some() && !img.roi_offsets.is_empty() {
+        return copy_rust_to_c_image(src, dst);
+    }
+
+    // For external memory images, delegate to copy_rust_to_c_image which handles it
+    if img.is_external_memory {
+        return copy_rust_to_c_image(src, dst);
+    }
+
     let mut dst_data = match img.data.write() {
         Ok(d) => d,
         Err(_) => return VX_ERROR_INVALID_REFERENCE,
@@ -531,13 +662,18 @@ unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_imag
         return VX_ERROR_INVALID_FORMAT;
     };
 
-    // If formats match, simple copy
+    // If formats match, simple copy (which handles external memory)
     if src_format == dst_format {
         return copy_rust_to_c_image(src, dst);
     }
 
-    // Format conversion required
+    // External memory images don't support format conversion via this path
     let img = &*(dst as *const VxCImage);
+    if img.is_external_memory {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    // Format conversion required for internal memory images
     let width = img.width;
     let height = img.height;
     let mut dst_data = match img.data.write() {
@@ -2168,17 +2304,23 @@ pub fn vxu_channel_combine_impl(
         let width = img.width as usize;
         let height = img.height as usize;
         let format = img.format as vx_df_image;
+        let out_fmt = match df_image_to_format(format) {
+            Some(f) => f,
+            None => return VX_ERROR_INVALID_FORMAT,
+        };
+
+        // Create a Rust Image for the output
+        let mut dst = match Image::new(width, height, out_fmt) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let dst_data = dst.data_mut();
         
         // Get source plane images
         let y_img = if plane0.is_null() { None } else { c_image_to_rust(plane0) };
         let u_img = if plane1.is_null() { None } else { c_image_to_rust(plane1) };
         let v_img = if plane2.is_null() { None } else { c_image_to_rust(plane2) };
         let a_img = if plane3.is_null() { None } else { c_image_to_rust(plane3) };
-        
-        let mut dst_data = match img.data.write() {
-            Ok(d) => d,
-            Err(_) => return VX_ERROR_INVALID_REFERENCE,
-        };
 
         match format as u32 {
             0x32424752 => { // VX_DF_IMAGE_RGB
@@ -2369,7 +2511,7 @@ pub fn vxu_channel_combine_impl(
             }
         }
 
-        VX_SUCCESS
+        copy_rust_to_c_image(&dst, output)
     }
 }
 
