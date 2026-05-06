@@ -1458,6 +1458,86 @@ while !queue.is_empty() {
                 }
             }
 
+            // Resolve virtual pyramid dimensions
+            for (node_id, params) in &node_params {
+                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                for param_opt in params.iter() {
+                    if let Some(param_ref) = param_opt {
+                        // Check if this is a pyramid reference
+                        let is_pyramid = if let Ok(types) = REFERENCE_TYPES.lock() {
+                            types.get(&(*param_ref as usize)).map(|t| *t == VX_TYPE_PYRAMID).unwrap_or(false)
+                        } else {
+                            false
+                        };
+                        if !is_pyramid {
+                            continue;
+                        }
+                        // Check if it's a virtual pyramid (width/height == 0 or == 1 placeholder)
+                        let pyr = unsafe { &mut *(*param_ref as *mut VxCPyramid) };
+                        if pyr.width > 1 && pyr.height > 1 && pyr.format != VX_DF_IMAGE_VIRT {
+                            continue; // Already resolved
+                        }
+                        // Find input image dimensions from the same node
+                        let mut inferred_width: u32 = 0;
+                        let mut inferred_height: u32 = 0;
+                        let mut inferred_format: vx_df_image = 0;
+                        for other_param in params.iter() {
+                            if let Some(other_ref) = other_param {
+                                if *other_ref == *param_ref {
+                                    continue;
+                                }
+                                if is_image_reference(*other_ref) {
+                                    let img = unsafe { &*(*other_ref as *const VxCImage) };
+                                    if img.width > 0 && img.height > 0 {
+                                        inferred_width = img.width;
+                                        inferred_height = img.height;
+                                        inferred_format = img.format;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if inferred_width > 0 && inferred_height > 0 {
+                            let actual_format = if pyr.format == VX_DF_IMAGE_VIRT || pyr.format == 0 {
+                                if inferred_format != 0 && inferred_format != VX_DF_IMAGE_VIRT { inferred_format } else { 0x38303055 /* VX_DF_IMAGE_U8 */ }
+                            } else {
+                                pyr.format
+                            };
+                            pyr.width = inferred_width;
+                            pyr.height = inferred_height;
+                            pyr.format = actual_format;
+                            // Resize pyramid level images to match inferred dimensions
+                            let is_orb = (pyr.scale - 0.8408964_f32).abs() < 0.001;
+                            for (level_idx, level_ref) in pyr.levels.iter().enumerate() {
+                                let level_scale = if is_orb {
+                                    2.0_f64.powf(-(level_idx as f64) / 4.0) as f32
+                                } else {
+                                    pyr.scale.powi(level_idx as i32)
+                                };
+                                let level_w = ((inferred_width as f32) * level_scale).ceil() as u32;
+                                let level_h = ((inferred_height as f32) * level_scale).ceil() as u32;
+                                let level_w = level_w.max(1);
+                                let level_h = level_h.max(1);
+                                let level_img = unsafe { &mut *(*level_ref as *mut VxCImage) };
+                                if level_img.width != level_w || level_img.height != level_h {
+                                    level_img.width = level_w;
+                                    level_img.height = level_h;
+                                    level_img.format = actual_format;
+                                    // Reallocate image data
+                                    let size = VxCImage::calculate_size(level_w, level_h, actual_format);
+                                    if size > 0 {
+                                        let data = vec![0u8; size];
+                                        if let Ok(mut img_data) = level_img.data.write() {
+                                            *img_data = data;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Call user kernel validator callbacks (only for user-registered kernels)
             for node_id in nodes_vec.iter() {
                 let (kernel_id, param_refs) = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
@@ -1484,19 +1564,26 @@ while !queue.is_empty() {
                 if let Ok(user_kernels) = USER_KERNELS.lock() {
                     if let Some(uk) = user_kernels.get(&user_kernel_key).or_else(|| user_kernels.get(&user_kernel_key_alt)) {
                         if let Some(validate_fn) = uk.validate {
-                            let meta = Box::new(VxMetaFormat {
-                                attributes: Mutex::new(HashMap::new()),
-                            });
-                            let meta_ptr = Box::into_raw(meta) as vx_meta_format;
-                            let num_params = param_refs.len() as vx_uint32;
+                            let num_params = param_refs.len();
+                            // Allocate one VxMetaFormat per parameter (C spec: metas[])
+                            let metas: Vec<Box<VxMetaFormat>> = (0..num_params)
+                                .map(|_| Box::new(VxMetaFormat { attributes: Mutex::new(HashMap::new()) }))
+                                .collect();
+                            let mut meta_ptrs: Vec<vx_meta_format> = metas.iter()
+                                .map(|m| &**m as *const VxMetaFormat as vx_meta_format)
+                                .collect();
                             let node_ptr = *node_id as vx_node;
                             let status = unsafe {
-                                validate_fn(node_ptr, param_refs.as_ptr(), num_params, meta_ptr as vx_reference)
+                                validate_fn(node_ptr, param_refs.as_ptr(), num_params as vx_uint32, meta_ptrs.as_mut_ptr())
                             };
-                            unsafe { let _ = Box::from_raw(meta_ptr); }
                             if status != VX_SUCCESS {
+                                // Drop metas before returning
+                                drop(metas);
                                 return status;
                             }
+                            // After validation, meta format attributes are set but we don't
+                            // need to resolve them here - virtual objects were already resolved above
+                            drop(metas);
                         }
                     }
                 }
@@ -3479,6 +3566,17 @@ pub extern "C" fn vxWaitGraph(graph: vx_graph) -> vx_status {
         None => return VX_ERROR_INVALID_GRAPH,
     };
 
+    // Check if graph is actually running before entering poll loop
+    {
+        let state = g.state.lock().unwrap();
+        match *state {
+            VxGraphState::VxGraphStateCompleted => return VX_SUCCESS,
+            VxGraphState::VxGraphStateAbandoned => return VX_ERROR_GRAPH_ABANDONED,
+            VxGraphState::VxGraphStateRunning => {} // proceed to poll loop
+            _ => return VX_ERROR_INVALID_GRAPH, // not running, don't spin
+        }
+    }
+
     // Poll for completion (no GRAPHS_DATA lock held)
     loop {
         let state = g.state.lock().unwrap();
@@ -4828,7 +4926,7 @@ pub extern "C" fn vxFormatImagePatchAddress2d(
 // ============================================================================
 
 // Callback types
-pub type VxKernelValidateF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32, vx_reference) -> vx_status>;
+pub type VxKernelValidateF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32, *mut vx_meta_format) -> vx_status>;
 pub type VxKernelInitializeF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
 pub type VxKernelDeinitializeF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
 pub type VxKernelExecuteF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
@@ -6585,8 +6683,12 @@ pub extern "C" fn vxCreateVirtualRemap(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
-    // Virtual remaps are created like regular ones but associated with graph
-    vxCreateRemap(graph as vx_context, src_width, src_height, dst_width, dst_height)
+    // Extract context from the graph, don't cast graph pointer directly
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    vxCreateRemap(context, src_width, src_height, dst_width, dst_height)
 }
 
 /// Create a virtual tensor (for graph intermediate results)
@@ -8449,9 +8551,35 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
     } else {
         // epsilon is required, create default
         let default_epsilon: vx_float32 = 0.001;
-        let mut eps_scalar = vxCreateScalar(context, VX_TYPE_FLOAT32, &default_epsilon as *const _ as *const c_void);
+        let eps_scalar = vxCreateScalar(context, VX_TYPE_FLOAT32, &default_epsilon as *const _ as *const c_void);
         params.push(eps_scalar as vx_reference);
-        // Note: we're leaking this scalar but it will be released when node is released
+    }
+
+    // Add num_iterations as param 8 (required)
+    if !_num_iterations.is_null() {
+        params.push(_num_iterations as vx_reference);
+    } else {
+        let default_iters: vx_uint32 = 10;
+        let iters_scalar = vxCreateScalar(context, VX_TYPE_UINT32, &default_iters as *const _ as *const c_void);
+        params.push(iters_scalar as vx_reference);
+    }
+
+    // Add use_initial_estimate as param 9 (required)
+    if !_use_initial_estimate.is_null() {
+        params.push(_use_initial_estimate as vx_reference);
+    } else {
+        let default_use_init: vx_bool = 0; // vx_false_e
+        let use_init_scalar = vxCreateScalar(context, VX_TYPE_BOOL, &default_use_init as *const _ as *const c_void);
+        params.push(use_init_scalar as vx_reference);
+    }
+
+    // Add window_dimension as param 10 (required)
+    if !_window_dimension.is_null() {
+        params.push(_window_dimension as vx_reference);
+    } else {
+        let default_window: vx_size = 9;
+        let window_scalar = vxCreateScalar(context, VX_TYPE_SIZE, &default_window as *const _ as *const c_void);
+        params.push(window_scalar as vx_reference);
     }
 
     let node = create_node_with_params(
