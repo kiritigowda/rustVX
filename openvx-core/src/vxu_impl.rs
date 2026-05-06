@@ -4388,16 +4388,343 @@ pub fn vxu_gaussian_pyramid_impl(
         }
         copy_rust_to_c_image(&dst0, level0);
 
-        // Generate subsequent levels using half-scale gaussian
+        // Generate subsequent levels using Gaussian blur + downscale
+        let is_half_scale = (pyramid.scale - 0.5_f32).abs() < 0.001;
         for level_idx in 1..num_levels {
             let prev_level = pyramid.levels.get(level_idx - 1).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
             let curr_level = pyramid.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
             if prev_level.is_null() || curr_level.is_null() {
                 break;
             }
-            vxu_half_scale_gaussian_impl(context, prev_level, curr_level, 5);
+
+            if is_half_scale {
+                vxu_half_scale_gaussian_impl(context, prev_level, curr_level, 5);
+            } else {
+                // For non-half-scale (e.g., ORB): Gaussian 5x5 blur + nearest-neighbor resample
+                // Uses integer arithmetic (>> 8) to match CTS reference
+                let prev_img = match c_image_to_rust(prev_level) {
+                    Some(img) => img,
+                    None => break,
+                };
+                let (prev_w, prev_h) = (prev_img.width(), prev_img.height());
+
+                // 5x5 Gaussian kernel weights (integer)
+                let kernel: [i32; 25] = [
+                    1, 4, 6, 4, 1,
+                    4, 16, 24, 16, 4,
+                    6, 24, 36, 24, 6,
+                    4, 16, 24, 16, 4,
+                    1, 4, 6, 4, 1,
+                ];
+
+                let mut blurred = vec![0u8; prev_w * prev_h];
+                for y in 0..prev_h {
+                    for x in 0..prev_w {
+                        let mut sum: i32 = 0;
+                        for ky in 0..5_i32 {
+                            for kx in 0..5_i32 {
+                                let sy = (y as i32 + ky - 2).clamp(0, prev_h as i32 - 1) as usize;
+                                let sx = (x as i32 + kx - 2).clamp(0, prev_w as i32 - 1) as usize;
+                                sum += prev_img.get_pixel(sx, sy) as i32 * kernel[(ky * 5 + kx) as usize];
+                            }
+                        }
+                        blurred[y * prev_w + x] = (sum >> 8).clamp(0, 255) as u8;
+                    }
+                }
+
+                // Nearest-neighbor resample with center-to-center coordinate mapping
+                let (curr_w, curr_h, curr_fmt) = match get_image_info(curr_level) {
+                    Some(info) => (info.0 as usize, info.1 as usize, info.2),
+                    None => break,
+                };
+                let dst_fmt = match df_image_to_format(curr_fmt) {
+                    Some(f) => f,
+                    None => break,
+                };
+                let mut dst_img = match Image::new(curr_w, curr_h, dst_fmt) {
+                    Some(img) => img,
+                    None => break,
+                };
+
+                for dy in 0..curr_h {
+                    for dx in 0..curr_w {
+                        // Center-to-center mapping: x_src = ((dx + 0.5) * prev_w / curr_w) - 0.5
+                        let src_x = ((dx as f64 + 0.5) * prev_w as f64 / curr_w as f64) - 0.5;
+                        let src_y = ((dy as f64 + 0.5) * prev_h as f64 / curr_h as f64) - 0.5;
+                        let x_int = (src_x.round() as isize).clamp(0, prev_w as isize - 1) as usize;
+                        let y_int = (src_y.round() as isize).clamp(0, prev_h as isize - 1) as usize;
+                        dst_img.set_pixel(dx, dy, blurred[y_int * prev_w + x_int]);
+                    }
+                }
+                copy_rust_to_c_image(&dst_img, curr_level);
+            }
         }
 
+        VX_SUCCESS
+    }
+}
+
+/// ===========================================================================
+/// VXU Laplacian Pyramid Functions
+/// ===========================================================================
+
+/// Laplacian pyramid: compute Gaussian pyramid, then take differences
+pub fn vxu_laplacian_pyramid_impl(
+    context: vx_context,
+    input: vx_image,
+    laplacian: vx_pyramid,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || input.is_null() || laplacian.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let pyr = &*(laplacian as *const VxCPyramid);
+        let num_levels = pyr.num_levels;
+
+        // Build Gaussian pyramid using a temporary vx_pyramid (levels+1 levels, HALF scale)
+        // CTS reference builds its Gaussian pyramid by calling vxuGaussianPyramid
+        let (src_w, src_h, _) = match get_image_info(input) {
+            Some(info) => (info.0, info.1, info.2),
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        extern "C" {
+            fn vxCreatePyramid(ctx: vx_context, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid;
+            fn vxReleasePyramid(pyr: *mut vx_pyramid) -> vx_status;
+        }
+        let gauss_pyr = vxCreatePyramid(
+            context,
+            (num_levels + 1) as vx_size,
+            0.5_f32, // VX_SCALE_PYRAMID_HALF
+            src_w,
+            src_h,
+            0x30303855, // VX_DF_IMAGE_U8
+        );
+        if gauss_pyr.is_null() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Build the Gaussian pyramid
+        let status = vxu_gaussian_pyramid_impl(context, input, gauss_pyr);
+        if status != VX_SUCCESS {
+            vxReleasePyramid(&mut (gauss_pyr as vx_pyramid));
+            return status;
+        }
+
+        let gauss = &*(gauss_pyr as *const VxCPyramid);
+
+        // Compute Laplacian levels: L[i] = G[i] - expand(G[i+1])
+        for level_idx in 0..num_levels {
+            let level_img = pyr.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+            if level_img.is_null() { break; }
+
+            let g_curr = gauss.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+            let g_next = gauss.levels.get(level_idx + 1).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+            if g_curr.is_null() || g_next.is_null() { break; }
+
+            // Use vxuSubtract: L[i] = G[i] - expand(G[i+1])
+            // First expand G[i+1] to size of G[i]
+            let (gw, gh, _) = match get_image_info(g_curr) {
+                Some(info) => (info.0 as usize, info.1 as usize, info.2),
+                None => break,
+            };
+            let (nw, nh, _) = match get_image_info(g_next) {
+                Some(info) => (info.0 as usize, info.1 as usize, info.2),
+                None => break,
+            };
+            let next_img = match c_image_to_rust(g_next) {
+                Some(img) => img,
+                None => break,
+            };
+            let curr_img = match c_image_to_rust(g_curr) {
+                Some(img) => img,
+                None => break,
+            };
+
+            // Burt-Adelson expand: zero-interleave, convolve 5x5 Gaussian, multiply by 4
+            // Step 1: zero-interleave next into gw x gh
+            let mut interleaved = vec![0u8; gw * gh];
+            for y in 0..gh {
+                for x in 0..gw {
+                    if x % 2 == 0 && y % 2 == 0 {
+                        let sx = x / 2;
+                        let sy = y / 2;
+                        if sx < nw && sy < nh {
+                            interleaved[y * gw + x] = next_img.get_pixel(sx, sy);
+                        }
+                    }
+                }
+            }
+
+            // Step 2: convolve with 5x5 Gaussian (integer arithmetic, /256)
+            let kernel: [i32; 25] = [
+                1, 4, 6, 4, 1,
+                4, 16, 24, 16, 4,
+                6, 24, 36, 24, 6,
+                4, 16, 24, 16, 4,
+                1, 4, 6, 4, 1,
+            ];
+            let mut convolved = vec![0i16; gw * gh];
+            for y in 0..gh {
+                for x in 0..gw {
+                    let mut sum: i32 = 0;
+                    for ky in 0..5_i32 {
+                        for kx in 0..5_i32 {
+                            let sy = (y as i32 + ky - 2).clamp(0, gh as i32 - 1) as usize;
+                            let sx = (x as i32 + kx - 2).clamp(0, gw as i32 - 1) as usize;
+                            sum += interleaved[sy * gw + sx] as i32 * kernel[(ky * 5 + kx) as usize];
+                        }
+                    }
+                    convolved[y * gw + x] = (sum / 256) as i16;
+                }
+            }
+
+            // Step 3: multiply by 4
+            for v in convolved.iter_mut() {
+                *v = (*v * 4).clamp(-32768, 32767);
+            }
+
+            // Step 4: L[i] = G[i] - expanded
+            let (lw, lh, _) = match get_image_info(level_img) {
+                Some(info) => (info.0 as usize, info.1 as usize, info.2),
+                None => break,
+            };
+            let img_ref = &*(level_img as *const VxCImage);
+            if let Ok(mut data) = img_ref.data.write() {
+                for y in 0..gh.min(lh) {
+                    for x in 0..gw.min(lw) {
+                        let curr_val = curr_img.get_pixel(x, y) as i16;
+                        let expanded = convolved[y * gw + x];
+                        let diff = (curr_val - expanded).clamp(-32768, 32767);
+                        let offset = (y * lw + x) * 2;
+                        if offset + 1 < data.len() {
+                            let bytes = diff.to_le_bytes();
+                            data[offset] = bytes[0];
+                            data[offset + 1] = bytes[1];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Output image = lowest Gaussian level (G[num_levels])
+        let last_gauss = gauss.levels.get(num_levels).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+        if !last_gauss.is_null() {
+            let last_img = c_image_to_rust(last_gauss);
+            if let Some(img) = last_img {
+                copy_rust_to_c_image(&img, output);
+            }
+        }
+
+        vxReleasePyramid(&mut (gauss_pyr as vx_pyramid));
+        VX_SUCCESS
+    }
+}
+
+/// Laplacian reconstruct: upsample and add Laplacian levels back
+pub fn vxu_laplacian_reconstruct_impl(
+    context: vx_context,
+    laplacian: vx_pyramid,
+    input: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || laplacian.is_null() || input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let pyr = &*(laplacian as *const VxCPyramid);
+        let num_levels = pyr.num_levels;
+
+        // Start from the lowest resolution (input image)
+        let mut current = match c_image_to_rust(input) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Reconstruct from bottom to top: G[i] = expand(G[i+1]) + L[i]
+        for level_idx in (0..num_levels).rev() {
+            let level_img = pyr.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+            if level_img.is_null() { break; }
+            let (lw, lh, _) = match get_image_info(level_img) {
+                Some(info) => (info.0 as usize, info.1 as usize, info.2),
+                None => break,
+            };
+
+            // Read Laplacian level data (S16)
+            let img_ref = &*(level_img as *const VxCImage);
+            let lap_data = match img_ref.data.read() {
+                Ok(d) => d.clone(),
+                Err(_) => break,
+            };
+
+            let (cw, ch) = (current.width(), current.height());
+
+            // Burt-Adelson expand current to lw x lh
+            // Step 1: zero-interleave
+            let mut interleaved = vec![0u8; lw * lh];
+            for y in 0..lh {
+                for x in 0..lw {
+                    if x % 2 == 0 && y % 2 == 0 {
+                        let sx = x / 2;
+                        let sy = y / 2;
+                        if sx < cw && sy < ch {
+                            interleaved[y * lw + x] = current.get_pixel(sx, sy);
+                        }
+                    }
+                }
+            }
+
+            // Step 2: convolve with 5x5 Gaussian (integer, /256)
+            let kernel: [i32; 25] = [
+                1, 4, 6, 4, 1,
+                4, 16, 24, 16, 4,
+                6, 24, 36, 24, 6,
+                4, 16, 24, 16, 4,
+                1, 4, 6, 4, 1,
+            ];
+            let mut expanded = vec![0i16; lw * lh];
+            for y in 0..lh {
+                for x in 0..lw {
+                    let mut sum: i32 = 0;
+                    for ky in 0..5_i32 {
+                        for kx in 0..5_i32 {
+                            let sy = (y as i32 + ky - 2).clamp(0, lh as i32 - 1) as usize;
+                            let sx = (x as i32 + kx - 2).clamp(0, lw as i32 - 1) as usize;
+                            sum += interleaved[sy * lw + sx] as i32 * kernel[(ky * 5 + kx) as usize];
+                        }
+                    }
+                    // Divide by 256 then multiply by 4
+                    expanded[y * lw + x] = ((sum / 256) * 4).clamp(-32768, 32767) as i16;
+                }
+            }
+
+            // Step 3: reconstruct = expand(current) + Laplacian
+            let mut reconstructed = match Image::new(lw, lh, ImageFormat::Gray) {
+                Some(img) => img,
+                None => break,
+            };
+
+            for y in 0..lh {
+                for x in 0..lw {
+                    let exp_val = expanded[y * lw + x] as i32;
+                    let offset = (y * lw + x) * 2;
+                    let lap_val = if offset + 1 < lap_data.len() {
+                        i16::from_le_bytes([lap_data[offset], lap_data[offset + 1]]) as i32
+                    } else {
+                        0
+                    };
+                    let val = (exp_val + lap_val).clamp(0, 255) as u8;
+                    reconstructed.set_pixel(x, y, val);
+                }
+            }
+
+            current = reconstructed;
+        }
+
+        // Copy result to output
+        copy_rust_to_c_image(&current, output);
         VX_SUCCESS
     }
 }
@@ -5419,15 +5746,16 @@ fn min_max_loc(src: &Image) -> VxResult<MinMaxLocResult> {
 }
 
 fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
-    let width = src.width;
-    let height = src.height;
-    // Use saturating_mul to prevent integer overflow
-    let pixel_count = width.saturating_mul(height) as f32;
+    let (sx, sy, ex, ey) = src.valid_rect();
+    let pixel_count = (ex - sx).saturating_mul(ey - sy) as f32;
+    if pixel_count == 0.0 {
+        return Ok((0.0, 0.0));
+    }
 
     // Compute mean
     let mut sum: u64 = 0;
-    for y in 0..height {
-        for x in 0..width {
+    for y in sy..ey {
+        for x in sx..ex {
             sum += src.get_pixel(x, y) as u64;
         }
     }
@@ -5435,8 +5763,8 @@ fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
 
     // Compute variance
     let mut sum_sq_diff: f64 = 0.0;
-    for y in 0..height {
-        for x in 0..width {
+    for y in sy..ey {
+        for x in sx..ex {
             let diff = src.get_pixel(x, y) as f32 - mean;
             sum_sq_diff += (diff * diff) as f64;
         }

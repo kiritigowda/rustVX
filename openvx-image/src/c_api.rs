@@ -2179,11 +2179,18 @@ pub extern "C" fn vxCreatePyramid(
     let mut level_images: Vec<usize> = Vec::with_capacity(levels_usize);
 
     // Create images for each level
+    // VX_SCALE_PYRAMID_ORB uses 2^(-level/4) per the OpenVX spec
+    let is_orb = (scale - 0.8408964_f32).abs() < 0.001;
     for level in 0..levels_usize {
-        // Calculate dimensions for this level using scale^level
-        let level_scale = scale.powi(level as i32);
-        let level_width = (width as f32 * level_scale) as vx_uint32;
-        let level_height = (height as f32 * level_scale) as vx_uint32;
+        let level_scale = if is_orb {
+            // ORB scale: 2^(-level/4)
+            2.0_f64.powf(-(level as f64) / 4.0) as f32
+        } else {
+            scale.powi(level as i32)
+        };
+        // Use ceil per OpenVX spec for dimension computation
+        let level_width = (width as f32 * level_scale).ceil() as vx_uint32;
+        let level_height = (height as f32 * level_scale).ceil() as vx_uint32;
 
         // Ensure minimum dimensions of 1x1
         let level_width = level_width.max(1);

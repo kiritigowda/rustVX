@@ -670,6 +670,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         verified: std::sync::Mutex::new(false),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
         run_count: std::sync::atomic::AtomicU64::new(0),
+        replicated_nodes: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
@@ -1665,15 +1666,33 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
         return std::ptr::null_mut();
     };
     
+    // Look up parameter direction from user kernel params or built-in kernel info
+    let (direction, data_type, state) = {
+        let kernel_enum = kernel_id as crate::unified_c_api::vx_enum;
+        if let Ok(params) = crate::unified_c_api::USER_KERNEL_PARAMS.lock() {
+            if let Some(param_list) = params.get(&kernel_enum) {
+                if let Some(p) = param_list.get(index as usize) {
+                    (p.direction, p.data_type, p.state)
+                } else {
+                    (0, 0, 1) // defaults
+                }
+            } else {
+                (0, 0, 1)
+            }
+        } else {
+            (0, 0, 1)
+        }
+    };
+
     let id = generate_id();
     let param = Arc::new(ParameterData {
         id,
         context_id,
         kernel_id,
         index,
-        direction: 0, // VX_INPUT
-        data_type: 0,
-        state: 1, // VX_PARAMETER_STATE_REQUIRED
+        direction,
+        data_type,
+        state,
         value: Mutex::new(None),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
     });
