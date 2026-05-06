@@ -1,6 +1,6 @@
 # rustVX
 
-[![OpenVX Conformance](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml/badge.svg)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml)
+[![OpenVX Conformance](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml)
 
 An [OpenVX 1.3.1](https://www.khronos.org/openvx/) implementation written in Rust. rustVX provides the complete OpenVX Vision Feature Set through a standard C API (`libopenvx_ffi`), enabling existing OpenVX applications to use a memory-safe, portable backend with no source changes.
 
