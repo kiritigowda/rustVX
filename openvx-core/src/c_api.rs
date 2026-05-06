@@ -1644,13 +1644,22 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
         return std::ptr::null_mut();
     }
     let kernel_id = kernel as u64;
-    
-    // Get context_id from kernel
+
+    // Get context_id from kernel - check both built-in and user kernels
     let context_id = if let Ok(kernels) = KERNELS.lock() {
         if let Some(k) = kernels.get(&kernel_id) {
             k.context_id
         } else {
-            return std::ptr::null_mut();
+            // Check user kernels in unified_c_api (keyed by enumeration value)
+            if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
+                if let Some(uk) = user_kernels.get(&(kernel_id as crate::unified_c_api::vx_enum)) {
+                    uk.context_id as u32
+                } else {
+                    return std::ptr::null_mut();
+                }
+            } else {
+                return std::ptr::null_mut();
+            }
         }
     } else {
         return std::ptr::null_mut();

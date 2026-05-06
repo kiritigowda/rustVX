@@ -3328,7 +3328,8 @@ pub fn vxu_min_max_loc_impl(
     max_val_scalar: vx_scalar,
     min_loc_array: vx_array,
     max_loc_array: vx_array,
-    num_min_max_scalar: vx_scalar,
+    min_count_scalar: vx_scalar,
+    max_count_scalar: vx_scalar,
 ) -> vx_status {
     if context.is_null() || input.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -3340,50 +3341,77 @@ pub fn vxu_min_max_loc_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
+        let is_s16 = matches!(src.format, ImageFormat::GrayS16);
+
         match min_max_loc(&src) {
-            Ok((min_val, max_val, min_loc, max_loc)) => {
-                // Write min/max values to scalars
+            Ok(result) => {
+                // Write min/max values as the native image data type
                 if !min_val_scalar.is_null() {
-                    // For U8 images, min/max are written as the image data type
-                    let min_v = min_val as f32;
-                    crate::c_api_data::vxCopyScalarData(
-                        min_val_scalar,
-                        &min_v as *const f32 as *mut c_void,
-                        0x11002, 0x0
-                    );
+                    if is_s16 {
+                        let v = result.min_val as i16;
+                        crate::c_api_data::vxCopyScalarData(
+                            min_val_scalar,
+                            &v as *const i16 as *mut c_void,
+                            0x11002, 0x0
+                        );
+                    } else {
+                        let v = result.min_val as u8;
+                        crate::c_api_data::vxCopyScalarData(
+                            min_val_scalar,
+                            &v as *const u8 as *mut c_void,
+                            0x11002, 0x0
+                        );
+                    }
                 }
                 if !max_val_scalar.is_null() {
-                    let max_v = max_val as f32;
+                    if is_s16 {
+                        let v = result.max_val as i16;
+                        crate::c_api_data::vxCopyScalarData(
+                            max_val_scalar,
+                            &v as *const i16 as *mut c_void,
+                            0x11002, 0x0
+                        );
+                    } else {
+                        let v = result.max_val as u8;
+                        crate::c_api_data::vxCopyScalarData(
+                            max_val_scalar,
+                            &v as *const u8 as *mut c_void,
+                            0x11002, 0x0
+                        );
+                    }
+                }
+                // Write min/max locations to arrays
+                extern "C" {
+                    fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+                    fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+                }
+                if !min_loc_array.is_null() {
+                    vxTruncateArray(min_loc_array, 0);
+                    let coords: Vec<vx_coordinates2d_t> = result.min_locs.iter().map(|c| vx_coordinates2d_t { x: c.x as u32, y: c.y as u32 }).collect();
+                    if !coords.is_empty() {
+                        vxAddArrayItems(min_loc_array, coords.len() as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                    }
+                }
+                if !max_loc_array.is_null() {
+                    vxTruncateArray(max_loc_array, 0);
+                    let coords: Vec<vx_coordinates2d_t> = result.max_locs.iter().map(|c| vx_coordinates2d_t { x: c.x as u32, y: c.y as u32 }).collect();
+                    if !coords.is_empty() {
+                        vxAddArrayItems(max_loc_array, coords.len() as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                    }
+                }
+                if !min_count_scalar.is_null() {
+                    let count = result.min_locs.len() as u32;
                     crate::c_api_data::vxCopyScalarData(
-                        max_val_scalar,
-                        &max_v as *const f32 as *mut c_void,
+                        min_count_scalar,
+                        &count as *const u32 as *mut c_void,
                         0x11002, 0x0
                     );
                 }
-                // Write min/max locations to arrays
-                if !min_loc_array.is_null() {
-                    extern "C" {
-                        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
-                        fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
-                    }
-                    vxTruncateArray(min_loc_array, 0);
-                    let coord = vx_coordinates2d_t { x: min_loc.x as u32, y: min_loc.y as u32 };
-                    vxAddArrayItems(min_loc_array, 1, &coord as *const _ as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
-                }
-                if !max_loc_array.is_null() {
-                    extern "C" {
-                        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
-                        fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
-                    }
-                    vxTruncateArray(max_loc_array, 0);
-                    let coord = vx_coordinates2d_t { x: max_loc.x as u32, y: max_loc.y as u32 };
-                    vxAddArrayItems(max_loc_array, 1, &coord as *const _ as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
-                }
-                if !num_min_max_scalar.is_null() {
-                    let num: usize = 1;
+                if !max_count_scalar.is_null() {
+                    let count = result.max_locs.len() as u32;
                     crate::c_api_data::vxCopyScalarData(
-                        num_min_max_scalar,
-                        &num as *const usize as *mut c_void,
+                        max_count_scalar,
+                        &count as *const u32 as *mut c_void,
                         0x11002, 0x0
                     );
                 }
@@ -5331,32 +5359,56 @@ fn weighted(src1: &Image, src2: &Image, dst: &mut Image, alpha_f32: f32) -> VxRe
 // Statistics
 // ============================================================================
 
-fn min_max_loc(src: &Image) -> VxResult<(u8, u8, Coordinate, Coordinate)> {
+struct MinMaxLocResult {
+    min_val: i64,
+    max_val: i64,
+    min_locs: Vec<Coordinate>,
+    max_locs: Vec<Coordinate>,
+}
+
+fn min_max_loc(src: &Image) -> VxResult<MinMaxLocResult> {
     let width = src.width;
     let height = src.height;
+    let is_s16 = matches!(src.format, ImageFormat::GrayS16);
 
-    let mut min_val: u8 = 255;
-    let mut max_val: u8 = 0;
-    let mut min_loc = Coordinate { x: 0, y: 0 };
-    let mut max_loc = Coordinate { x: 0, y: 0 };
+    let mut min_val: i64 = i64::MAX;
+    let mut max_val: i64 = i64::MIN;
+    let mut min_locs: Vec<Coordinate> = Vec::new();
+    let mut max_locs: Vec<Coordinate> = Vec::new();
 
     for y in 0..height {
         for x in 0..width {
-            let val = src.get_pixel(x, y);
+            let val = if is_s16 {
+                let idx = (y * width + x) * 2;
+                let data = src.data();
+                if idx + 1 < data.len() {
+                    i16::from_le_bytes([data[idx], data[idx + 1]]) as i64
+                } else {
+                    0i64
+                }
+            } else {
+                src.get_pixel(x, y) as i64
+            };
 
             if val < min_val {
                 min_val = val;
-                min_loc = Coordinate { x, y };
+                min_locs.clear();
+                min_locs.push(Coordinate { x, y });
+            } else if val == min_val {
+                min_locs.push(Coordinate { x, y });
             }
 
             if val > max_val {
                 max_val = val;
-                max_loc = Coordinate { x, y };
+                max_locs.clear();
+                max_locs.push(Coordinate { x, y });
+            } else if val == max_val {
+                max_locs.push(Coordinate { x, y });
             }
         }
     }
 
-    Ok((min_val, max_val, min_loc, max_loc))
+    Ok(MinMaxLocResult { min_val, max_val, min_locs, max_locs })
 }
 
 fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
@@ -5408,23 +5460,37 @@ fn integral_image(src: &Image, dst: &mut Image) -> VxResult<()> {
     let height = src.height;
 
     let dst_data = dst.data_mut();
+    // dst is U32 format: 4 bytes per pixel, stored as little-endian
 
     for y in 0..height {
-        let mut row_sum = 0u32;
+        let mut row_sum: u32 = 0;
         for x in 0..width {
             row_sum += src.get_pixel(x, y) as u32;
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if idx < dst_data.len() {
-                let new_val = if y == 0 {
-                    (row_sum.min(255) >> 8) as u8
+            let above = if y > 0 {
+                // Read U32 value from the pixel above
+                let above_offset = ((y - 1) * width + x) * 4;
+                if above_offset + 4 <= dst_data.len() {
+                    u32::from_le_bytes([
+                        dst_data[above_offset],
+                        dst_data[above_offset + 1],
+                        dst_data[above_offset + 2],
+                        dst_data[above_offset + 3],
+                    ])
                 } else {
-                    let prev_idx = (y - 1).saturating_mul(width).saturating_add(x);
-                    let prev_val = dst_data.get(prev_idx).copied().unwrap_or(0);
-                    ((row_sum + (prev_val as u32 * 256)).min(255) >> 8) as u8
-                };
-                if let Some(d) = dst_data.get_mut(idx) {
-                    *d = new_val;
+                    0
                 }
+            } else {
+                0
+            };
+            let val = row_sum + above;
+            // Write U32 value as little-endian bytes
+            let offset = (y * width + x) * 4;
+            if offset + 4 <= dst_data.len() {
+                let bytes = val.to_le_bytes();
+                dst_data[offset] = bytes[0];
+                dst_data[offset + 1] = bytes[1];
+                dst_data[offset + 2] = bytes[2];
+                dst_data[offset + 3] = bytes[3];
             }
         }
     }
@@ -6474,12 +6540,21 @@ pub fn vxu_equalize_histogram_impl(
             cdf[i] = sum;
         }
 
-        // Normalize CDF
+        // Find the first non-zero bin (cdf_min)
         let total_pixels = src.width.saturating_mul(src.height) as u32;
         let mut equalized = [0u8; 256];
-        if total_pixels > 0 {
+        let cdf_min = cdf.iter().copied().find(|&v| v > 0).unwrap_or(0);
+        let scale = total_pixels - cdf_min;
+        if scale > 0 {
             for i in 0..256 {
-                equalized[i] = ((cdf[i] as u64 * 255u64) / total_pixels as u64) as u8;
+                if cdf[i] == 0 {
+                    equalized[i] = 0;
+                } else {
+                    // OpenVX spec formula: dst(x,y) = (cdf(src(x,y)) - cdf_min) * 255 / (M*N - cdf_min)
+                    // with rounding: (val * 255 + scale/2) / scale
+                    let val = (cdf[i] - cdf_min) as u64;
+                    equalized[i] = ((val * 255 + (scale as u64) / 2) / scale as u64) as u8;
+                }
             }
         }
 

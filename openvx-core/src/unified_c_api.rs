@@ -1035,7 +1035,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.canny_edge_detector", vec![4]),
                 ("org.khronos.openvx.fast_corners", vec![3, 4]),  // [input, thresh, nonmax, corners, num_corners]
                 // 6-param kernels
-                ("org.khronos.openvx.minmaxloc", vec![1, 2, 3, 4, 5]),  // [input, min_val, max_val, min_loc, max_loc, num_min_max]
+                ("org.khronos.openvx.minmaxloc", vec![1, 2, 3, 4, 5, 6]),  // [input, min_val, max_val, min_loc, max_loc, min_count, max_count]
                 // 7-param kernels
                 ("org.khronos.openvx.multiply", vec![5]),  // [in1, in2, scale, overflow, rounding, output]
                 ("org.khronos.openvx.harris_corners", vec![6, 7]),  // [input, strength_thresh, min_distance, sensitivity, gs, bs, corners, num_corners]
@@ -3020,8 +3020,11 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
                 if !input.is_null() && !output.is_null() {
-                    // stub - returns success for now
-                    VX_SUCCESS
+                    crate::vxu_impl::vxu_equalize_histogram_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        output,
+                    )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
@@ -3051,13 +3054,14 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
         }
         // MinMaxLoc
         "org.khronos.openvx.minmaxloc" => {
-            if params.len() >= 6 {
+            if params.len() >= 1 {
                 let input = params[0] as vx_image;
                 let min_val = params.get(1).copied().unwrap_or(std::ptr::null_mut()) as vx_scalar;
                 let max_val = params.get(2).copied().unwrap_or(std::ptr::null_mut()) as vx_scalar;
                 let min_loc = params.get(3).copied().unwrap_or(std::ptr::null_mut()) as vx_array;
                 let max_loc = params.get(4).copied().unwrap_or(std::ptr::null_mut()) as vx_array;
-                let num_min_max = params.get(5).copied().unwrap_or(std::ptr::null_mut()) as vx_scalar;
+                let min_count = params.get(5).copied().unwrap_or(std::ptr::null_mut()) as vx_scalar;
+                let max_count = params.get(6).copied().unwrap_or(std::ptr::null_mut()) as vx_scalar;
                 if !input.is_null() {
                     crate::vxu_impl::vxu_min_max_loc_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -3066,7 +3070,8 @@ fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], borde
                         max_val,
                         min_loc,
                         max_loc,
-                        num_min_max
+                        min_count,
+                        max_count,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -5130,8 +5135,9 @@ pub extern "C" fn vxGetUserStructEnumByName(
 // 9. Node Target
 // ============================================================================
 
-// Target constants
-pub const VX_TARGET_ANY: vx_enum = 0x00;
+// Target constants (VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_TARGET) = 0x13000)
+pub const VX_TARGET_ANY: vx_enum = 0x13000;
+pub const VX_TARGET_STRING: vx_enum = 0x13001;
 pub const VX_TARGET_CPU: vx_enum = 0x01;
 pub const VX_TARGET_GPU: vx_enum = 0x02;
 pub const VX_TARGET_DSP: vx_enum = 0x03;
@@ -5150,7 +5156,7 @@ pub extern "C" fn vxSetNodeTarget(
 
     // Validate target
     match target_enum {
-        VX_TARGET_ANY | VX_TARGET_CPU | VX_TARGET_GPU | VX_TARGET_DSP | VX_TARGET_ACCELERATOR => {
+        VX_TARGET_ANY | VX_TARGET_STRING | VX_TARGET_CPU | VX_TARGET_GPU | VX_TARGET_DSP | VX_TARGET_ACCELERATOR => {
             // Store target preference (implementation would use this)
             VX_SUCCESS
         }
@@ -7904,13 +7910,14 @@ pub extern "C" fn vxMinMaxLocNode(
     max_val: vx_scalar,
     min_loc: vx_array,
     max_loc: vx_array,
-    num_min_max: vx_scalar,
+    min_count: vx_scalar,
+    max_count: vx_scalar,
 ) -> vx_node {
     if graph.is_null() || input.is_null() {
         return std::ptr::null_mut();
     }
 
-    // MinMaxLoc has 6 params: input, min_val, max_val, min_loc, max_loc, num_min_max
+    // MinMaxLoc has 7 params: input, min_val, max_val, min_loc, max_loc, min_count, max_count
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
@@ -7966,8 +7973,16 @@ pub extern "C" fn vxMinMaxLocNode(
         }
     }
 
-    if !num_min_max.is_null() {
-        status = crate::c_api::vxSetParameterByIndex(node, 5, num_min_max as vx_reference);
+    if !min_count.is_null() {
+        status = crate::c_api::vxSetParameterByIndex(node, 5, min_count as vx_reference);
+        if status != crate::c_api::VX_SUCCESS {
+            crate::c_api::vxReleaseNode(&mut node);
+            return std::ptr::null_mut();
+        }
+    }
+
+    if !max_count.is_null() {
+        status = crate::c_api::vxSetParameterByIndex(node, 6, max_count as vx_reference);
         if status != crate::c_api::VX_SUCCESS {
             crate::c_api::vxReleaseNode(&mut node);
             return std::ptr::null_mut();
@@ -8955,13 +8970,14 @@ pub extern "C" fn vxuMeanStdDev(
 pub extern "C" fn vxuMinMaxLoc(
     context: vx_context,
     input: vx_image,
-    _min_val: vx_scalar,
-    _max_val: vx_scalar,
-    _min_loc: vx_array,
-    _max_loc: vx_array,
-    _num_min_max: vx_scalar,
+    min_val: vx_scalar,
+    max_val: vx_scalar,
+    min_loc: vx_array,
+    max_loc: vx_array,
+    min_count: vx_scalar,
+    max_count: vx_scalar,
 ) -> i32 {
-    crate::vxu_impl::vxu_min_max_loc_impl(context, input, _min_val, _max_val, _min_loc, _max_loc, _num_min_max)
+    crate::vxu_impl::vxu_min_max_loc_impl(context, input, min_val, max_val, min_loc, max_loc, min_count, max_count)
 }
 
 #[no_mangle]
@@ -9870,26 +9886,31 @@ pub extern "C" fn vxConvertDepthNode(graph: vx_graph, input: vx_image, output: v
     }
     // Create policy scalar
     let mut policy_val = policy;
-    let policy_scalar = vxCreateScalar(context, 0x0A, &mut policy_val as *mut vx_enum as *mut c_void);
+    let mut policy_scalar = vxCreateScalar(context, 0x0A, &mut policy_val as *mut vx_enum as *mut c_void);
     if policy_scalar.is_null() {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
     status = crate::c_api::vxSetParameterByIndex(node, 2, policy_scalar as vx_reference);
     if status != VX_SUCCESS {
+        vxReleaseScalar(&mut policy_scalar);
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
     // shift is already a vx_scalar
     if shift.is_null() {
+        vxReleaseScalar(&mut policy_scalar);
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
     status = crate::c_api::vxSetParameterByIndex(node, 3, shift as vx_reference);
     if status != VX_SUCCESS {
+        vxReleaseScalar(&mut policy_scalar);
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
     }
+    // Release the temporary policy scalar - the node now holds its own reference
+    vxReleaseScalar(&mut policy_scalar);
     node
 }
 
@@ -10316,7 +10337,7 @@ pub extern "C" fn vxuEqualizeHist(context: vx_context, input: vx_image, output: 
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    VX_SUCCESS
+    crate::vxu_impl::vxu_equalize_histogram_impl(context, input, output)
 }
 
 /// Fast corners node
