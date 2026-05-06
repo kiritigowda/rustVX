@@ -23,7 +23,7 @@ The workspace compiles into a single shared library (`libopenvx_ffi.so` / `.dyli
 
 | Tool | Version |
 |------|---------|
-| [Rust](https://rustup.rs/) | stable (1.70+) |
+| [Rust](https://rustup.rs/) | stable |
 | C compiler | gcc, clang, or MSVC |
 | [CMake](https://cmake.org/) | 3.10+ |
 | Make or Ninja | for building the CTS |
@@ -49,7 +49,7 @@ The shared library is produced at:
 
 ## Running Conformance Tests
 
-The [Khronos OpenVX Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) is included as a git submodule. Build and run it against the rustVX library:
+The [OpenVX Conformance Test Suite](https://github.com/simonCatBot/OpenVX-cts) is included as a git submodule. Build and run it against the rustVX library:
 
 ### Linux
 
@@ -59,8 +59,10 @@ cd OpenVX-cts
 mkdir -p build && cd build
 cmake .. \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+  -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
   -DOPENVX_INCLUDES="$(pwd)/../../include;$(pwd)/../include" \
-  -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.so" \
+  -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.so;m" \
   -DOPENVX_CONFORMANCE_VISION=ON
 make -j$(nproc)
 
@@ -140,4 +142,4 @@ See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for latest 
 
 ## License
 
-MIT OR Apache-2.0
+MIT
