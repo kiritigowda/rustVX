@@ -310,7 +310,7 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.equalize_histogram", 0x0A, 2),
         ("org.khronos.openvx.integral_image", 0x0E, 2),
         ("org.khronos.openvx.mean_stddev", 0x0C, 3),
-        ("org.khronos.openvx.minmaxloc", 0x19, 6),
+        ("org.khronos.openvx.minmaxloc", 0x19, 7),
         // Additional operations
         ("org.khronos.openvx.absdiff", 0x0B, 3),
         ("org.khronos.openvx.threshold", 0x0D, 3),
@@ -319,7 +319,7 @@ fn register_standard_kernels(context_id: u32) {
         // Feature detection
         ("org.khronos.openvx.harris_corners", 0x25, 8),
         ("org.khronos.openvx.fast_corners", 0x26, 5),
-        ("org.khronos.openvx.optical_flow_pyr_lk", 0x27, 7),
+        ("org.khronos.openvx.optical_flow_pyr_lk", 0x27, 10),
         ("org.khronos.openvx.canny_edge_detector", 0x1B, 5),
         // OpenVX 1.1
         ("org.khronos.openvx.laplacian_pyramid", 0x2A, 3),
@@ -670,6 +670,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         verified: std::sync::Mutex::new(false),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
         run_count: std::sync::atomic::AtomicU64::new(0),
+        replicated_nodes: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
@@ -1550,8 +1551,8 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
         0x1B | 0x26 => 5,
         // 6-parameter kernels (minmaxloc)
         0x19 => 6,
-        // 7-parameter kernels (optical_flow_pyr_lk)
-        0x27 => 7,
+        // 10-parameter kernels (optical_flow_pyr_lk)
+        0x27 => 10,
         // 8-parameter kernels (harris_corners)
         0x25 => 8,
         // 3-parameter pyramid
@@ -1644,27 +1645,54 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
         return std::ptr::null_mut();
     }
     let kernel_id = kernel as u64;
-    
-    // Get context_id from kernel
+
+    // Get context_id from kernel - check both built-in and user kernels
     let context_id = if let Ok(kernels) = KERNELS.lock() {
         if let Some(k) = kernels.get(&kernel_id) {
             k.context_id
         } else {
-            return std::ptr::null_mut();
+            // Check user kernels in unified_c_api (keyed by enumeration value)
+            if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
+                if let Some(uk) = user_kernels.get(&(kernel_id as crate::unified_c_api::vx_enum)) {
+                    uk.context_id as u32
+                } else {
+                    return std::ptr::null_mut();
+                }
+            } else {
+                return std::ptr::null_mut();
+            }
         }
     } else {
         return std::ptr::null_mut();
     };
     
+    // Look up parameter direction from user kernel params or built-in kernel info
+    let (direction, data_type, state) = {
+        let kernel_enum = kernel_id as crate::unified_c_api::vx_enum;
+        if let Ok(params) = crate::unified_c_api::USER_KERNEL_PARAMS.lock() {
+            if let Some(param_list) = params.get(&kernel_enum) {
+                if let Some(p) = param_list.get(index as usize) {
+                    (p.direction, p.data_type, p.state)
+                } else {
+                    (0, 0, 1) // defaults
+                }
+            } else {
+                (0, 0, 1)
+            }
+        } else {
+            (0, 0, 1)
+        }
+    };
+
     let id = generate_id();
     let param = Arc::new(ParameterData {
         id,
         context_id,
         kernel_id,
         index,
-        direction: 0, // VX_INPUT
-        data_type: 0,
-        state: 1, // VX_PARAMETER_STATE_REQUIRED
+        direction,
+        data_type,
+        state,
         value: Mutex::new(None),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
     });
