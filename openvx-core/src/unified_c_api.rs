@@ -112,6 +112,9 @@ pub struct VxCImage {
     pub roi_offsets: Vec<(usize, usize)>,  // (start_x, start_y) per plane in parent coordinates
     /// True only if created via vxCreateImageFromHandle (not inherited by ROI/channel sub-images)
     pub is_from_handle: bool,
+    /// For channel images: byte offset of this channel's plane within the parent's data buffer.
+    /// Only meaningful when parent.is_some() and this image was created via vxCreateImageFromChannel.
+    pub channel_plane_offset: usize,
     /// Valid region rectangle for the image
     pub valid_rect: RwLock<vx_rectangle_t>,
 }
