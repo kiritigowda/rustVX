@@ -319,7 +319,7 @@ fn register_standard_kernels(context_id: u32) {
         // Feature detection
         ("org.khronos.openvx.harris_corners", 0x25, 8),
         ("org.khronos.openvx.fast_corners", 0x26, 5),
-        ("org.khronos.openvx.optical_flow_pyr_lk", 0x27, 7),
+        ("org.khronos.openvx.optical_flow_pyr_lk", 0x27, 10),
         ("org.khronos.openvx.canny_edge_detector", 0x1B, 5),
         // OpenVX 1.1
         ("org.khronos.openvx.laplacian_pyramid", 0x2A, 3),
@@ -1551,8 +1551,8 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
         0x1B | 0x26 => 5,
         // 6-parameter kernels (minmaxloc)
         0x19 => 6,
-        // 7-parameter kernels (optical_flow_pyr_lk)
-        0x27 => 7,
+        // 10-parameter kernels (optical_flow_pyr_lk)
+        0x27 => 10,
         // 8-parameter kernels (harris_corners)
         0x25 => 8,
         // 3-parameter pyramid

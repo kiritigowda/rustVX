@@ -1538,7 +1538,9 @@ while !queue.is_empty() {
                 }
             }
 
-            // Call user kernel validator callbacks (only for user-registered kernels)
+            // Collect user kernel validator info before dropping GRAPHS_DATA lock
+            // to avoid deadlock when callbacks call back into the API
+            let mut user_kernel_validators: Vec<(u64, u64, Vec<vx_reference>, VxKernelValidateF)> = Vec::new();
             for node_id in nodes_vec.iter() {
                 let (kernel_id, param_refs) = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
                     if let Some(node_data) = nodes_data.get(node_id) {
@@ -1555,7 +1557,6 @@ while !queue.is_empty() {
                 } else {
                     continue;
                 };
-                // Only process user kernels (enum >= 0xFFE00000)
                 if kernel_id < 0xFFE00000 {
                     continue;
                 }
@@ -1563,37 +1564,45 @@ while !queue.is_empty() {
                 let user_kernel_key_alt = (kernel_id & 0xFFFFFFFF) as i32;
                 if let Ok(user_kernels) = USER_KERNELS.lock() {
                     if let Some(uk) = user_kernels.get(&user_kernel_key).or_else(|| user_kernels.get(&user_kernel_key_alt)) {
-                        if let Some(validate_fn) = uk.validate {
-                            let num_params = param_refs.len();
-                            // Allocate one VxMetaFormat per parameter (C spec: metas[])
-                            let metas: Vec<Box<VxMetaFormat>> = (0..num_params)
-                                .map(|_| Box::new(VxMetaFormat { attributes: Mutex::new(HashMap::new()) }))
-                                .collect();
-                            let mut meta_ptrs: Vec<vx_meta_format> = metas.iter()
-                                .map(|m| &**m as *const VxMetaFormat as vx_meta_format)
-                                .collect();
-                            let node_ptr = *node_id as vx_node;
-                            let status = unsafe {
-                                validate_fn(node_ptr, param_refs.as_ptr(), num_params as vx_uint32, meta_ptrs.as_mut_ptr())
-                            };
-                            if status != VX_SUCCESS {
-                                // Drop metas before returning
-                                drop(metas);
-                                return status;
-                            }
-                            // After validation, meta format attributes are set but we don't
-                            // need to resolve them here - virtual objects were already resolved above
-                            drop(metas);
+                        if uk.validate.is_some() {
+                            user_kernel_validators.push((*node_id, kernel_id, param_refs, uk.validate));
                         }
                     }
                 }
             }
 
-            // Mark as verified
-            if let Ok(mut verified) = g.verified.lock() {
+            // Clone Arc to graph data so we can access it after dropping GRAPHS_DATA
+            let g_clone = Arc::clone(g);
+
+            // Drop GRAPHS_DATA lock BEFORE calling validator callbacks
+            // Callbacks may call vxQueryReference etc. which need GRAPHS_DATA
+            drop(graphs);
+
+            // Call user kernel validator callbacks (no GRAPHS_DATA lock held)
+            for (node_id, _kernel_id, param_refs, validate_fn_opt) in &user_kernel_validators {
+                if let Some(validate_fn) = validate_fn_opt {
+                    let num_params = param_refs.len();
+                    let metas: Vec<Box<VxMetaFormat>> = (0..num_params)
+                        .map(|_| Box::new(VxMetaFormat { attributes: Mutex::new(HashMap::new()) }))
+                        .collect();
+                    let mut meta_ptrs: Vec<vx_meta_format> = metas.iter()
+                        .map(|m| &**m as *const VxMetaFormat as vx_meta_format)
+                        .collect();
+                    let node_ptr = *node_id as vx_node;
+                    let status = unsafe {
+                        validate_fn(node_ptr, param_refs.as_ptr(), num_params as vx_uint32, meta_ptrs.as_mut_ptr())
+                    };
+                    if status != VX_SUCCESS {
+                        return status;
+                    }
+                }
+            }
+
+            // Mark as verified (using cloned Arc, no GRAPHS_DATA lock needed)
+            if let Ok(mut verified) = g_clone.verified.lock() {
                 *verified = true;
             }
-            if let Ok(mut state) = g.state.lock() {
+            if let Ok(mut state) = g_clone.state.lock() {
                 *state = VxGraphState::VxGraphStateVerified;
             }
 
@@ -3389,43 +3398,43 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
         }
         // Unknown kernel - check if it's a user kernel
         _ => {
-            // Try to execute as a user kernel
-            let mut found = false;
-            let mut result = VX_SUCCESS;
-            if let Ok(user_kernels) = USER_KERNELS.lock() {
+            // Extract callback function pointers from USER_KERNELS, then drop
+            // the lock before calling them (callbacks may call back into the API)
+            let uk_callbacks = if let Ok(user_kernels) = USER_KERNELS.lock() {
+                let mut found_callbacks = None;
                 for (_enum_id, uk) in user_kernels.iter() {
                     if uk.name == kernel_name {
-                        found = true;
-                        let node_ptr = node_id as vx_node;
-                        // Call init callback if present
-                        if let Some(init_fn) = uk.init {
-                            let params_ptr = params.as_ptr();
-                            let num_params = params.len() as vx_uint32;
-                            unsafe { init_fn(node_ptr, params_ptr, num_params) };
-                        }
-                        // Call the user kernel function
-                        if let Some(kernel_fn) = uk.kernel {
-                            let params_ptr = params.as_ptr();
-                            let num_params = params.len() as vx_uint32;
-                            result = unsafe {
-                                kernel_fn(node_ptr, params_ptr, num_params)
-                            };
-                        }
-                        // Call deinit callback if present
-                        if let Some(deinit_fn) = uk.deinit {
-                            let params_ptr = params.as_ptr();
-                            let num_params = params.len() as vx_uint32;
-                            unsafe { deinit_fn(node_ptr, params_ptr, num_params) };
-                        }
+                        found_callbacks = Some((uk.init, uk.kernel, uk.deinit));
                         break;
                     }
                 }
-            }
-            if !found {
+                found_callbacks
+            } else {
+                None
+            };
+            // USER_KERNELS lock is dropped here
+
+            if let Some((init_fn, kernel_fn, deinit_fn)) = uk_callbacks {
+                let node_ptr = node_id as vx_node;
+                let params_ptr = params.as_ptr();
+                let num_params = params.len() as vx_uint32;
+                // Call init callback if present
+                if let Some(init_fn) = init_fn {
+                    unsafe { init_fn(node_ptr, params_ptr, num_params) };
+                }
+                // Call the user kernel function
+                let mut result = VX_SUCCESS;
+                if let Some(kernel_fn) = kernel_fn {
+                    result = unsafe { kernel_fn(node_ptr, params_ptr, num_params) };
+                }
+                // Call deinit callback if present
+                if let Some(deinit_fn) = deinit_fn {
+                    unsafe { deinit_fn(node_ptr, params_ptr, num_params) };
+                }
+                result
+            } else {
                 // Unregistered kernel - return error
                 VX_ERROR_INVALID_KERNEL
-            } else {
-                result
             }
         }
     }
