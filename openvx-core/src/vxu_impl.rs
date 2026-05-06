@@ -3384,19 +3384,26 @@ pub fn vxu_min_max_loc_impl(
                 extern "C" {
                     fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
                     fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+                    fn vxQueryArray(arr: vx_array, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
                 }
                 if !min_loc_array.is_null() {
                     vxTruncateArray(min_loc_array, 0);
                     let coords: Vec<vx_coordinates2d_t> = result.min_locs.iter().map(|c| vx_coordinates2d_t { x: c.x as u32, y: c.y as u32 }).collect();
                     if !coords.is_empty() {
-                        vxAddArrayItems(min_loc_array, coords.len() as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                        let mut cap: vx_size = 0;
+                        vxQueryArray(min_loc_array, 0x80E02, &mut cap as *mut _ as *mut c_void, std::mem::size_of::<vx_size>() as vx_size); // VX_ARRAY_CAPACITY
+                        let add_count = if cap > 0 { coords.len().min(cap) } else { coords.len() };
+                        vxAddArrayItems(min_loc_array, add_count as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
                     }
                 }
                 if !max_loc_array.is_null() {
                     vxTruncateArray(max_loc_array, 0);
                     let coords: Vec<vx_coordinates2d_t> = result.max_locs.iter().map(|c| vx_coordinates2d_t { x: c.x as u32, y: c.y as u32 }).collect();
                     if !coords.is_empty() {
-                        vxAddArrayItems(max_loc_array, coords.len() as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                        let mut cap: vx_size = 0;
+                        vxQueryArray(max_loc_array, 0x80E02, &mut cap as *mut _ as *mut c_void, std::mem::size_of::<vx_size>() as vx_size); // VX_ARRAY_CAPACITY
+                        let add_count = if cap > 0 { coords.len().min(cap) } else { coords.len() };
+                        vxAddArrayItems(max_loc_array, add_count as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
                     }
                 }
                 if !min_count_scalar.is_null() {
@@ -6545,7 +6552,12 @@ pub fn vxu_equalize_histogram_impl(
         let mut equalized = [0u8; 256];
         let cdf_min = cdf.iter().copied().find(|&v| v > 0).unwrap_or(0);
         let scale = total_pixels - cdf_min;
-        if scale > 0 {
+        if scale == 0 {
+            // All pixels are the same value — identity mapping
+            for i in 0..256 {
+                equalized[i] = i as u8;
+            }
+        } else {
             for i in 0..256 {
                 if cdf[i] == 0 {
                     equalized[i] = 0;

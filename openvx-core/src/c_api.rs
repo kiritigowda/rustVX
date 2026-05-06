@@ -310,7 +310,7 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.equalize_histogram", 0x0A, 2),
         ("org.khronos.openvx.integral_image", 0x0E, 2),
         ("org.khronos.openvx.mean_stddev", 0x0C, 3),
-        ("org.khronos.openvx.minmaxloc", 0x19, 6),
+        ("org.khronos.openvx.minmaxloc", 0x19, 7),
         // Additional operations
         ("org.khronos.openvx.absdiff", 0x0B, 3),
         ("org.khronos.openvx.threshold", 0x0D, 3),
