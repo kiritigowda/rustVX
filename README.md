@@ -1,8 +1,28 @@
+<p align="center">
+  <a href="https://www.khronos.org/openvx/">
+    <img src="docs/openvx-logo.svg" alt="OpenVX" width="320">
+  </a>
+</p>
+
 # rustVX
 
 [![OpenVX Conformance](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
 
 An [OpenVX 1.3.1](https://www.khronos.org/openvx/) implementation written in Rust. rustVX provides the complete OpenVX Vision Feature Set through a standard C API (`libopenvx_ffi`), enabling existing OpenVX applications to use a memory-safe, portable backend with no source changes.
+
+## Conformance Status
+
+rustVX passes the full [Khronos OpenVX 1.3 Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) for both required profiles:
+
+| Profile | Required tests | Passing |
+|---------|----------------|---------|
+| OpenVX baseline | 863 | **863 / 863** |
+| Vision conformance profile | 4957 | **4957 / 4957** |
+| **Total enabled** | **5820** | **5820 / 5820** |
+
+Latest CTS run results are published on each push and pull request via the [Actions tab](https://github.com/kiritigowda/rustVX/actions).
 
 ## Project Structure
 
@@ -49,7 +69,10 @@ The shared library is produced at:
 
 ## Running Conformance Tests
 
-The [OpenVX Conformance Test Suite](https://github.com/simonCatBot/OpenVX-cts) is included as a git submodule. Build and run it against the rustVX library:
+The [Khronos OpenVX Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) is included as a git submodule. Build and run it against the rustVX library:
+
+> [!NOTE]
+> The `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` flag below is needed when configuring with CMake 4.0+, which dropped compatibility with the older `cmake_minimum_required` versions used by the upstream CTS. It is harmless on older CMake.
 
 ### Linux
 
@@ -59,6 +82,7 @@ cd OpenVX-cts
 mkdir -p build && cd build
 cmake .. \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
   -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
   -DOPENVX_INCLUDES="$(pwd)/../../include;$(pwd)/../include" \
@@ -80,6 +104,7 @@ cd OpenVX-cts
 mkdir -p build && cd build
 cmake .. \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DOPENVX_INCLUDES="$(pwd)/../../include;$(pwd)/../include" \
   -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.dylib" \
   -DOPENVX_CONFORMANCE_VISION=ON
@@ -99,6 +124,7 @@ cd OpenVX-cts
 mkdir build; cd build
 cmake .. `
   -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
   -DOPENVX_INCLUDES="$PWD\..\..\include;$PWD\..\include" `
   -DOPENVX_LIBRARIES="$PWD\..\..\target\release\openvx_ffi.dll.lib" `
   -DOPENVX_CONFORMANCE_VISION=ON
@@ -124,22 +150,26 @@ Use the `--filter` flag to run a subset of tests:
 
 ## Continuous Integration
 
-GitHub Actions builds and runs the full CTS on every push and pull request. The workflow splits tests into parallel jobs for faster feedback:
+GitHub Actions builds and runs the full CTS on every push and pull request. The workflow splits the suite into parallel jobs for faster feedback:
 
-- **baseline** -- Graph, Logging, SmokeTest, Target
-- **graph** -- Graph callbacks, delays, ROI, UserNode
-- **data-objects** -- Scalar, Array, Matrix, Convolution, Distribution, LUT, Histogram
-- **image-ops** -- Image, CopyImagePatch, MapImagePatch, Remap
-- **vision-color** -- ColorConvert, ChannelExtract, ChannelCombine, ConvertDepth
-- **vision-filters** -- Box, Gaussian, Median, Dilate, Erode, Sobel, Convolve, EqualizeHistogram, NonLinearFilter
-- **vision-arithmetic** -- Add, Subtract, Multiply, Bitwise, Not, WeightedAverage, Threshold
-- **vision-geometric** -- Scale, WarpAffine, WarpPerspective, Remap, HalfScaleGaussian
-- **vision-features** -- HarrisCorners, FastCorners, Canny
-- **vision-statistics** -- MeanStdDev, MinMaxLoc, Integral
-- **vision-pyramid** -- GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK
+| Job | Test categories | Pipeline status |
+|-----|-----------------|-----------------|
+| **baseline** | GraphBase, Logging, SmokeTest, Target | [![baseline](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=baseline&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **graph** | Graph framework (cycles, virtual data, multi-run, replicate node), GraphCallback, GraphDelay, GraphROI, UserNode | [![graph](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=graph&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **data-objects** | Scalar, Array, ObjectArray, Matrix, Convolution, Distribution, LUT, Histogram | [![data-objects](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=data-objects&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **image-ops** | Image, CopyImagePatch, MapImagePatch, CreateImageFromChannel, Remap | [![image-ops](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=image-ops&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **vision-color** | ColorConvert, ChannelExtract, ChannelCombine, ConvertDepth | [![vision-color](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-color&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **vision-filters** | Box, Gaussian, Median, Dilate, Erode, Sobel, Magnitude, Phase, NonLinearFilter, Convolve, EqualizeHistogram | [![vision-filters](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-filters&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **vision-arithmetic** | Add, Subtract, Multiply, Bitwise (And/Or/Xor/Not), WeightedAverage, Threshold | [![vision-arithmetic](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-arithmetic&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **vision-geometric** | Scale, WarpAffine, WarpPerspective, Remap, HalfScaleGaussian | [![vision-geometric](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-geometric&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **vision-features** | HarrisCorners, FastCorners, Canny | [![vision-features](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-features&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [![vision-statistics](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-statistics&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [![vision-pyramid](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-pyramid&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
 
-See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for latest results.
+See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for full run history.
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](LICENSE).
+
+The OpenVX logo is a trademark of [The Khronos Group Inc.](https://www.khronos.org/legal/trademarks) The vector logo file in `docs/openvx-logo.svg` is sourced from [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:OpenVX_logo.svg) and is included for identification purposes only.
