@@ -3,16 +3,17 @@
 //! This module provides FFI bindings for the OpenVX API
 
 #![allow(non_camel_case_types)]
+#![allow(unused_comparisons, unused_unsafe)]
 
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, AtomicUsize};
 
 // Import the unified CONTEXTS registry
-use crate::unified_c_api::{CONTEXTS as UNIFIED_CONTEXTS, VxCContext};
-use crate::unified_c_api::{GRAPHS_DATA, VxCGraphData};
-use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES, REFERENCE_NAMES};
 use crate::c_api_data::vx_pixel_value_t;
+use crate::unified_c_api::GRAPHS_DATA;
+use crate::unified_c_api::{VxCContext, CONTEXTS as UNIFIED_CONTEXTS};
+use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_NAMES, REFERENCE_TYPES};
 
 // ============================================================================
 // Type Aliases (C-compatible)
@@ -124,7 +125,8 @@ pub type vx_target = *mut VxTarget;
 pub type vx_nodecomplete_f = Option<extern "C" fn(vx_node) -> vx_action>;
 
 /// Log callback type
-pub type vx_log_callback_t = Option<extern "C" fn(vx_context, vx_reference, vx_status, *const vx_char)>;
+pub type vx_log_callback_t =
+    Option<extern "C" fn(vx_context, vx_reference, vx_status, *const vx_char)>;
 
 /// Action return values from callbacks
 #[repr(C)]
@@ -160,6 +162,18 @@ pub struct NodeData {
     pub border_mode: Mutex<crate::unified_c_api::vx_border_t>,
     /// Number of times this node has been executed (for VX_NODE_PERFORMANCE)
     pub run_count: std::sync::atomic::AtomicU64,
+    /// Whether the user-kernel `init` callback has been called for this node.
+    /// Used by `vxVerifyGraph` to know when to call `deinit` before re-init.
+    /// Always `false` for built-in kernels; only meaningful for user kernels.
+    pub user_kernel_initialized: std::sync::atomic::AtomicBool,
+    /// Local data size requested by the user kernel during init (VX_NODE_LOCAL_DATA_SIZE).
+    pub local_data_size: std::sync::atomic::AtomicUsize,
+    /// Local data pointer requested/owned by the user kernel (VX_NODE_LOCAL_DATA_PTR).
+    pub local_data_ptr: std::sync::atomic::AtomicPtr<std::ffi::c_void>,
+    /// Whether the user kernel auto-allocates local data (kernel attr LOCAL_DATA_SIZE > 0
+    /// at registration). When auto-allocated, `vxQueryNode`/`vxSetNodeAttribute`
+    /// behave differently for the local-data attributes.
+    pub local_data_auto_alloc: std::sync::atomic::AtomicBool,
 }
 
 /// Internal kernel data (stored in Arc)
@@ -191,32 +205,25 @@ pub struct ParameterData {
 
 use once_cell::sync::Lazy;
 
-pub static CONTEXTS: Lazy<Mutex<Vec<u64>>> = Lazy::new(|| {
-    Mutex::new(Vec::new())
-});
+pub static CONTEXTS: Lazy<Mutex<Vec<u64>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
-pub static GRAPHS: Lazy<Mutex<std::collections::HashMap<u64, Arc<GraphData>>>> = Lazy::new(|| {
-    Mutex::new(std::collections::HashMap::new())
-});
+pub static GRAPHS: Lazy<Mutex<std::collections::HashMap<u64, Arc<GraphData>>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
-pub static NODES: Lazy<Mutex<std::collections::HashMap<u64, Arc<NodeData>>>> = Lazy::new(|| {
-    Mutex::new(std::collections::HashMap::new())
-});
+pub static NODES: Lazy<Mutex<std::collections::HashMap<u64, Arc<NodeData>>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
-pub static KERNELS: Lazy<Mutex<std::collections::HashMap<u64, Arc<KernelData>>>> = Lazy::new(|| {
-    Mutex::new(std::collections::HashMap::new())
-});
+pub static KERNELS: Lazy<Mutex<std::collections::HashMap<u64, Arc<KernelData>>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 // Re-export unified KERNELS for vxGetStatus
 pub use crate::unified_c_api::KERNELS as UNIFIED_KERNELS;
 
-pub static PARAMETERS: Lazy<Mutex<std::collections::HashMap<u64, Arc<ParameterData>>>> = Lazy::new(|| {
-    Mutex::new(std::collections::HashMap::new())
-});
+pub static PARAMETERS: Lazy<Mutex<std::collections::HashMap<u64, Arc<ParameterData>>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
-static NEXT_ID: Lazy<std::sync::atomic::AtomicU64> = Lazy::new(|| {
-    std::sync::atomic::AtomicU64::new(1)
-});
+static NEXT_ID: Lazy<std::sync::atomic::AtomicU64> =
+    Lazy::new(|| std::sync::atomic::AtomicU64::new(1));
 
 pub fn generate_id() -> u64 {
     NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -236,19 +243,24 @@ pub extern "C" fn vxCreateContext() -> vx_context {
     }
     // Also register in unified registry so vxQueryReference can find it
     if let Ok(mut unified_ctxs) = UNIFIED_CONTEXTS.lock() {
-        unified_ctxs.insert(ptr as usize, Arc::new(VxCContext {
-            id,
-            ref_count: std::sync::atomic::AtomicUsize::new(1),
-            border_mode: std::sync::RwLock::new(crate::unified_c_api::vx_border_t {
-                mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
-                constant_value: vx_pixel_value_t { U32: 0 },
+        unified_ctxs.insert(
+            ptr as usize,
+            Arc::new(VxCContext {
+                id,
+                ref_count: std::sync::atomic::AtomicUsize::new(1),
+                border_mode: std::sync::RwLock::new(crate::unified_c_api::vx_border_t {
+                    mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
+                    constant_value: vx_pixel_value_t { U32: 0 },
+                }),
+                border_policy: std::sync::atomic::AtomicU32::new(
+                    crate::unified_c_api::VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED as u32,
+                ),
+                log_callback: Mutex::new(None),
+                log_reentrant: std::sync::atomic::AtomicBool::new(false),
+                logging_enabled: std::sync::atomic::AtomicBool::new(false),
+                performance_enabled: std::sync::atomic::AtomicBool::new(false),
             }),
-            border_policy: std::sync::atomic::AtomicU32::new(crate::unified_c_api::VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED as u32),
-            log_callback: Mutex::new(None),
-            log_reentrant: std::sync::atomic::AtomicBool::new(false),
-            logging_enabled: std::sync::atomic::AtomicBool::new(false),
-            performance_enabled: std::sync::atomic::AtomicBool::new(false),
-        }));
+        );
     }
     // Initialize reference count to 1 (the creation itself counts as a reference)
     let addr = ptr as usize;
@@ -262,8 +274,6 @@ pub extern "C" fn vxCreateContext() -> vx_context {
 
 /// Register standard OpenVX built-in kernels for a context
 fn register_standard_kernels(context_id: u32) {
-    use std::sync::atomic::Ordering;
-
     // Register built-in kernels that are always available
     // Format: (name, enum, num_params)
     // Kernel enums aligned with OpenVX 1.3.1 spec (VX_KERNEL_BASE values)
@@ -330,7 +340,7 @@ fn register_standard_kernels(context_id: u32) {
         // OpenVX 1.1 extensions
         ("org.khronos.openvx.sobel_5x5", 0x30, 3),
     ];
-    
+
     if let Ok(mut kernels) = KERNELS.lock() {
         for (name, kernel_enum, num_params) in standard_kernels {
             // Use kernel enum + offset to avoid collision with graph IDs
@@ -346,7 +356,7 @@ fn register_standard_kernels(context_id: u32) {
                 ref_count: std::sync::atomic::AtomicUsize::new(1),
             });
             kernels.insert(kernel_id, kernel);
-            
+
             // Register kernel in REFERENCE_COUNTS and REFERENCE_TYPES using the offset ID
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.insert(kernel_id as usize, AtomicUsize::new(1));
@@ -371,7 +381,7 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
         }
         let id = ctx as u64;
         let addr = ctx as usize;
-        
+
         // Decrement reference count
         if let Ok(counts) = REFERENCE_COUNTS.lock() {
             if let Some(count) = counts.get(&addr) {
@@ -391,7 +401,7 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
                 }
             }
         }
-        
+
         if let Ok(mut contexts) = CONTEXTS.lock() {
             contexts.retain(|&c| c != id);
         }
@@ -399,7 +409,7 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
         if let Ok(mut unified_ctxs) = UNIFIED_CONTEXTS.lock() {
             unified_ctxs.remove(&addr);
         }
-        
+
         // Clear delay/pyramid registries to prevent stale data between test contexts
         if let Ok(mut delay_params) = crate::unified_c_api::DELAY_NODE_PARAMS.lock() {
             delay_params.clear();
@@ -416,7 +426,7 @@ pub extern "C" fn vxReleaseContext(context: *mut vx_context) -> vx_status {
         if let Ok(mut level_imgs) = crate::unified_c_api::PYRAMID_LEVEL_IMAGES.lock() {
             level_imgs.clear();
         }
-        
+
         *context = std::ptr::null_mut();
     }
     VX_SUCCESS
@@ -433,7 +443,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
     }
     let addr = _ref_ as usize;
     let id = _ref_ as u64;
-    
+
     // Increment reference count in unified registry
     if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if let Some(count) = counts.get(&addr) {
@@ -441,11 +451,11 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
             return VX_SUCCESS;
         }
     }
-    
+
     // If not in REFERENCE_COUNTS, check if reference exists in any registry
     // and if so, add it to REFERENCE_COUNTS with count=2 (original + retained)
     let mut found = false;
-    
+
     // Check graphs
     if let Ok(graphs) = GRAPHS.lock() {
         if graphs.contains_key(&id) {
@@ -457,7 +467,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
             found = true;
         }
     }
-    
+
     // Check contexts
     if !found {
         if let Ok(contexts) = CONTEXTS.lock() {
@@ -473,7 +483,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
             }
         }
     }
-    
+
     // Check kernels
     if !found {
         if let Ok(kernels) = KERNELS.lock() {
@@ -482,7 +492,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
             }
         }
     }
-    
+
     // Check nodes
     if !found {
         if let Ok(nodes) = NODES.lock() {
@@ -491,7 +501,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
             }
         }
     }
-    
+
     // Check parameters
     if !found {
         if let Ok(params) = PARAMETERS.lock() {
@@ -500,7 +510,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
             }
         }
     }
-    
+
     if found {
         // Add to REFERENCE_COUNTS with count=2 (original reference + retained)
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -508,7 +518,7 @@ pub extern "C" fn vxRetainReference(_ref_: vx_reference) -> vx_status {
         }
         return VX_SUCCESS;
     }
-    
+
     VX_ERROR_INVALID_REFERENCE
 }
 
@@ -521,14 +531,14 @@ pub extern "C" fn vxGetStatus(ref_: vx_reference) -> vx_status {
     // Check if the reference is valid in any registry
     let addr = ref_ as usize;
     let id = ref_ as u64;
-    
+
     // Check unified reference counts first
     if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if counts.contains_key(&addr) {
             return VX_SUCCESS;
         }
     }
-    
+
     // Check if in any other registry (graphs, contexts, etc.)
     // Check graphs in unified registry
     if let Ok(graphs) = GRAPHS_DATA.lock() {
@@ -536,50 +546,50 @@ pub extern "C" fn vxGetStatus(ref_: vx_reference) -> vx_status {
             return VX_SUCCESS;
         }
     }
-    
+
     // Check graphs in c_api registry
     if let Ok(c_api_graphs) = GRAPHS.lock() {
         if c_api_graphs.contains_key(&id) {
             return VX_SUCCESS;
         }
     }
-    
+
     // Check contexts
     if let Ok(contexts) = CONTEXTS.lock() {
         if contexts.contains(&id) {
             return VX_SUCCESS;
         }
     }
-    
+
     // Check unified contexts
     if let Ok(unified_contexts) = UNIFIED_CONTEXTS.lock() {
         if unified_contexts.contains_key(&addr) {
             return VX_SUCCESS;
         }
     }
-    
+
     // Check kernels in c_api
     if let Ok(kernels) = KERNELS.lock() {
         if kernels.contains_key(&id) {
             return VX_SUCCESS;
         }
     }
-    
+
     // Check images in unified registry
-    use crate::unified_c_api::{IMAGES};
+    use crate::unified_c_api::IMAGES;
     if let Ok(images) = IMAGES.lock() {
         if images.contains(&addr) {
             return VX_SUCCESS;
         }
     }
-    
+
     // Check thresholds in unified registry
     if let Ok(thresholds) = crate::unified_c_api::THRESHOLDS.lock() {
         if thresholds.contains(&addr) {
             return VX_SUCCESS;
         }
     }
-    
+
     VX_ERROR_INVALID_REFERENCE
 }
 
@@ -591,11 +601,11 @@ pub extern "C" fn vxGetContext(ref_: vx_reference) -> vx_context {
     unsafe {
         let id = ref_ as u64;
         let addr = ref_ as usize;
-        
+
         // Check if it's an image - use the unified registry FIRST
         // This is critical because images are allocated as heap pointers
         // and we need to validate them before treating as IDs
-        use crate::unified_c_api::{IMAGES};
+        use crate::unified_c_api::IMAGES;
         if let Ok(images) = IMAGES.lock() {
             if images.contains(&addr) {
                 // The image stores context directly in the VxCImage struct
@@ -603,7 +613,7 @@ pub extern "C" fn vxGetContext(ref_: vx_reference) -> vx_context {
                 return img.context;
             }
         }
-        
+
         // Check if it's a node
         if let Ok(nodes) = NODES.lock() {
             if let Some(node) = nodes.get(&id) {
@@ -698,8 +708,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
         }
         let id = g as u64;
         let addr = g as usize;
-        
-        
+
         // Decrement reference count first
         let mut should_remove = false;
         if let Ok(counts) = REFERENCE_COUNTS.lock() {
@@ -713,9 +722,8 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             } else {
             }
         }
-        
+
         if should_remove {
-            
             // Release the graph's parameters
             if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 if let Some(g) = graphs_data.get(&id) {
@@ -726,10 +734,10 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                             Vec::new()
                         }
                     };
-                    
+
                     for param_id in graph_params {
                         let param_addr = param_id as usize;
-                        
+
                         // Decrement ref count
                         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                             if let Some(cnt) = counts.get(&param_addr) {
@@ -742,7 +750,8 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                     if let Ok(mut types) = REFERENCE_TYPES.lock() {
                                         types.remove(&param_addr);
                                     }
-                                    if let Ok(mut params) = crate::unified_c_api::PARAMETERS.lock() {
+                                    if let Ok(mut params) = crate::unified_c_api::PARAMETERS.lock()
+                                    {
                                         params.remove(&param_id);
                                     }
                                 }
@@ -751,12 +760,37 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                     }
                 }
             }
-            
+
             // Collect non-scalar parameter values that need release
-            let mut non_scalar_params: Vec<u64> = Vec::new();
+            let _non_scalar_params: Vec<u64> = Vec::new();
 
             // Collect non-scalar params that reached ref count 0 for type-specific release
-            let mut non_scalar_last_refs: Vec<usize> = Vec::new();
+            let non_scalar_last_refs: Vec<usize> = Vec::new();
+
+            // Snapshot the graph's node ids and run the user-kernel `deinit`
+            // callbacks BEFORE we re-enter the GRAPHS_DATA lock for the
+            // teardown loop below. The user `deinit` callback can call back
+            // into the OpenVX API (vxQueryNode, etc.) which itself takes
+            // GRAPHS_DATA, so we MUST not hold that lock while the callback
+            // runs or we will deadlock.
+            let graph_nodes_pre: Vec<u64> = {
+                if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                    if let Some(g) = graphs_data.get(&id) {
+                        if let Ok(nodes) = g.nodes.read() {
+                            nodes.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            };
+            for node_id in &graph_nodes_pre {
+                crate::unified_c_api::deinit_user_kernel_node(*node_id);
+            }
 
             // Free the graph's nodes
             if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
@@ -778,36 +812,62 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                     for param_val in params.iter() {
                                         if let Some(val) = param_val {
                                             if *val != 0 {
-                                                let val_type = if let Ok(types) = REFERENCE_TYPES.lock() {
-                                                    types.get(&(*val as usize)).copied()
-                                                } else { None };
+                                                let _val_type =
+                                                    if let Ok(types) = REFERENCE_TYPES.lock() {
+                                                        types.get(&(*val as usize)).copied()
+                                                    } else {
+                                                        None
+                                                    };
                                                 // Decrement ref count by 1 for the node's reference.
                                                 // The caller owns their own reference and will release it.
                                                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                                                    if let Some(cnt) = counts.get_mut(&(*val as usize)) {
-                                                        let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                                    if let Some(cnt) =
+                                                        counts.get_mut(&(*val as usize))
+                                                    {
+                                                        let current = cnt.load(
+                                                            std::sync::atomic::Ordering::SeqCst,
+                                                        );
                                                         if current > 1 {
-                                                            cnt.store(current - 1, std::sync::atomic::Ordering::SeqCst);
+                                                            cnt.store(
+                                                                current - 1,
+                                                                std::sync::atomic::Ordering::SeqCst,
+                                                            );
                                                         } else if current == 1 {
                                                             // Last reference - free the object
                                                             let addr = *val as usize;
-                                                            let val_type = if let Ok(types) = REFERENCE_TYPES.lock() {
+                                                            let val_type = if let Ok(types) =
+                                                                REFERENCE_TYPES.lock()
+                                                            {
                                                                 types.get(&addr).copied()
-                                                            } else { None };
+                                                            } else {
+                                                                None
+                                                            };
                                                             drop(counts);
-                                                            if let Ok(mut counts2) = REFERENCE_COUNTS.lock() {
+                                                            if let Ok(mut counts2) =
+                                                                REFERENCE_COUNTS.lock()
+                                                            {
                                                                 counts2.remove(&addr);
                                                             }
-                                                            if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                                                            if let Ok(mut types) =
+                                                                REFERENCE_TYPES.lock()
+                                                            {
                                                                 types.remove(&addr);
                                                             }
                                                             // Free based on type
                                                             if val_type == Some(VX_TYPE_SCALAR) {
                                                                 let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
-                                                            } else if val_type == Some(VX_TYPE_PYRAMID) {
-                                                                extern "C" { fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status; }
+                                                            } else if val_type
+                                                                == Some(VX_TYPE_PYRAMID)
+                                                            {
+                                                                extern "C" {
+                                                                    fn vxReleasePyramid(
+                                                                        pyramid: *mut vx_pyramid,
+                                                                    ) -> vx_status;
+                                                                }
                                                                 let mut pyr = *val as vx_pyramid;
-                                                                unsafe { vxReleasePyramid(&mut pyr); }
+                                                                unsafe {
+                                                                    vxReleasePyramid(&mut pyr);
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -855,7 +915,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                 names.remove(&addr);
             }
         }
-        
+
         *graph = std::ptr::null_mut();
     }
     VX_SUCCESS
@@ -907,7 +967,9 @@ pub extern "C" fn vxQueryNode(
                     VX_NODE_PERFORMANCE => {
                         if size >= std::mem::size_of::<crate::unified_c_api::vx_perf_t>() {
                             let mut perf = crate::unified_c_api::vx_perf_t::default();
-                            let count = node_data.run_count.load(std::sync::atomic::Ordering::SeqCst);
+                            let count = node_data
+                                .run_count
+                                .load(std::sync::atomic::Ordering::SeqCst);
                             if count > 0 {
                                 perf.num = count;
                                 perf.beg = 2 * count - 1; // ensures beg_n > end_(n-1)
@@ -939,6 +1001,27 @@ pub extern "C" fn vxQueryNode(
                         );
                         return VX_SUCCESS;
                     }
+                    VX_NODE_LOCAL_DATA_SIZE => {
+                        if size < std::mem::size_of::<vx_size>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let v = node_data
+                            .local_data_size
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                            as vx_size;
+                        *(ptr as *mut vx_size) = v;
+                        return VX_SUCCESS;
+                    }
+                    VX_NODE_LOCAL_DATA_PTR => {
+                        if size < std::mem::size_of::<*mut c_void>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let p = node_data
+                            .local_data_ptr
+                            .load(std::sync::atomic::Ordering::SeqCst);
+                        *(ptr as *mut *mut c_void) = p;
+                        return VX_SUCCESS;
+                    }
                     _ => {}
                 }
             }
@@ -960,7 +1043,7 @@ pub extern "C" fn vxSetNodeAttribute(
     if ptr.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    
+
     unsafe {
         let id = node as u64;
         if let Ok(nodes) = NODES.lock() {
@@ -976,6 +1059,41 @@ pub extern "C" fn vxSetNodeAttribute(
                             return VX_SUCCESS;
                         }
                         return VX_ERROR_INVALID_REFERENCE;
+                    }
+                    VX_NODE_LOCAL_DATA_SIZE | VX_NODE_LOCAL_DATA_PTR => {
+                        // Per OpenVX 1.3, the local-data size/ptr can only be
+                        // mutated from inside a user-kernel `init`/`deinit`
+                        // callback, AND only when the kernel did not request
+                        // auto-allocation (VX_KERNEL_LOCAL_DATA_SIZE == 0 at
+                        // registration time). Outside of that window, every
+                        // other caller must get an error.
+                        if !crate::unified_c_api::is_user_kernel_in_init(id) {
+                            return VX_ERROR_NOT_SUPPORTED;
+                        }
+                        if node_data
+                            .local_data_auto_alloc
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                        {
+                            return VX_ERROR_NOT_SUPPORTED;
+                        }
+                        if attribute == VX_NODE_LOCAL_DATA_SIZE {
+                            if size < std::mem::size_of::<vx_size>() {
+                                return VX_ERROR_INVALID_PARAMETERS;
+                            }
+                            let v = *(ptr as *const vx_size);
+                            node_data
+                                .local_data_size
+                                .store(v, std::sync::atomic::Ordering::SeqCst);
+                        } else {
+                            if size < std::mem::size_of::<*mut c_void>() {
+                                return VX_ERROR_INVALID_PARAMETERS;
+                            }
+                            let p = *(ptr as *const *mut c_void);
+                            node_data
+                                .local_data_ptr
+                                .store(p, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        return VX_SUCCESS;
                     }
                     _ => {
                         // For other attributes, just validate and return success
@@ -999,21 +1117,16 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = n as u64;
-        let mut count = 0;
-        let num_params: usize;
+        let count;
         let graph_id: u64;
-        
-        
+
         // Get node data and parameters
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
                 graph_id = node_data.graph_id;
-                count = node_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if let Ok(params) = node_data.parameters.lock() {
-                    num_params = params.len();
-                } else {
-                    num_params = 0;
-                }
+                count = node_data
+                    .ref_count
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             } else {
                 // Node not found, might already be freed
                 *node = std::ptr::null_mut();
@@ -1023,9 +1136,8 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
             *node = std::ptr::null_mut();
             return VX_SUCCESS;
         }
-        
+
         if count <= 1 {
-            
             // Check if the graph still exists and owns this node
             let graph_still_exists = if let Ok(graphs_data) = GRAPHS_DATA.lock() {
                 if let Some(g) = graphs_data.get(&graph_id) {
@@ -1040,7 +1152,7 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
             } else {
                 false
             };
-            
+
             if graph_still_exists {
                 // Node is still owned by graph - just decrement unified ref count
                 // Don't free the node, the graph will free it when released
@@ -1050,16 +1162,21 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
                     }
                 }
             } else {
-                // Graph doesn't exist or doesn't own this node - safe to free
-                
+                // Graph doesn't exist or doesn't own this node - safe to free.
+                //
+                // If this node ran a user kernel that was initialised by
+                // vxVerifyGraph, run its `deinit` callback now and release
+                // any auto-allocated local-data buffer.
+                crate::unified_c_api::deinit_user_kernel_node(id);
+
                 // Note: Node does NOT release parameter values - application owns them
                 // The application calls vxReleaseScalar, vxReleaseImage, etc. on its own objects
                 // Node parameters are just references/borrowed objects
-                
+
                 // Note: Parameter handles returned by vxGetParameterByIndex are owned by the caller
                 // Do NOT remove parameter entries here - vxReleaseParameter will handle them
                 // Only clean up the node's parameter value storage (not the handles)
-                
+
                 // Note: Node does NOT release parameter values - application owns them
                 // The application calls vxReleaseScalar, vxReleaseImage, etc. on its own objects
                 // Node parameters are just references/borrowed objects
@@ -1086,7 +1203,7 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
                         }
                     }
                 }
-                
+
                 // Remove from NODES and unified registries
                 if let Ok(mut nodes_mut) = NODES.lock() {
                     nodes_mut.remove(&id);
@@ -1122,12 +1239,12 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = n as u64;
-        
+
         // Collect parameter references before removing the node
         // so we can decrement their ref counts
         let mut param_refs: Vec<usize> = Vec::new();
         let mut graph_id: u64 = 0;
-        
+
         if let Ok(nodes) = NODES.lock() {
             if let Some(node_data) = nodes.get(&id) {
                 graph_id = node_data.graph_id;
@@ -1142,7 +1259,7 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
                 }
             }
         }
-        
+
         // Remove from graph's node list (c_api registry)
         if graph_id != 0 {
             if let Ok(graphs) = GRAPHS.lock() {
@@ -1152,7 +1269,7 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
                     }
                 }
             }
-            
+
             // Also remove from unified GRAPHS_DATA registry (where vxQueryGraph reads from)
             if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 if let Some(graph) = graphs_data.get(&graph_id) {
@@ -1169,12 +1286,12 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
                 }
             }
         }
-        
+
         // Remove the node from NODES registry and clean up
         if let Ok(mut nodes_mut) = NODES.lock() {
             nodes_mut.remove(&id);
         }
-        
+
         // Remove from reference counting and type registries
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
             counts.remove(&(id as usize));
@@ -1182,11 +1299,11 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
         if let Ok(mut types) = REFERENCE_TYPES.lock() {
             types.remove(&(id as usize));
         }
-        
+
         // Decrement ref counts of parameter references
         // Per OpenVX spec, vxRemoveNode releases all parameter references
         for ref_addr in param_refs {
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&ref_addr) {
                     let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                     if current > 0 {
@@ -1195,17 +1312,14 @@ pub extern "C" fn vxRemoveNode(node: *mut vx_node) -> vx_status {
                 }
             }
         }
-        
+
         *node = std::ptr::null_mut();
     }
     VX_SUCCESS
 }
 
 #[no_mangle]
-pub extern "C" fn vxAssignNodeCallback(
-    node: vx_node,
-    callback: vx_nodecomplete_f,
-) -> vx_status {
+pub extern "C" fn vxAssignNodeCallback(node: vx_node, callback: vx_nodecomplete_f) -> vx_status {
     if node.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -1228,27 +1342,29 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
     }
     let graph_id = graph as u64;
     let kernel_id = kernel as u64;
-    
-    // Get kernel num_params - check both KERNELS and USER_KERNELS
-    let num_params = if let Ok(kernels) = KERNELS.lock() {
+
+    // Get kernel num_params and (for user kernels) the auto-allocated local
+    // data size. Built-in kernels have no per-node local data.
+    let (num_params, user_kernel_local_size) = if let Ok(kernels) = KERNELS.lock() {
         if let Some(k) = kernels.get(&kernel_id) {
-            k.num_params
-        } else {
-            // Check user kernels
-            if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
-                if let Some(uk) = user_kernels.get(&(kernel_id as i32)) {
-                    uk.num_params
-                } else {
-                    4 // Default
-                }
+            (k.num_params, 0usize)
+        } else if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
+            if let Some(uk) = user_kernels.get(&(kernel_id as i32)) {
+                (
+                    uk.num_params,
+                    uk.local_data_size
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                )
             } else {
-                4 // Default
+                (4, 0)
             }
+        } else {
+            (4, 0)
         }
     } else {
-        4 // Default
+        (4, 0)
     };
-    
+
     // Get context_id from graph
     let context_id = if let Ok(graphs) = GRAPHS.lock() {
         if let Some(g) = graphs.get(&graph_id) {
@@ -1259,7 +1375,7 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
     } else {
         return std::ptr::null_mut();
     };
-    
+
     let id = generate_id();
     let node = Arc::new(NodeData {
         id,
@@ -1275,12 +1391,16 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
             constant_value: crate::c_api_data::vx_pixel_value_t { U32: 0 },
         }),
         run_count: std::sync::atomic::AtomicU64::new(0),
+        user_kernel_initialized: std::sync::atomic::AtomicBool::new(false),
+        local_data_size: std::sync::atomic::AtomicUsize::new(user_kernel_local_size),
+        local_data_ptr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+        local_data_auto_alloc: std::sync::atomic::AtomicBool::new(user_kernel_local_size > 0),
     });
-    
+
     if let Ok(mut nodes) = NODES.lock() {
         nodes.insert(id, node.clone());
     }
-    
+
     // Add to graph in c_api registry
     {
         if let Ok(graphs) = GRAPHS.lock() {
@@ -1301,7 +1421,7 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
             }
         }
     }
-    
+
     // Also add to unified graph registry for vxProcessGraph
     if let Ok(graphs_data) = GRAPHS_DATA.lock() {
         if let Some(g) = graphs_data.get(&graph_id) {
@@ -1310,7 +1430,7 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
             }
         }
     }
-    
+
     // Initialize reference count for the node (same pattern as other objects)
     let ptr = id as *mut VxNode;
     unsafe {
@@ -1321,16 +1441,16 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
             types.insert(ptr as usize, crate::unified_c_api::VX_TYPE_NODE);
         }
     }
-    
+
     // Increment ref count for the graph's ownership
     // When vxReleaseNode is called, it will decrement but not free
     // The graph will free the node when vxReleaseGraph is called
-    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+    if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if let Some(cnt) = counts.get(&(ptr as usize)) {
             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
-    
+
     ptr
 }
 
@@ -1341,27 +1461,29 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
 #[no_mangle]
 pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> vx_status {
     use crate::unified_c_api::MODULES;
-    
+
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
     if module.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    
+
     unsafe {
         let module_name = match CStr::from_ptr(module).to_str() {
             Ok(s) => s,
             Err(_) => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Track this module as loaded for this context
         let context_id = context as u64;
         if let Ok(mut modules) = MODULES.lock() {
-            let context_modules: &mut std::collections::HashSet<String> = modules.entry(context_id).or_insert_with(std::collections::HashSet::new);
+            let context_modules: &mut std::collections::HashSet<String> = modules
+                .entry(context_id)
+                .or_insert_with(std::collections::HashSet::new);
             context_modules.insert(module_name.to_string());
         }
-        
+
         // Parse module name and register kernels
         // Handle test module only - standard kernels are already registered
         if module_name == "test-testmodule" || module_name == "org.khronos.test.testmodule" {
@@ -1384,10 +1506,16 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
                 counts.insert(test_kernel_id as usize, AtomicUsize::new(1));
             }
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.insert(test_kernel_id as usize, crate::unified_c_api::VX_TYPE_KERNEL);
+                types.insert(
+                    test_kernel_id as usize,
+                    crate::unified_c_api::VX_TYPE_KERNEL,
+                );
             }
             VX_SUCCESS
-        } else if module_name == "openvx-core" || module_name == "openvx-vision" || module_name.is_empty() {
+        } else if module_name == "openvx-core"
+            || module_name == "openvx-vision"
+            || module_name.is_empty()
+        {
             // Standard kernels already registered at context creation
             VX_SUCCESS
         } else {
@@ -1399,20 +1527,20 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
 #[no_mangle]
 pub extern "C" fn vxUnloadKernels(context: vx_context, module: *const vx_char) -> vx_status {
     use crate::unified_c_api::MODULES;
-    
+
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
     if module.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    
+
     unsafe {
         let module_name = match CStr::from_ptr(module).to_str() {
             Ok(s) => s,
             Err(_) => return VX_ERROR_INVALID_PARAMETERS,
         };
-        
+
         // Remove this module from the loaded modules for this context
         let context_id = context as u64;
         if let Ok(mut modules) = MODULES.lock() {
@@ -1420,7 +1548,7 @@ pub extern "C" fn vxUnloadKernels(context: vx_context, module: *const vx_char) -
                 context_modules.remove(module_name);
             }
         }
-        
+
         // Unregister kernels from this module
         let context_id_u32 = context as u32;
         if module_name == "test-testmodule" {
@@ -1429,13 +1557,14 @@ pub extern "C" fn vxUnloadKernels(context: vx_context, module: *const vx_char) -
             {
                 if let Ok(kernels) = KERNELS.lock() {
                     for (id, k) in kernels.iter() {
-                        if k.context_id == context_id_u32 && k.name == "org.khronos.test.testmodule" {
+                        if k.context_id == context_id_u32 && k.name == "org.khronos.test.testmodule"
+                        {
                             kernels_to_remove.push(*id);
                         }
                     }
                 }
             }
-            
+
             // Now remove them with proper cleanup
             if let Ok(mut kernels) = KERNELS.lock() {
                 for id in kernels_to_remove {
@@ -1453,7 +1582,7 @@ pub extern "C" fn vxUnloadKernels(context: vx_context, module: *const vx_char) -
                 }
             }
         }
-        
+
         VX_SUCCESS
     }
 }
@@ -1468,16 +1597,18 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
             Ok(s) => s,
             Err(_) => return std::ptr::null_mut(),
         };
-        
+
         let context_id = context as u32;
-        
+
         // Look up kernel by name in built-in kernels
         if let Ok(kernels) = KERNELS.lock() {
             for (id, kernel) in kernels.iter() {
                 if kernel.name == kernel_name && kernel.context_id == context_id {
                     // Increment both internal and unified reference counts
-                    kernel.ref_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    kernel
+                        .ref_count
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok(counts) = REFERENCE_COUNTS.lock() {
                         if let Some(count) = counts.get(&(*id as usize)) {
                             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         }
@@ -1501,7 +1632,10 @@ pub extern "C" fn vxGetKernelByName(context: vx_context, name: *const vx_char) -
                         if let Some(count) = counts.get(&(kernel_ptr as usize)) {
                             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         } else {
-                            counts.insert(kernel_ptr as usize, std::sync::atomic::AtomicUsize::new(1));
+                            counts.insert(
+                                kernel_ptr as usize,
+                                std::sync::atomic::AtomicUsize::new(1),
+                            );
                         }
                     }
                     return kernel_ptr;
@@ -1520,12 +1654,14 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
         return std::ptr::null_mut();
     }
     let context_id = context as u32;
-    
+
     // Look up kernel by enum
     if let Ok(kernels) = KERNELS.lock() {
         for (id, kernel) in kernels.iter() {
             if kernel.kernel_enum == kernel_e && kernel.context_id == context_id {
-                kernel.ref_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                kernel
+                    .ref_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 // Also increment reference count in unified registry
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                     if let Some(count) = counts.get_mut(&(*id as usize)) {
@@ -1536,7 +1672,7 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
             }
         }
     }
-    
+
     // Kernel not found - create it
     let id = generate_id();
     // Determine num_params based on kernel enum
@@ -1546,7 +1682,8 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
         // 3-parameter kernels
         0x01 | 0x04 | 0x05 | 0x06 | 0x10 | 0x0B | 0x0D | 0x16 | 0x22 | 0x29 | 0x2B => 3,
         // 4-parameter kernels
-        0x02 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0C | 0x14 | 0x1A | 0x21 | 0x23 | 0x24 | 0x28 | 0x2C | 0x40 => 4,
+        0x02 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0C | 0x14 | 0x1A | 0x21 | 0x23 | 0x24 | 0x28
+        | 0x2C | 0x40 => 4,
         // 5-parameter kernels (fast_corners, canny_edge)
         0x1B | 0x26 => 5,
         // 6-parameter kernels (minmaxloc)
@@ -1569,11 +1706,11 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
         num_params,
         ref_count: std::sync::atomic::AtomicUsize::new(1),
     });
-    
+
     if let Ok(mut kernels) = KERNELS.lock() {
         kernels.insert(id, kernel);
     }
-    
+
     // Initialize reference count and type for the kernel
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -1583,7 +1720,7 @@ pub extern "C" fn vxGetKernelByEnum(context: vx_context, kernel_e: vx_enum) -> v
             types.insert(id as usize, crate::unified_c_api::VX_TYPE_KERNEL);
         }
     }
-    
+
     id as *mut VxKernel
 }
 
@@ -1602,7 +1739,8 @@ pub extern "C" fn vxQueryKernel(
         if let Ok(kernels) = KERNELS.lock() {
             if let Some(kernel_data) = kernels.get(&id) {
                 match attribute {
-                    VX_KERNEL_PARAMETERS => { // VX_KERNEL_PARAMETERS
+                    VX_KERNEL_PARAMETERS => {
+                        // VX_KERNEL_PARAMETERS
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1613,14 +1751,16 @@ pub extern "C" fn vxQueryKernel(
                             return VX_SUCCESS;
                         }
                     }
-                    VX_KERNEL_NAME => { // VX_KERNEL_NAME
+                    VX_KERNEL_NAME => {
+                        // VX_KERNEL_NAME
                         let name_bytes = kernel_data.name.as_bytes();
                         let len = name_bytes.len().min(size);
                         let ptr_u8 = ptr as *mut u8;
                         std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr_u8, len);
                         return VX_SUCCESS;
                     }
-                    VX_KERNEL_ENUM => { // VX_KERNEL_ENUM
+                    VX_KERNEL_ENUM => {
+                        // VX_KERNEL_ENUM
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1665,7 +1805,7 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
     } else {
         return std::ptr::null_mut();
     };
-    
+
     // Look up parameter direction from user kernel params or built-in kernel info
     let (direction, data_type, state) = {
         let kernel_enum = kernel_id as crate::unified_c_api::vx_enum;
@@ -1696,11 +1836,11 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
         value: Mutex::new(None),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
     });
-    
+
     if let Ok(mut params) = PARAMETERS.lock() {
         params.insert(id, param.clone());
     }
-    
+
     // Also register in unified_c_api PARAMETERS for vxQueryParameter to find
     if let Ok(mut unified_params) = crate::unified_c_api::PARAMETERS.lock() {
         let unified_param = Arc::new(crate::unified_c_api::VxCParameter {
@@ -1714,7 +1854,7 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
         });
         unified_params.insert(id, unified_param);
     }
-    
+
     // Initialize reference count and type for the parameter
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -1724,7 +1864,7 @@ pub extern "C" fn vxGetKernelParameterByIndex(kernel: vx_kernel, index: vx_uint3
             types.insert(id as usize, crate::unified_c_api::VX_TYPE_PARAMETER);
         }
     }
-    
+
     id as *mut VxParameter
 }
 
@@ -1739,18 +1879,20 @@ pub extern "C" fn vxReleaseKernel(kernel: *mut vx_kernel) -> vx_status {
             return VX_ERROR_INVALID_REFERENCE;
         }
         let id = k as u64;
-        
+
         // First get the count, then drop the lock
         let count = if let Ok(kernels) = KERNELS.lock() {
             if let Some(kernel_data) = kernels.get(&id) {
-                kernel_data.ref_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                kernel_data
+                    .ref_count
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
             } else {
                 0
             }
         } else {
             0
         };
-        
+
         if count <= 1 {
             // Last reference - remove from KERNELS first (this drops the Arc properly)
             // then clean up other registries
@@ -1796,12 +1938,13 @@ pub extern "C" fn vxQueryParameter(
     }
     unsafe {
         let id = param as u64;
-        
+
         // First check local c_api PARAMETERS (where vxGetKernelParameterByIndex stores params)
         if let Ok(params) = PARAMETERS.lock() {
             if let Some(param_data) = params.get(&id) {
                 match attribute {
-                    VX_PARAMETER_INDEX => { // VX_PARAMETER_INDEX
+                    VX_PARAMETER_INDEX => {
+                        // VX_PARAMETER_INDEX
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1812,7 +1955,8 @@ pub extern "C" fn vxQueryParameter(
                             return VX_SUCCESS;
                         }
                     }
-                    VX_PARAMETER_DIRECTION => { // VX_PARAMETER_DIRECTION
+                    VX_PARAMETER_DIRECTION => {
+                        // VX_PARAMETER_DIRECTION
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1823,7 +1967,8 @@ pub extern "C" fn vxQueryParameter(
                             return VX_SUCCESS;
                         }
                     }
-                    VX_PARAMETER_TYPE => { // VX_PARAMETER_TYPE
+                    VX_PARAMETER_TYPE => {
+                        // VX_PARAMETER_TYPE
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1858,12 +2003,13 @@ pub extern "C" fn vxQueryParameter(
                 }
             }
         }
-        
+
         // Also check unified_c_api's PARAMETERS
         if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
             if let Some(param_data) = params.get(&id) {
                 match attribute {
-                    VX_PARAMETER_INDEX => { // VX_PARAMETER_INDEX
+                    VX_PARAMETER_INDEX => {
+                        // VX_PARAMETER_INDEX
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1874,7 +2020,8 @@ pub extern "C" fn vxQueryParameter(
                             return VX_SUCCESS;
                         }
                     }
-                    VX_PARAMETER_DIRECTION => { // VX_PARAMETER_DIRECTION
+                    VX_PARAMETER_DIRECTION => {
+                        // VX_PARAMETER_DIRECTION
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1885,7 +2032,8 @@ pub extern "C" fn vxQueryParameter(
                             return VX_SUCCESS;
                         }
                     }
-                    VX_PARAMETER_TYPE => { // VX_PARAMETER_TYPE
+                    VX_PARAMETER_TYPE => {
+                        // VX_PARAMETER_TYPE
                         if size >= 4 {
                             let ptr_u8 = ptr as *mut u8;
                             std::ptr::copy_nonoverlapping(
@@ -1919,8 +2067,7 @@ pub extern "C" fn vxQueryParameter(
                 }
             }
         }
-        
-        
+
         // Also check unified_c_api's PARAMETERS via helper function
         if attribute == VX_PARAMETER_REF {
             if let Some(ref_value) = crate::unified_c_api::get_parameter_value(id) {
@@ -1980,7 +2127,7 @@ pub extern "C" fn vxSetParameterByIndex(
             return VX_ERROR_INVALID_PARAMETERS;
         }
     }
-    
+
     // Store node data before dropping the lock
     let (context_id, kernel_id) = if let Ok(nodes) = NODES.lock() {
         if let Some(node_data) = nodes.get(&id) {
@@ -1993,15 +2140,15 @@ pub extern "C" fn vxSetParameterByIndex(
                     // but if we get here with NULL, just allow it silently
                 }
             }
-            
+
             if let Ok(mut params) = node_data.parameters.lock() {
                 if (index as usize) < params.len() {
                     // Retain the new value before storing it (if not null)
                     if !value.is_null() {
                         let value_addr = value as usize;
-                        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                        if let Ok(counts) = REFERENCE_COUNTS.lock() {
                             if let Some(cnt) = counts.get(&value_addr) {
-                                let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                let _current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                 cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             } else {
                             }
@@ -2010,7 +2157,7 @@ pub extern "C" fn vxSetParameterByIndex(
                     // Release old value if exists
                     if let Some(old_value) = params[index as usize] {
                         if old_value != 0 {
-                            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                            if let Ok(counts) = REFERENCE_COUNTS.lock() {
                                 if let Some(cnt) = counts.get(&(old_value as usize)) {
                                     let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                     if current > 1 {
@@ -2035,7 +2182,7 @@ pub extern "C" fn vxSetParameterByIndex(
     } else {
         return VX_ERROR_INVALID_REFERENCE;
     };
-    
+
     // Also create/update parameter entry in unified_c_api for vxQueryParameter
     let param_id = (id << 32) | (index as u64);
     crate::unified_c_api::create_or_update_parameter(
@@ -2045,7 +2192,7 @@ pub extern "C" fn vxSetParameterByIndex(
         context_id,
         kernel_id,
     );
-    
+
     // Check if the value is a delay slot reference and register it for delay parameter resolution
     if !value.is_null() {
         let value_addr = value as usize;
@@ -2064,7 +2211,9 @@ pub extern "C" fn vxSetParameterByIndex(
                 if let Ok(slot_logical) = crate::unified_c_api::DELAY_SLOT_LOGICAL.lock() {
                     if let Some(&(delay_addr, logical_idx)) = slot_logical.get(&pyr_addr) {
                         // Register as a delay-related pyramid level image
-                        if let Ok(mut delay_pyr_level) = crate::unified_c_api::DELAY_PYRAMID_LEVEL.lock() {
+                        if let Ok(mut delay_pyr_level) =
+                            crate::unified_c_api::DELAY_PYRAMID_LEVEL.lock()
+                        {
                             delay_pyr_level.insert((id, index), (delay_addr, logical_idx, level));
                         }
                     }
@@ -2072,15 +2221,12 @@ pub extern "C" fn vxSetParameterByIndex(
             }
         }
     }
-    
+
     VX_SUCCESS
 }
 
 #[no_mangle]
-pub extern "C" fn vxSetParameterByReference(
-    param: vx_parameter,
-    value: vx_reference,
-) -> vx_status {
+pub extern "C" fn vxSetParameterByReference(param: vx_parameter, value: vx_reference) -> vx_status {
     if param.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -2088,7 +2234,7 @@ pub extern "C" fn vxSetParameterByReference(
         return VX_ERROR_INVALID_PARAMETERS;
     }
     let id = param as u64;
-    
+
     // Look up node_id and index from the PARAMETERS registry
     let (node_id, index) = if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
@@ -2100,7 +2246,7 @@ pub extern "C" fn vxSetParameterByReference(
     } else {
         (id >> 32, (id & 0xFFFFFFFF) as u32)
     };
-    
+
     // Update parameter value in unified PARAMETERS registry
     if let Ok(params) = crate::unified_c_api::PARAMETERS.lock() {
         if let Some(param_data) = params.get(&id) {
@@ -2109,7 +2255,7 @@ pub extern "C" fn vxSetParameterByReference(
             }
         }
     }
-    
+
     // Also update the node's parameter reference
     if let Ok(nodes) = NODES.lock() {
         if let Some(node_data) = nodes.get(&node_id) {
@@ -2120,7 +2266,7 @@ pub extern "C" fn vxSetParameterByReference(
             }
         }
     }
-    
+
     VX_SUCCESS
 }
 
@@ -2136,17 +2282,16 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
         }
         let id = p as u64;
         let addr = id as usize;
-        
-        
+
         // Validate that this is a reasonable parameter ID
         if id == 0 || id > 0xFFFFFFFFFFFFFFFF {
             return VX_ERROR_INVALID_REFERENCE;
         }
-        
+
         // Check if this parameter is in any graph's parameter list
         let mut in_graph = false;
         if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
-            for (graph_id, g) in graphs_data.iter() {
+            for (_graph_id, g) in graphs_data.iter() {
                 if let Ok(graph_params) = g.parameters.read() {
                     if graph_params.contains(&id) {
                         in_graph = true;
@@ -2155,12 +2300,12 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
                 }
             }
         }
-        
+
         if in_graph {
             // Parameter is in a graph - just decrement ref count
             // DO NOT remove from graph - the graph owns the parameter
             // The graph will free the parameter when vxReleaseGraph is called
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&addr) {
                     let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                     if current > 1 {
@@ -2186,19 +2331,18 @@ pub extern "C" fn vxReleaseParameter(param: *mut vx_parameter) -> vx_status {
                 } else {
                 }
             }
-            
+
             if should_remove {
                 // Remove from unified PARAMETERS only (remove_parameter handles types/counts)
                 crate::unified_c_api::remove_parameter(id);
             }
         }
     }
-    
+
     unsafe {
         *param = std::ptr::null_mut();
     }
-    
-    
+
     VX_SUCCESS
 }
 
@@ -2215,23 +2359,23 @@ pub extern "C" fn vxHint(
     reference: vx_reference,
     hint: vx_enum,
     _data: *const c_void,
-    _data_size: vx_size
+    _data_size: vx_size,
 ) -> vx_status {
     if reference.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    
+
     // Validate hint value
     match hint {
-        VX_HINT_PERFORMANCE_DEFAULT |
-        VX_HINT_PERFORMANCE_LOW_POWER |
-        VX_HINT_PERFORMANCE_HIGH_SPEED => {
+        VX_HINT_PERFORMANCE_DEFAULT
+        | VX_HINT_PERFORMANCE_LOW_POWER
+        | VX_HINT_PERFORMANCE_HIGH_SPEED => {
             // These hints are valid; for now we accept them but don't use them
             // Implementation-specific optimization would go here
         }
         _ => return VX_ERROR_NOT_SUPPORTED,
     }
-    
+
     VX_SUCCESS
 }
 
@@ -2243,17 +2387,17 @@ pub extern "C" fn vxHint(
 
 pub const VX_SUCCESS: vx_status = 0;
 pub const VX_FAILURE: vx_status = -1;
-pub const VX_ERROR_NOT_IMPLEMENTED: vx_status = -2;  // Per OpenVX spec
-pub const VX_ERROR_NOT_SUPPORTED: vx_status = -3;  // Per OpenVX spec
+pub const VX_ERROR_NOT_IMPLEMENTED: vx_status = -2; // Per OpenVX spec
+pub const VX_ERROR_NOT_SUPPORTED: vx_status = -3; // Per OpenVX spec
 pub const VX_ERROR_NOT_SUFFICIENT: vx_status = -4;
 pub const VX_ERROR_NOT_ALLOCATED: vx_status = -5;
 pub const VX_ERROR_NOT_COMPATIBLE: vx_status = -6;
-pub const VX_ERROR_NO_RESOURCES: vx_status = -7;  // Per OpenVX spec
+pub const VX_ERROR_NO_RESOURCES: vx_status = -7; // Per OpenVX spec
 pub const VX_ERROR_NO_MEMORY: vx_status = -8;
 pub const VX_ERROR_OPTIMIZED_AWAY: vx_status = -9;
-pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -10;  // Per OpenVX spec (-10)
+pub const VX_ERROR_INVALID_PARAMETERS: vx_status = -10; // Per OpenVX spec (-10)
 pub const VX_ERROR_INVALID_MODULE: vx_status = -11;
-pub const VX_ERROR_INVALID_REFERENCE: vx_status = -12;  // Per OpenVX spec (-12)
+pub const VX_ERROR_INVALID_REFERENCE: vx_status = -12; // Per OpenVX spec (-12)
 pub const VX_ERROR_INVALID_LINK: vx_status = -13;
 pub const VX_ERROR_INVALID_FORMAT: vx_status = -14;
 pub const VX_ERROR_INVALID_DIMENSION: vx_status = -15;
@@ -2315,25 +2459,25 @@ pub const VX_TYPE_COORDINATES3D: vx_enum = 0x023;
 
 // Node attributes - calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_NODE) + offset
 // VX_ATTRIBUTE_BASE = ((0 << 20) | (0x803 << 8)) = 0x80300
-pub const VX_NODE_STATUS: vx_enum = 0x80300;           // VX_ATTRIBUTE_BASE + 0x00
-pub const VX_NODE_PERFORMANCE: vx_enum = 0x80301;      // VX_ATTRIBUTE_BASE + 0x01
-pub const VX_NODE_BORDER: vx_enum = 0x80302;           // VX_ATTRIBUTE_BASE + 0x02
-pub const VX_NODE_LOCAL_DATA_SIZE: vx_enum = 0x80303;  // VX_ATTRIBUTE_BASE + 0x03
-pub const VX_NODE_LOCAL_DATA_PTR: vx_enum = 0x80304;   // VX_ATTRIBUTE_BASE + 0x04
-pub const VX_NODE_PARAMETERS: vx_enum = 0x80305;       // VX_ATTRIBUTE_BASE + 0x05
-pub const VX_NODE_IS_REPLICATED: vx_enum = 0x80306;    // VX_ATTRIBUTE_BASE + 0x06
-pub const VX_NODE_REPLICATE_FLAGS: vx_enum = 0x80307;  // VX_ATTRIBUTE_BASE + 0x07
+pub const VX_NODE_STATUS: vx_enum = 0x80300; // VX_ATTRIBUTE_BASE + 0x00
+pub const VX_NODE_PERFORMANCE: vx_enum = 0x80301; // VX_ATTRIBUTE_BASE + 0x01
+pub const VX_NODE_BORDER: vx_enum = 0x80302; // VX_ATTRIBUTE_BASE + 0x02
+pub const VX_NODE_LOCAL_DATA_SIZE: vx_enum = 0x80303; // VX_ATTRIBUTE_BASE + 0x03
+pub const VX_NODE_LOCAL_DATA_PTR: vx_enum = 0x80304; // VX_ATTRIBUTE_BASE + 0x04
+pub const VX_NODE_PARAMETERS: vx_enum = 0x80305; // VX_ATTRIBUTE_BASE + 0x05
+pub const VX_NODE_IS_REPLICATED: vx_enum = 0x80306; // VX_ATTRIBUTE_BASE + 0x06
+pub const VX_NODE_REPLICATE_FLAGS: vx_enum = 0x80307; // VX_ATTRIBUTE_BASE + 0x07
 
 // Kernel attributes using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_KERNEL(0x807))
-pub const VX_KERNEL_PARAMETERS: vx_enum = 0x80400;  // VX_ATTRIBUTE_BASE + 0x00
-pub const VX_KERNEL_NAME: vx_enum = 0x80401;      // VX_ATTRIBUTE_BASE + 0x01
-pub const VX_KERNEL_ENUM: vx_enum = 0x80402;      // VX_ATTRIBUTE_BASE + 0x02
+pub const VX_KERNEL_PARAMETERS: vx_enum = 0x80400; // VX_ATTRIBUTE_BASE + 0x00
+pub const VX_KERNEL_NAME: vx_enum = 0x80401; // VX_ATTRIBUTE_BASE + 0x01
+pub const VX_KERNEL_ENUM: vx_enum = 0x80402; // VX_ATTRIBUTE_BASE + 0x02
 
 // Parameter attributes using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_PARAMETER(0x805))
-pub const VX_PARAMETER_INDEX: vx_enum = 0x80500;   // VX_ATTRIBUTE_BASE + 0x00
+pub const VX_PARAMETER_INDEX: vx_enum = 0x80500; // VX_ATTRIBUTE_BASE + 0x00
 pub const VX_PARAMETER_DIRECTION: vx_enum = 0x80501; // VX_ATTRIBUTE_BASE + 0x01
-pub const VX_PARAMETER_TYPE: vx_enum = 0x80502;     // VX_ATTRIBUTE_BASE + 0x02
-pub const VX_PARAMETER_REF: vx_enum = 0x80504;      // VX_ATTRIBUTE_BASE + 0x04
+pub const VX_PARAMETER_TYPE: vx_enum = 0x80502; // VX_ATTRIBUTE_BASE + 0x02
+pub const VX_PARAMETER_REF: vx_enum = 0x80504; // VX_ATTRIBUTE_BASE + 0x04
 
 // Scalar attributes
 pub const VX_SCALAR_TYPE: vx_enum = 0x80D00;
@@ -2364,11 +2508,11 @@ pub const VX_HINT_PERFORMANCE_HIGH_SPEED: vx_enum = 0x2003;
 // Memory and Copy Constants
 // ============================================================================
 // VX_ENUM_BASE(VX_ID_KHRONOS(0), VX_ENUM_ACCESSOR(0x11)) = (0 << 20) | (0x11 << 12) = 0x11000
-pub const VX_READ_ONLY: vx_enum = 0x11001;       // VX_ENUM_BASE(0, 0x11) + 1
-pub const VX_WRITE_ONLY: vx_enum = 0x11002;    // VX_ENUM_BASE(0, 0x11) + 2
+pub const VX_READ_ONLY: vx_enum = 0x11001; // VX_ENUM_BASE(0, 0x11) + 1
+pub const VX_WRITE_ONLY: vx_enum = 0x11002; // VX_ENUM_BASE(0, 0x11) + 2
 pub const VX_READ_AND_WRITE: vx_enum = 0x11003; // VX_ENUM_BASE(0, 0x11) + 3
-// VX_MEMORY_TYPE_HOST = VX_ENUM_BASE(VX_ID_KHRONOS(0), VX_ENUM_MEMORY_TYPE(0x0E)) + 1
-// VX_ENUM_BASE = (0 << 20) | (0x0E << 12) = 0xE000, +1 = 0xE001
+                                                // VX_MEMORY_TYPE_HOST = VX_ENUM_BASE(VX_ID_KHRONOS(0), VX_ENUM_MEMORY_TYPE(0x0E)) + 1
+                                                // VX_ENUM_BASE = (0 << 20) | (0x0E << 12) = 0xE000, +1 = 0xE001
 pub const VX_MEMORY_TYPE_NONE: vx_enum = 0xE000;
 pub const VX_MEMORY_TYPE_HOST: vx_enum = 0xE001;
 
@@ -2394,8 +2538,8 @@ pub const VX_DF_IMAGE_S32: vx_df_image = 0x32333053u32;
 pub const VX_DF_IMAGE_RGB: vx_df_image = 0x32424752u32;
 // Format: 'RGBA' = 0x41424752
 pub const VX_DF_IMAGE_RGBX: vx_df_image = 0x41424752u32;
-pub const VX_DF_IMAGE_RGBA: vx_df_image = 0x41424752u32;  // Same as RGBX per spec
-// Format: 'NV12' = 0x3231564E
+pub const VX_DF_IMAGE_RGBA: vx_df_image = 0x41424752u32; // Same as RGBX per spec
+                                                         // Format: 'NV12' = 0x3231564E
 pub const VX_DF_IMAGE_NV12: vx_df_image = 0x3231564Eu32;
 // Format: 'NV21' = 0x3132564E
 pub const VX_DF_IMAGE_NV21: vx_df_image = 0x3132564Eu32;
@@ -2449,10 +2593,10 @@ pub const VX_CHANNEL_RANGE_YUV_RESTRICTED: vx_enum = 0x7002;
 // ============================================================================
 
 // Array attributes - VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_ARRAY) = (0<<20)|(0x80E<<8) = 0x80E00
-pub const VX_ARRAY_ITEMTYPE: vx_enum = 0x80E00;     // VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_ARRAY) + 0x0
-pub const VX_ARRAY_NUMITEMS: vx_enum = 0x80E01;     // + 0x1
-pub const VX_ARRAY_CAPACITY: vx_enum = 0x80E02;     // + 0x2
-pub const VX_ARRAY_ITEMSIZE: vx_enum = 0x80E03;     // + 0x3
+pub const VX_ARRAY_ITEMTYPE: vx_enum = 0x80E00; // VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_ARRAY) + 0x0
+pub const VX_ARRAY_NUMITEMS: vx_enum = 0x80E01; // + 0x1
+pub const VX_ARRAY_CAPACITY: vx_enum = 0x80E02; // + 0x2
+pub const VX_ARRAY_ITEMSIZE: vx_enum = 0x80E03; // + 0x3
 
 // ============================================================================
 // Opaque Types for Arrays and Structures
@@ -2506,5 +2650,5 @@ pub struct vx_imagepatch_addressing_t {
     pub scale_y: vx_uint32,
     pub step_x: vx_uint32,
     pub step_y: u16,        // C type is vx_uint16 (u16)
-    pub stride_x_bits: u16,  // C type is vx_uint16 (u16)
+    pub stride_x_bits: u16, // C type is vx_uint16 (u16)
 }

@@ -4,25 +4,30 @@
 //! in OpenVX 1.3.1. This algorithm tracks feature points across two images
 //! using a multi-resolution pyramid approach with iterative refinement.
 
-use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait, VxStatus};
-use openvx_image::Image;
-use crate::utils::{get_pixel_bordered, BorderMode, clamp_u8};
+use crate::utils::clamp_u8;
+use openvx_core::{Context, KernelTrait, Referenceable, VxKernel, VxResult, VxStatus};
 
 /// OpticalFlowPyrLK kernel - Lucas-Kanade pyramidal optical flow
 pub struct OpticalFlowPyrLKKernel;
 
 impl OpticalFlowPyrLKKernel {
-    pub fn new() -> Self { OpticalFlowPyrLKKernel }
+    pub fn new() -> Self {
+        OpticalFlowPyrLKKernel
+    }
 }
 
 impl KernelTrait for OpticalFlowPyrLKKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.optical_flow_pyr_lk" }
-    fn get_enum(&self) -> VxKernel { VxKernel::OpticalFlowPyrLK }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.optical_flow_pyr_lk"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::OpticalFlowPyrLK
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         // optical_flow_pyr_lk expects 7 parameters:
         // 0: old_pyramid (pyramid)
-        // 1: new_pyramid (pyramid)  
+        // 1: new_pyramid (pyramid)
         // 2: prev_pts (array of keypoints)
         // 3: new_pts_estimates (array of keypoints, optional)
         // 4: new_pts (output array of keypoints)
@@ -36,7 +41,7 @@ impl KernelTrait for OpticalFlowPyrLKKernel {
         }
         Ok(())
     }
-    
+
     fn execute(&self, _params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
         // The actual execution is handled by the VXU implementation
         // which works with C API types directly
@@ -54,33 +59,38 @@ pub struct PyramidLevel {
 
 /// Build a Gaussian pyramid with the specified number of levels
 /// Uses the same Gaussian kernel as Gaussian5x5: [1,4,6,4,1]/16
-pub fn build_gaussian_pyramid(image: &[u8], width: usize, height: usize, levels: usize) -> Vec<PyramidLevel> {
+pub fn build_gaussian_pyramid(
+    image: &[u8],
+    width: usize,
+    height: usize,
+    levels: usize,
+) -> Vec<PyramidLevel> {
     let mut pyramid = Vec::with_capacity(levels);
-    
+
     // Level 0: Original image
     pyramid.push(PyramidLevel {
         width,
         height,
         data: image.to_vec(),
     });
-    
+
     // Build subsequent levels
     for level in 1..levels {
         let prev = &pyramid[level - 1];
         let new_width = (prev.width + 1) / 2;
         let new_height = (prev.height + 1) / 2;
-        
+
         // Apply Gaussian blur then downsample
         let blurred = gaussian5x5_blur(&prev.data, prev.width, prev.height);
         let downsampled = downsample_by_2(&blurred, prev.width, prev.height);
-        
+
         pyramid.push(PyramidLevel {
             width: new_width,
             height: new_height,
             data: downsampled,
         });
     }
-    
+
     pyramid
 }
 
@@ -89,7 +99,7 @@ fn gaussian5x5_blur(data: &[u8], width: usize, height: usize) -> Vec<u8> {
     let kernel = [1, 4, 6, 4, 1];
     let mut temp = vec![0u8; width * height];
     let mut result = vec![0u8; width * height];
-    
+
     // Horizontal pass
     for y in 0..height {
         for x in 0..width {
@@ -105,7 +115,7 @@ fn gaussian5x5_blur(data: &[u8], width: usize, height: usize) -> Vec<u8> {
             temp[y * width + x] = clamp_u8(sum / weight.max(1));
         }
     }
-    
+
     // Vertical pass
     for y in 0..height {
         for x in 0..width {
@@ -121,7 +131,7 @@ fn gaussian5x5_blur(data: &[u8], width: usize, height: usize) -> Vec<u8> {
             result[y * width + x] = clamp_u8(sum / weight.max(1));
         }
     }
-    
+
     result
 }
 
@@ -130,16 +140,16 @@ fn downsample_by_2(data: &[u8], width: usize, height: usize) -> Vec<u8> {
     let new_width = (width + 1) / 2;
     let new_height = (height + 1) / 2;
     let mut result = vec![0u8; new_width * new_height];
-    
+
     for y in 0..new_height {
         for x in 0..new_width {
             let src_y = y * 2;
             let src_x = x * 2;
-            
+
             // Average 2x2 block
             let mut sum = 0u32;
             let mut count = 0u32;
-            
+
             for dy in 0..2 {
                 for dx in 0..2 {
                     let sy = src_y + dy;
@@ -150,11 +160,11 @@ fn downsample_by_2(data: &[u8], width: usize, height: usize) -> Vec<u8> {
                     }
                 }
             }
-            
+
             result[y * new_width + x] = (sum / count.max(1)) as u8;
         }
     }
-    
+
     result
 }
 
@@ -173,10 +183,10 @@ pub fn lucas_kanade_single_level(
     let half_window = (window_size / 2) as isize;
     let width = prev_level.width;
     let height = prev_level.height;
-    
+
     let mut flow = Vec::with_capacity(prev_points.len());
     let mut status = Vec::with_capacity(prev_points.len());
-    
+
     for (i, &(px, py)) in prev_points.iter().enumerate() {
         // Initialize flow vector
         let (mut u, mut v) = if use_initial_estimate && i < initial_flow.len() {
@@ -184,10 +194,9 @@ pub fn lucas_kanade_single_level(
         } else {
             (0.0, 0.0)
         };
-        
-        let mut converged = false;
+
         let mut valid = true;
-        
+
         // Iterative refinement
         for _iter in 0..max_iter {
             let mut sum_ix2: f32 = 0.0;
@@ -196,33 +205,33 @@ pub fn lucas_kanade_single_level(
             let mut sum_ixit: f32 = 0.0;
             let mut sum_iyit: f32 = 0.0;
             let mut valid_pixels = 0;
-            
+
             // Compute spatial gradients and temporal gradient
             for wy in -half_window..=half_window {
                 for wx in -half_window..=half_window {
                     let x = px as isize + wx;
                     let y = py as isize + wy;
-                    
+
                     if x < 0 || x >= width as isize || y < 0 || y >= height as isize {
                         continue;
                     }
-                    
+
                     let x = x as usize;
                     let y = y as usize;
                     valid_pixels += 1;
-                    
+
                     // Compute spatial gradients using Sobel-like 3x3
                     let ix = compute_grad_x(&prev_level.data, x, y, width, height);
                     let iy = compute_grad_y(&prev_level.data, x, y, width, height);
-                    
+
                     // Compute temporal gradient (frame difference)
                     let curr_x = ((x as f32 + u).max(0.0).min((width - 1) as f32)) as usize;
                     let curr_y = ((y as f32 + v).max(0.0).min((height - 1) as f32)) as usize;
-                    
+
                     let prev_val = prev_level.data[y * width + x] as f32;
                     let next_val = next_level.data[curr_y * width + curr_x] as f32;
                     let it = next_val - prev_val;
-                    
+
                     sum_ix2 += ix * ix;
                     sum_iy2 += iy * iy;
                     sum_ixiy += ix * iy;
@@ -230,41 +239,40 @@ pub fn lucas_kanade_single_level(
                     sum_iyit += iy * it;
                 }
             }
-            
+
             // Check if we have enough valid pixels in the window
             if valid_pixels < window_size * window_size / 2 {
                 valid = false;
                 break;
             }
-            
+
             // Solve 2x2 system [sum_ix2 sum_ixiy; sum_ixiy sum_iy2] * [du; dv] = -[sum_ixit; sum_iyit]
             // Using Cramer's rule
             let det = sum_ix2 * sum_iy2 - sum_ixiy * sum_ixiy;
-            
+
             // Check for singular matrix (ill-conditioned)
             if det.abs() < 1e-6 {
                 valid = false;
                 break;
             }
-            
+
             let du = (sum_iy2 * sum_ixit - sum_ixiy * sum_iyit) / det;
             let dv = (sum_ix2 * sum_iyit - sum_ixiy * sum_ixit) / det;
-            
+
             // Update flow
             u -= du;
             v -= dv;
-            
+
             // Check convergence
             if du * du + dv * dv < epsilon * epsilon {
-                converged = true;
                 break;
             }
         }
-        
+
         flow.push((u, v));
         status.push(valid);
     }
-    
+
     (flow, status)
 }
 
@@ -282,36 +290,34 @@ pub fn optical_flow_pyr_lk_core(
 ) -> (Vec<(f32, f32)>, Vec<bool>) {
     let levels = prev_pyramid.len();
     let num_points = prev_points.len();
-    
+
     // Initialize flow vectors
     let mut flow: Vec<(f32, f32)> = if use_initial_estimate && initial_flow.len() >= num_points {
         initial_flow[..num_points].to_vec()
     } else {
         vec![(0.0, 0.0); num_points]
     };
-    
+
     let mut final_status = vec![true; num_points];
-    
+
     // Coarse-to-fine refinement (start from top of pyramid)
     for level in (0..levels).rev() {
         let level_scale = 1u32 << level; // 2^level
         let scale = level_scale as f32;
-        
+
         // Scale points for this level
         let level_points: Vec<(f32, f32)> = prev_points
             .iter()
             .map(|(x, y)| (x / scale, y / scale))
             .collect();
-        
+
         // Scale accumulated flow from previous levels
-        let level_initial_flow: Vec<(f32, f32)> = flow
-            .iter()
-            .map(|(u, v)| (u / scale, v / scale))
-            .collect();
-        
+        let level_initial_flow: Vec<(f32, f32)> =
+            flow.iter().map(|(u, v)| (u / scale, v / scale)).collect();
+
         // Use initial estimate if not at the coarsest level
         let use_estimate = level < levels - 1 || use_initial_estimate;
-        
+
         // Compute optical flow at this level
         let (level_flow, level_status) = lucas_kanade_single_level(
             &prev_pyramid[level],
@@ -323,7 +329,7 @@ pub fn optical_flow_pyr_lk_core(
             use_estimate,
             &level_initial_flow,
         );
-        
+
         // Accumulate flow and update status
         for i in 0..num_points {
             if level == levels - 1 {
@@ -337,7 +343,7 @@ pub fn optical_flow_pyr_lk_core(
             final_status[i] = final_status[i] && level_status[i];
         }
     }
-    
+
     (flow, final_status)
 }
 
@@ -411,7 +417,7 @@ pub fn vxu_optical_flow_pyr_lk_impl(
     // Build pyramids for both images
     let prev_pyramid = build_gaussian_pyramid(prev_image, width, height, num_levels);
     let next_pyramid = build_gaussian_pyramid(next_image, width, height, num_levels);
-    
+
     // Compute optical flow
     optical_flow_pyr_lk_core(
         &prev_pyramid,
@@ -435,7 +441,7 @@ mod tests {
         let height = 64;
         let data = vec![128u8; width * height];
         let pyramid = build_gaussian_pyramid(&data, width, height, 3);
-        
+
         assert_eq!(pyramid.len(), 3);
         assert_eq!(pyramid[0].width, 64);
         assert_eq!(pyramid[0].height, 64);
@@ -451,15 +457,12 @@ mod tests {
         let height = 4;
         // 4x4 checkerboard
         let data = vec![
-            0, 255, 0, 255,
-            255, 0, 255, 0,
-            0, 255, 0, 255,
-            255, 0, 255, 0,
+            0, 255, 0, 255, 255, 0, 255, 0, 0, 255, 0, 255, 255, 0, 255, 0,
         ];
-        
+
         let result = downsample_by_2(&data, width, height);
         assert_eq!(result.len(), 4); // 2x2
-        // Each 2x2 block averages to ~128
+                                     // Each 2x2 block averages to ~128
         assert!(result[0] > 100 && result[0] < 156);
     }
 
@@ -469,7 +472,7 @@ mod tests {
         let height = 8;
         let data = vec![128u8; width * height];
         let blurred = gaussian5x5_blur(&data, width, height);
-        
+
         // Constant image should remain constant
         assert_eq!(blurred.len(), width * height);
         assert!(blurred.iter().all(|&v| v == 128));

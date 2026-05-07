@@ -1,17 +1,15 @@
 //! C API for OpenVX Data Objects (Scalar, Convolution, Matrix, LUT, Threshold, Pyramid)
 
 #![allow(non_camel_case_types)]
+#![allow(dead_code, hidden_glob_reexports, non_snake_case, unused_unsafe)]
 
-use std::ffi::c_void;
-use std::sync::RwLock;
-use std::sync::Arc;
 pub use crate::c_api::*;
 use crate::unified_c_api::{REFERENCE_COUNTS, REFERENCE_TYPES};
-use crate::unified_c_api::{
-    VX_TYPE_CONVOLUTION, VX_TYPE_MATRIX, VX_TYPE_LUT, 
-    VX_TYPE_THRESHOLD, VX_TYPE_PYRAMID, VX_TYPE_DISTRIBUTION
-};
+use crate::unified_c_api::{VX_TYPE_CONVOLUTION, VX_TYPE_LUT, VX_TYPE_MATRIX, VX_TYPE_THRESHOLD};
+use std::ffi::c_void;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 // Pixel value union (needed for image operations)
 // Match the C OpenVX definition with proper reserved padding
@@ -73,16 +71,16 @@ impl VxCScalarData {
     pub fn type_size(data_type: vx_enum) -> usize {
         match data_type {
             0x001 | 0x003 | 0x002 => 1, // VX_TYPE_CHAR | VX_TYPE_UINT8 | VX_TYPE_INT8
-            0x005 | 0x004 => 2, // VX_TYPE_UINT16 | VX_TYPE_INT16
+            0x005 | 0x004 => 2,         // VX_TYPE_UINT16 | VX_TYPE_INT16
             0x007 | 0x006 | 0x00A | 0x00C => 4, // VX_TYPE_UINT32 | VX_TYPE_INT32 | VX_TYPE_FLOAT32 | VX_TYPE_ENUM
             0x009 | 0x008 | 0x00B | 0x00D => 8, // VX_TYPE_UINT64 | VX_TYPE_INT64 | VX_TYPE_FLOAT64 | VX_TYPE_SIZE
-            0x00E => 4, // VX_TYPE_DF_IMAGE
-            0x010 => 4, // VX_TYPE_BOOL
-            0x020 => 16, // VX_TYPE_RECTANGLE
-            0x021 => 28, // VX_TYPE_KEYPOINT
-            0x022 => 8,  // VX_TYPE_COORDINATES2D
-            0x023 => 12, // VX_TYPE_COORDINATES3D
-            0x024 => 8,  // VX_TYPE_COORDINATES2DF (2 floats)
+            0x00E => 4,                         // VX_TYPE_DF_IMAGE
+            0x010 => 4,                         // VX_TYPE_BOOL
+            0x020 => 16,                        // VX_TYPE_RECTANGLE
+            0x021 => 28,                        // VX_TYPE_KEYPOINT
+            0x022 => 8,                         // VX_TYPE_COORDINATES2D
+            0x023 => 12,                        // VX_TYPE_COORDINATES3D
+            0x024 => 8,                         // VX_TYPE_COORDINATES2DF (2 floats)
             _ => {
                 // Check user-registered struct sizes
                 if data_type >= 0x100 {
@@ -93,7 +91,7 @@ impl VxCScalarData {
                     }
                 }
                 4
-            },
+            }
         }
     }
 }
@@ -125,7 +123,7 @@ pub extern "C" fn vxCreateScalar(
     });
 
     let scalar_ptr = Box::into_raw(scalar) as vx_scalar;
-    
+
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -135,7 +133,7 @@ pub extern "C" fn vxCreateScalar(
             types.insert(scalar_ptr as usize, VX_TYPE_SCALAR);
         }
     }
-    
+
     scalar_ptr
 }
 
@@ -168,7 +166,11 @@ pub extern "C" fn vxCopyScalarData(
             0x11002 | 0x2 => {
                 // VX_WRITE_ONLY
                 let s_mut = &mut *(scalar as *mut VxCScalarData);
-                std::ptr::copy_nonoverlapping(user_ptr as *const u8, s_mut.data.as_mut_ptr(), s_mut.data.len());
+                std::ptr::copy_nonoverlapping(
+                    user_ptr as *const u8,
+                    s_mut.data.as_mut_ptr(),
+                    s_mut.data.len(),
+                );
             }
             0x11003 | 0x3 => {
                 // VX_READ_AND_WRITE
@@ -234,7 +236,7 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
     unsafe {
         if !(*scalar).is_null() {
             let addr = *scalar as usize;
-            
+
             // Check reference count before freeing
             let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&addr) {
@@ -254,7 +256,7 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
             } else {
                 false
             };
-            
+
             if should_free {
                 // Remove from reference counts and types
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -263,10 +265,10 @@ pub extern "C" fn vxReleaseScalar(scalar: *mut vx_scalar) -> vx_status {
                 if let Ok(mut types) = REFERENCE_TYPES.lock() {
                     types.remove(&addr);
                 }
-                
+
                 let _ = Box::from_raw(*scalar as *mut VxCScalarData);
             }
-            
+
             *scalar = std::ptr::null_mut();
         }
     }
@@ -301,7 +303,8 @@ pub extern "C" fn vxCreateConvolution(
         return std::ptr::null_mut();
     }
 
-    let size = columns.checked_mul(rows)
+    let size = columns
+        .checked_mul(rows)
         .and_then(|s| s.try_into().ok())
         .unwrap_or(0);
     if size == 0 {
@@ -316,7 +319,7 @@ pub extern "C" fn vxCreateConvolution(
     });
 
     let conv_ptr = Box::into_raw(conv) as vx_convolution;
-    
+
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -326,7 +329,7 @@ pub extern "C" fn vxCreateConvolution(
             types.insert(conv_ptr as usize, VX_TYPE_CONVOLUTION);
         }
     }
-    
+
     conv_ptr
 }
 
@@ -349,7 +352,9 @@ pub extern "C" fn vxCopyConvolutionCoefficients(
     }
 
     let c = unsafe { &*(conv as *const VxCConvolutionData) };
-    let size = c.columns.checked_mul(c.rows)
+    let size = c
+        .columns
+        .checked_mul(c.rows)
         .and_then(|s| s.checked_mul(std::mem::size_of::<i16>()))
         .unwrap_or(0);
     if size == 0 {
@@ -400,7 +405,7 @@ pub extern "C" fn vxReleaseConvolution(conv: *mut vx_convolution) -> vx_status {
     unsafe {
         if !(*conv).is_null() {
             let addr = *conv as usize;
-            
+
             // Remove from reference counts and types
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
@@ -408,7 +413,7 @@ pub extern "C" fn vxReleaseConvolution(conv: *mut vx_convolution) -> vx_status {
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
-            
+
             let _ = Box::from_raw(*conv as *mut VxCConvolutionData);
             *conv = std::ptr::null_mut();
         }
@@ -440,14 +445,14 @@ pub struct VxCMatrixData {
 impl VxCMatrixData {
     pub fn element_size(data_type: vx_enum) -> usize {
         match data_type {
-            0x003 | 0x002 => 1, // VX_TYPE_UINT8 | VX_TYPE_INT8
-            0x005 | 0x004 => 2, // VX_TYPE_UINT16 | VX_TYPE_INT16
+            0x003 | 0x002 => 1,         // VX_TYPE_UINT8 | VX_TYPE_INT8
+            0x005 | 0x004 => 2,         // VX_TYPE_UINT16 | VX_TYPE_INT16
             0x007 | 0x006 | 0x00A => 4, // VX_TYPE_UINT32 | VX_TYPE_INT32 | VX_TYPE_FLOAT32
             0x009 | 0x008 | 0x00B => 8, // VX_TYPE_UINT64 | VX_TYPE_INT64 | VX_TYPE_FLOAT64
             _ => 4,
         }
     }
-    
+
     /// Get matrix data as a slice of f32 values
     pub fn as_f32_slice(&self) -> Option<Vec<f32>> {
         if self.data_type != VX_TYPE_FLOAT32 {
@@ -467,7 +472,7 @@ impl VxCMatrixData {
         }
         Some(result)
     }
-    
+
     /// Create a reference from a raw pointer
     pub fn from_ptr(ptr: vx_matrix) -> Option<&'static VxCMatrixData> {
         if ptr.is_null() {
@@ -514,7 +519,7 @@ pub extern "C" fn vxCreateMatrix(
     });
 
     let matrix_ptr = Box::into_raw(matrix) as vx_matrix;
-    
+
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -524,7 +529,7 @@ pub extern "C" fn vxCreateMatrix(
             types.insert(matrix_ptr as usize, VX_TYPE_MATRIX);
         }
     }
-    
+
     matrix_ptr
 }
 
@@ -548,7 +553,8 @@ pub extern "C" fn vxCopyMatrix(
 
     let m = unsafe { &*(matrix as *const VxCMatrixData) };
     let elem_size = VxCMatrixData::element_size(m.data_type);
-    let data_size = m.columns
+    let data_size = m
+        .columns
         .checked_mul(m.rows)
         .and_then(|s| s.checked_mul(elem_size))
         .unwrap_or(0);
@@ -606,7 +612,7 @@ pub extern "C" fn vxReleaseMatrix(matrix: *mut vx_matrix) -> vx_status {
     unsafe {
         if !(*matrix).is_null() {
             let addr = *matrix as usize;
-            
+
             // Remove from reference counts and types
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
@@ -614,7 +620,7 @@ pub extern "C" fn vxReleaseMatrix(matrix: *mut vx_matrix) -> vx_status {
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
-            
+
             let _ = Box::from_raw(*matrix as *mut VxCMatrixData);
             *matrix = std::ptr::null_mut();
         }
@@ -650,11 +656,7 @@ impl VxCLUTData {
 
 /// Create a LUT
 #[no_mangle]
-pub extern "C" fn vxCreateLUT(
-    context: vx_context,
-    data_type: vx_enum,
-    count: vx_size,
-) -> vx_lut {
+pub extern "C" fn vxCreateLUT(context: vx_context, data_type: vx_enum, count: vx_size) -> vx_lut {
     if context.is_null() {
         return std::ptr::null_mut();
     }
@@ -674,14 +676,18 @@ pub extern "C" fn vxCreateLUT(
     let lut = Box::new(VxCLUTData {
         data_type,
         count,
-        offset: if data_type == 0x004 { (count / 2) as vx_int32 } else { 0 },
+        offset: if data_type == 0x004 {
+            (count / 2) as vx_int32
+        } else {
+            0
+        },
         data: RwLock::new(vec![0u8; total_size]),
         context,
         mapped_luts: Arc::new(RwLock::new(Vec::new())),
     });
 
     let lut_ptr = Box::into_raw(lut) as vx_lut;
-    
+
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -691,7 +697,7 @@ pub extern "C" fn vxCreateLUT(
             types.insert(lut_ptr as usize, VX_TYPE_LUT);
         }
     }
-    
+
     lut_ptr
 }
 
@@ -763,16 +769,41 @@ pub extern "C" fn vxReleaseLUT(lut: *mut vx_lut) -> vx_status {
     unsafe {
         if !(*lut).is_null() {
             let addr = *lut as usize;
-            
-            // Remove from reference counts and types
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
+
+            // Honor reference counting: only the *last* release frees the
+            // underlying VxCLUTData. Object arrays, retained handles from
+            // `vxGetObjectArrayItem`, etc. all bump REFERENCE_COUNTS, and
+            // releasing the handle prematurely (as the previous version did)
+            // turned every other holder's pointer into use-after-free memory.
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 1 {
+                        cnt.store(
+                            current - 1,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    // No tracking entry — treat as last reference.
+                    true
+                }
+            } else {
+                false
+            };
+
+            if should_free {
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&addr);
+                }
+                let _ = Box::from_raw(*lut as *mut VxCLUTData);
             }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
-            }
-            
-            let _ = Box::from_raw(*lut as *mut VxCLUTData);
             *lut = std::ptr::null_mut();
         }
     }
@@ -782,39 +813,38 @@ pub extern "C" fn vxReleaseLUT(lut: *mut vx_lut) -> vx_status {
 
 /// Query LUT attributes
 #[no_mangle]
-pub extern "C" fn vxQueryLUT(
-    lut: vx_lut,
-    attribute: i32,
-    ptr: *mut c_void,
-    size: usize,
-) -> i32 {
+pub extern "C" fn vxQueryLUT(lut: vx_lut, attribute: i32, ptr: *mut c_void, size: usize) -> i32 {
     if lut.is_null() || ptr.is_null() {
         return -2;
     }
-    
+
     unsafe {
         let l = &*(lut as *const VxCLUTData);
         match attribute {
-            0x80700 => { // VX_LUT_TYPE
+            0x80700 => {
+                // VX_LUT_TYPE
                 if size >= std::mem::size_of::<vx_enum>() {
                     *(ptr as *mut vx_enum) = l.data_type;
                     return 0;
                 }
             }
-            0x80701 => { // VX_LUT_COUNT
+            0x80701 => {
+                // VX_LUT_COUNT
                 if size >= std::mem::size_of::<vx_size>() {
                     *(ptr as *mut vx_size) = l.count;
                     return 0;
                 }
             }
-            0x80702 => { // VX_LUT_SIZE
+            0x80702 => {
+                // VX_LUT_SIZE
                 if size >= std::mem::size_of::<vx_size>() {
                     let elem_size = VxCLUTData::element_size(l.data_type);
                     *(ptr as *mut vx_size) = l.count * elem_size;
                     return 0;
                 }
             }
-            0x80703 => { // VX_LUT_OFFSET
+            0x80703 => {
+                // VX_LUT_OFFSET
                 if size >= std::mem::size_of::<vx_int32>() {
                     *(ptr as *mut vx_int32) = l.offset;
                     return 0;
@@ -823,7 +853,7 @@ pub extern "C" fn vxQueryLUT(
             _ => {}
         }
     }
-    
+
     -30
 }
 
@@ -886,10 +916,7 @@ pub extern "C" fn vxMapLUT(
 
 /// Unmap LUT
 #[no_mangle]
-pub extern "C" fn vxUnmapLUT(
-    lut: vx_lut,
-    map_id: vx_map_id,
-) -> vx_status {
+pub extern "C" fn vxUnmapLUT(lut: vx_lut, map_id: vx_map_id) -> vx_status {
     if lut.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -957,10 +984,10 @@ pub extern "C" fn vxCreateThreshold(
     });
 
     let thresh_ptr = Box::into_raw(threshold) as vx_threshold;
-    
+
     // Register in unified THRESHOLDS registry for type tracking
     crate::unified_c_api::register_threshold(thresh_ptr as usize);
-    
+
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -970,7 +997,7 @@ pub extern "C" fn vxCreateThreshold(
             types.insert(thresh_ptr as usize, VX_TYPE_THRESHOLD);
         }
     }
-    
+
     thresh_ptr
 }
 
@@ -1035,7 +1062,7 @@ pub extern "C" fn vxSetThresholdAttribute(
 pub extern "C" fn vxCreateVirtualThresholdForImage(
     graph: vx_graph,
     thresh_type: vx_enum,
-    input_format: vx_df_image,
+    _input_format: vx_df_image,
     output_format: vx_df_image,
 ) -> vx_threshold {
     if graph.is_null() {
@@ -1056,10 +1083,10 @@ pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
     unsafe {
         if !(*thresh).is_null() {
             let addr = *thresh as usize;
-            
+
             // Unregister from unified THRESHOLDS registry
             crate::unified_c_api::unregister_threshold(addr);
-            
+
             // Remove from reference counts and types
             if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
                 counts.remove(&addr);
@@ -1067,7 +1094,7 @@ pub extern "C" fn vxReleaseThreshold(thresh: *mut vx_threshold) -> vx_status {
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
-            
+
             let _ = Box::from_raw(*thresh as *mut VxCThresholdData);
             *thresh = std::ptr::null_mut();
         }

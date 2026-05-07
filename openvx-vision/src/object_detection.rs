@@ -1,39 +1,46 @@
 //! Object detection operations
 
-use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
+use openvx_core::{Context, KernelTrait, Referenceable, VxKernel, VxResult};
 use openvx_image::Image;
-use crate::utils::{get_pixel_bordered, BorderMode};
 
 /// CannyEdgeDetector kernel
 pub struct CannyEdgeDetectorKernel;
 
 impl CannyEdgeDetectorKernel {
-    pub fn new() -> Self { CannyEdgeDetectorKernel }
+    pub fn new() -> Self {
+        CannyEdgeDetectorKernel
+    }
 }
 
 impl KernelTrait for CannyEdgeDetectorKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.canny_edge_detector" }
-    fn get_enum(&self) -> VxKernel { VxKernel::CannyEdgeDetector }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.canny_edge_detector"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::CannyEdgeDetector
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(1)
+        let dst = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         // Default thresholds
         let low_threshold = 50u8;
         let high_threshold = 150u8;
-        
+
         canny_edge_detector(src, dst, low_threshold, high_threshold)?;
         Ok(())
     }
@@ -43,34 +50,41 @@ impl KernelTrait for CannyEdgeDetectorKernel {
 pub struct HoughLinesPKernel;
 
 impl HoughLinesPKernel {
-    pub fn new() -> Self { HoughLinesPKernel }
+    pub fn new() -> Self {
+        HoughLinesPKernel
+    }
 }
 
 impl KernelTrait for HoughLinesPKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.hough_lines_p" }
-    fn get_enum(&self) -> VxKernel { VxKernel::HoughLinesP }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.hough_lines_p"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::HoughLinesP
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         // Default parameters
         let rho = 1.0f32;
         let theta = std::f32::consts::PI / 180.0;
         let threshold = 50;
         let min_line_length = 10;
         let max_line_gap = 10;
-        
+
         let _lines = hough_lines_p(src, rho, theta, threshold, min_line_length, max_line_gap)?;
-        
+
         Ok(())
     }
 }
@@ -115,21 +129,27 @@ impl ThresholdKernel {
 }
 
 impl KernelTrait for ThresholdKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.threshold" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Threshold }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.threshold"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Threshold
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
 
@@ -158,14 +178,14 @@ impl LineSegment {
     pub fn new(x1: i32, y1: i32, x2: i32, y2: i32) -> Self {
         LineSegment { x1, y1, x2, y2 }
     }
-    
+
     /// Compute line length
     pub fn length(&self) -> f32 {
         let dx = (self.x2 - self.x1) as f32;
         let dy = (self.y2 - self.y1) as f32;
         (dx * dx + dy * dy).sqrt()
     }
-    
+
     /// Compute line angle in radians
     pub fn angle(&self) -> f32 {
         let dy = (self.y2 - self.y1) as f32;
@@ -189,7 +209,7 @@ pub fn canny_edge_detector(
 ) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     // Step 1: Apply Gaussian blur (simplified - use existing 3x3)
     // Use saturating_mul to prevent integer overflow
     let image_size = width.saturating_mul(height);
@@ -197,7 +217,7 @@ pub fn canny_edge_detector(
     {
         let kernel = [1, 2, 1];
         let mut temp = vec![0u8; image_size];
-        
+
         // Horizontal pass
         for y in 0..height {
             for x in 0..width {
@@ -213,7 +233,7 @@ pub fn canny_edge_detector(
                 temp[y * width + x] = (sum / weight.max(1)) as u8;
             }
         }
-        
+
         // Vertical pass
         for y in 0..height {
             for x in 0..width {
@@ -230,7 +250,7 @@ pub fn canny_edge_detector(
             }
         }
     }
-    
+
     // Step 2: Compute gradients using Sobel
     // Use saturating_mul to prevent integer overflow
     let image_size = width.saturating_mul(height);
@@ -238,23 +258,15 @@ pub fn canny_edge_detector(
     let mut grad_y = vec![0f32; image_size];
     let mut magnitude = vec![0f32; image_size];
     let mut direction = vec![0f32; image_size];
-    
-    const SOBEL_X: [[i32; 3]; 3] = [
-        [-1, 0, 1],
-        [-2, 0, 2],
-        [-1, 0, 1],
-    ];
-    const SOBEL_Y: [[i32; 3]; 3] = [
-        [-1, -2, -1],
-        [ 0,  0,  0],
-        [ 1,  2,  1],
-    ];
-    
+
+    const SOBEL_X: [[i32; 3]; 3] = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]];
+    const SOBEL_Y: [[i32; 3]; 3] = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]];
+
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let mut gx: i32 = 0;
             let mut gy: i32 = 0;
-            
+
             for ky in 0..3 {
                 for kx in 0..3 {
                     let px = x + kx - 1;
@@ -264,7 +276,7 @@ pub fn canny_edge_detector(
                     gy += pixel * SOBEL_Y[ky][kx];
                 }
             }
-            
+
             let idx = y * width + x;
             grad_x[idx] = gx as f32;
             grad_y[idx] = gy as f32;
@@ -272,7 +284,7 @@ pub fn canny_edge_detector(
             direction[idx] = (gy as f32).atan2(gx as f32);
         }
     }
-    
+
     // Step 3: Non-maximum suppression
     // Use saturating_mul to prevent integer overflow
     let image_size = width.saturating_mul(height);
@@ -282,40 +294,40 @@ pub fn canny_edge_detector(
             let idx = y * width + x;
             let mag = magnitude[idx];
             let dir = direction[idx];
-            
+
             // Quantize direction to 4 sectors (0, 45, 90, 135 degrees)
             let angle = ((dir + std::f32::consts::PI) * 4.0 / std::f32::consts::PI) as i32 % 4;
-            
+
             let (dx1, dy1, dx2, dy2) = match angle {
-                0 | 2 => (1, 0, -1, 0),    // Horizontal
-                1 => (1, 1, -1, -1),       // 45 degrees
-                3 => (1, -1, -1, 1),       // 135 degrees
-                _ => (0, 1, 0, -1),        // Vertical
+                0 | 2 => (1, 0, -1, 0), // Horizontal
+                1 => (1, 1, -1, -1),    // 45 degrees
+                3 => (1, -1, -1, 1),    // 135 degrees
+                _ => (0, 1, 0, -1),     // Vertical
             };
-            
+
             let idx1 = ((y as isize + dy1) as usize) * width + ((x as isize + dx1) as usize);
             let idx2 = ((y as isize + dy2) as usize) * width + ((x as isize + dx2) as usize);
-            
+
             let neighbor1 = magnitude[idx1];
             let neighbor2 = magnitude[idx2];
-            
+
             if mag >= neighbor1 && mag >= neighbor2 {
                 suppressed[idx] = mag.min(255.0) as u8;
             }
         }
     }
-    
+
     // Step 4: Double threshold and hysteresis
     let mut dst_data = dst.data_mut();
     // Use saturating_mul to prevent integer overflow
     let image_size = width.saturating_mul(height);
     let mut edges = vec![0u8; image_size]; // 0=non-edge, 1=weak, 2=strong
-    
+
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
             let val = suppressed[idx];
-            
+
             if val >= high_threshold {
                 edges[idx] = 2; // Strong edge
             } else if val >= low_threshold {
@@ -323,12 +335,12 @@ pub fn canny_edge_detector(
             }
         }
     }
-    
+
     // Step 5: Edge tracking by hysteresis
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let idx = y * width + x;
-            
+
             if edges[idx] == 2 {
                 // Strong edge - keep it
                 dst_data[idx] = 255;
@@ -352,7 +364,7 @@ pub fn canny_edge_detector(
                         break;
                     }
                 }
-                
+
                 if connected {
                     dst_data[idx] = 255;
                 } else {
@@ -363,7 +375,7 @@ pub fn canny_edge_detector(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -378,23 +390,23 @@ pub fn hough_lines_p(
 ) -> VxResult<Vec<LineSegment>> {
     let width = src.width() as i32;
     let height = src.height() as i32;
-    
+
     // Hough accumulator dimensions
     let max_rho = ((width * width + height * height) as f32).sqrt();
     let rho_bins = (2.0 * max_rho / rho) as usize + 1;
     let theta_bins = (std::f32::consts::PI / theta) as usize + 1;
-    
+
     // Accumulator
     let mut accumulator = vec![vec![0i32; theta_bins]; rho_bins];
-    
+
     // Find edge points and vote
     let mut edge_points: Vec<(i32, i32)> = Vec::new();
-    
+
     for y in 0..height {
         for x in 0..width {
             if src.get_pixel(x as usize, y as usize) > 128 {
                 edge_points.push((x, y));
-                
+
                 // Vote in accumulator
                 for t in 0..theta_bins {
                     let angle = t as f32 * theta;
@@ -407,55 +419,56 @@ pub fn hough_lines_p(
             }
         }
     }
-    
+
     // Find peaks in accumulator
     let mut lines = Vec::new();
-    
+
     for r_idx in 0..rho_bins {
         for t_idx in 0..theta_bins {
             if accumulator[r_idx][t_idx] >= threshold {
                 // Found a line
                 let angle = t_idx as f32 * theta;
                 let r = (r_idx as f32 * rho) - max_rho;
-                
+
                 // Find line segments
                 let mut segment_points: Vec<(i32, i32)> = Vec::new();
-                
+
                 for &(x, y) in &edge_points {
                     let r_calc = x as f32 * angle.cos() + y as f32 * angle.sin();
                     if (r_calc - r).abs() < rho {
                         segment_points.push((x, y));
                     }
                 }
-                
+
                 // Sort points along the line
                 segment_points.sort_by(|a, b| {
                     let proj_a = a.0 as f32 * angle.cos() + a.1 as f32 * angle.sin();
                     let proj_b = b.0 as f32 * angle.cos() + b.1 as f32 * angle.sin();
                     proj_a.partial_cmp(&proj_b).unwrap()
                 });
-                
+
                 // Extract line segments
                 if segment_points.len() >= min_line_length as usize {
                     let mut start = segment_points[0];
                     let mut prev = start;
-                    
+
                     for i in 1..segment_points.len() {
                         let curr = segment_points[i];
                         let gap = ((curr.0 - prev.0).pow(2) + (curr.1 - prev.1).pow(2)) as f32;
-                        
+
                         if gap > (max_line_gap * max_line_gap) as f32 {
                             // End current segment
-                            let dist = ((curr.0 - start.0).pow(2) + (curr.1 - start.1).pow(2)) as f32;
+                            let dist =
+                                ((curr.0 - start.0).pow(2) + (curr.1 - start.1).pow(2)) as f32;
                             if dist >= (min_line_length * min_line_length) as f32 {
                                 lines.push(LineSegment::new(start.0, start.1, prev.0, prev.1));
                             }
                             start = curr;
                         }
-                        
+
                         prev = curr;
                     }
-                    
+
                     // Add last segment
                     let dist = ((prev.0 - start.0).pow(2) + (prev.1 - start.1).pow(2)) as f32;
                     if dist >= (min_line_length * min_line_length) as f32 {
@@ -465,7 +478,7 @@ pub fn hough_lines_p(
             }
         }
     }
-    
+
     Ok(lines)
 }
 
@@ -508,7 +521,11 @@ pub fn threshold_range(src: &Image, dst: &Image, lower: u8, upper: u8, maxval: u
     for y in 0..height {
         for x in 0..width {
             let val = src.get_pixel(x, y);
-            dst_data[y * width + x] = if val >= lower && val <= upper { maxval } else { 0 };
+            dst_data[y * width + x] = if val >= lower && val <= upper {
+                maxval
+            } else {
+                0
+            };
         }
     }
 
@@ -521,12 +538,12 @@ pub fn adaptive_threshold(src: &Image, dst: &Image, block_size: usize, c: i32) -
     let height = src.height();
     let half_block = (block_size / 2) as isize;
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let mut sum: u32 = 0;
             let mut count: u32 = 0;
-            
+
             for dy in -half_block..=half_block {
                 for dx in -half_block..=half_block {
                     let px = x as isize + dx;
@@ -537,14 +554,14 @@ pub fn adaptive_threshold(src: &Image, dst: &Image, block_size: usize, c: i32) -
                     }
                 }
             }
-            
+
             let mean = (sum / count.max(1)) as i32;
             let thresh = (mean - c).max(0).min(255) as u8;
             let val = src.get_pixel(x, y);
-            
+
             dst_data[y * width + x] = if val > thresh { 255 } else { 0 };
         }
     }
-    
+
     Ok(())
 }

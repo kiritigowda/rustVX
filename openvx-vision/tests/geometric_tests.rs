@@ -1,6 +1,6 @@
 //! Geometric operation tests
 
-use openvx_image::{Image, ImageFormat, create_uniform_image};
+use openvx_image::{create_uniform_image, Image, ImageFormat};
 use openvx_vision::geometric::*;
 
 #[test]
@@ -15,12 +15,17 @@ fn test_scale_image_same_size() {
     let input_data = input.data();
 
     // Values should be approximately preserved
-    let diff: i32 = output_data.iter()
+    let diff: i32 = output_data
+        .iter()
         .zip(input_data.iter())
         .map(|(a, b)| (*a as i32 - *b as i32).abs())
         .sum();
     let avg_diff = diff as f32 / output_data.len() as f32;
-    assert!(avg_diff < 5.0, "Scale with same size should preserve values, avg_diff={}", avg_diff);
+    assert!(
+        avg_diff < 5.0,
+        "Scale with same size should preserve values, avg_diff={}",
+        avg_diff
+    );
 }
 
 #[test]
@@ -53,7 +58,12 @@ fn test_warp_affine_identity() {
     // Should be similar (interpolation differences expected)
     for i in 0..output_data.len() {
         let diff = (output_data[i] as i16 - input_data[i] as i16).abs();
-        assert!(diff < 10, "Identity warp should preserve values: diff={} at {}", diff, i);
+        assert!(
+            diff < 10,
+            "Identity warp should preserve values: diff={} at {}",
+            diff,
+            i
+        );
     }
 }
 
@@ -91,7 +101,10 @@ fn test_warp_perspective_identity() {
     // Should be similar (interpolation differences expected)
     for i in 0..output_data.len() {
         let diff = (output_data[i] as i16 - input_data[i] as i16).abs();
-        assert!(diff < 10, "Identity perspective warp should preserve values");
+        assert!(
+            diff < 10,
+            "Identity perspective warp should preserve values"
+        );
     }
 }
 

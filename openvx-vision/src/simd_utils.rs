@@ -36,16 +36,16 @@ pub fn is_avx2_available() -> bool {
 }
 
 /// SIMD lane width for different operations
-pub const SIMD_U8_LANES: usize = 16;  // 128-bit processes 16 u8 values
-pub const SIMD_U16_LANES: usize = 8;  // 128-bit processes 8 u16 values
-pub const SIMD_I16_LANES: usize = 8;  // 128-bit processes 8 i16 values
+pub const SIMD_U8_LANES: usize = 16; // 128-bit processes 16 u8 values
+pub const SIMD_U16_LANES: usize = 8; // 128-bit processes 8 u16 values
+pub const SIMD_I16_LANES: usize = 8; // 128-bit processes 8 i16 values
 pub const SIMD_F32_LANES: usize = 4; // 128-bit processes 4 f32 values
 
 /// AVX2 lane widths (256-bit)
-pub const AVX2_U8_LANES: usize = 32;  // 256-bit processes 32 u8 values
+pub const AVX2_U8_LANES: usize = 32; // 256-bit processes 32 u8 values
 pub const AVX2_U16_LANES: usize = 16; // 256-bit processes 16 u16 values
 pub const AVX2_I16_LANES: usize = 16; // 256-bit processes 16 i16 values
-pub const AVX2_F32_LANES: usize = 8;  // 256-bit processes 8 f32 values
+pub const AVX2_F32_LANES: usize = 8; // 256-bit processes 8 f32 values
 
 /// Helper to round up to nearest multiple
 #[inline]
@@ -67,8 +67,7 @@ pub const fn simd_remainder(len: usize, lanes: usize) -> usize {
 
 /// Scalar fallback implementations (always available)
 pub mod scalar {
-    use super::*;
-    
+
     /// Add images with saturation (scalar version)
     pub fn add_images_sat_scalar(src1: &[u8], src2: &[u8], dst: &mut [u8]) {
         for i in 0..src1.len().min(src2.len()).min(dst.len()) {
@@ -76,7 +75,7 @@ pub mod scalar {
             dst[i] = sum.min(255) as u8;
         }
     }
-    
+
     /// Subtract images with saturation (scalar version)
     pub fn sub_images_sat_scalar(src1: &[u8], src2: &[u8], dst: &mut [u8]) {
         for i in 0..src1.len().min(src2.len()).min(dst.len()) {
@@ -84,7 +83,7 @@ pub mod scalar {
             dst[i] = diff.max(0).min(255) as u8;
         }
     }
-    
+
     /// Weighted average of images (scalar version)
     pub fn weighted_avg_scalar(src1: &[u8], src2: &[u8], dst: &mut [u8], alpha: u8) {
         let beta = 255 - alpha;
@@ -94,7 +93,7 @@ pub mod scalar {
             dst[i] = ((a * alpha as u32 + b * beta as u32) / 256) as u8;
         }
     }
-    
+
     /// RGB to grayscale using BT.709 coefficients (scalar version)
     pub fn rgb_to_gray_scalar(src: &[u8], dst: &mut [u8], num_pixels: usize) {
         // BT.709: Y = 0.2126*R + 0.7152*G + 0.0722*B
@@ -106,25 +105,31 @@ pub mod scalar {
             dst[i] = ((54 * r + 183 * g + 18 * b) / 255) as u8;
         }
     }
-    
+
     /// RGB to YUV using BT.601 coefficients (scalar version)
-    pub fn rgb_to_yuv_scalar(src: &[u8], y_plane: &mut [u8], u_plane: &mut [u8], v_plane: &mut [u8], num_pixels: usize) {
+    pub fn rgb_to_yuv_scalar(
+        src: &[u8],
+        y_plane: &mut [u8],
+        u_plane: &mut [u8],
+        v_plane: &mut [u8],
+        num_pixels: usize,
+    ) {
         for i in 0..num_pixels {
             let r = src[i * 3] as i32;
             let g = src[i * 3 + 1] as i32;
             let b = src[i * 3 + 2] as i32;
-            
+
             // BT.601
             y_plane[i] = (((76 * r + 150 * g + 29 * b) >> 8) + 128).min(255).max(0) as u8;
             u_plane[i] = (((-43 * r - 85 * g + 128 * b) >> 8) + 128).min(255).max(0) as u8;
             v_plane[i] = (((128 * r - 107 * g - 21 * b) >> 8) + 128).min(255).max(0) as u8;
         }
     }
-    
+
     /// Gaussian 3x3 horizontal pass (scalar version)
     pub fn gaussian_h3_scalar(src: &[u8], dst: &mut [u8], width: usize, height: usize) {
         const KERNEL: [i32; 3] = [1, 2, 1];
-        
+
         for y in 0..height {
             for x in 0..width {
                 let mut sum: i32 = 0;
@@ -140,11 +145,11 @@ pub mod scalar {
             }
         }
     }
-    
+
     /// Gaussian 3x3 vertical pass (scalar version)
     pub fn gaussian_v3_scalar(src: &[u8], dst: &mut [u8], width: usize, height: usize) {
         const KERNEL: [i32; 3] = [1, 2, 1];
-        
+
         for y in 0..height {
             for x in 0..width {
                 let mut sum: i32 = 0;
@@ -160,15 +165,11 @@ pub mod scalar {
             }
         }
     }
-    
+
     /// Sobel X pass (scalar version)
     pub fn sobel_x_scalar(src: &[u8], dst: &mut [i16], width: usize, height: usize) {
-        const KERNEL: [[i32; 3]; 3] = [
-            [-1, 0, 1],
-            [-2, 0, 2],
-            [-1, 0, 1],
-        ];
-        
+        const KERNEL: [[i32; 3]; 3] = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]];
+
         for y in 0..height {
             for x in 0..width {
                 let mut sum: i32 = 0;
@@ -176,11 +177,12 @@ pub mod scalar {
                     for kx in 0..3 {
                         let px = x as isize + kx as isize - 1;
                         let py = y as isize + ky as isize - 1;
-                        let pixel = if px >= 0 && px < width as isize && py >= 0 && py < height as isize {
-                            src[py as usize * width + px as usize]
-                        } else {
-                            src[y * width + x] // replicate border
-                        };
+                        let pixel =
+                            if px >= 0 && px < width as isize && py >= 0 && py < height as isize {
+                                src[py as usize * width + px as usize]
+                            } else {
+                                src[y * width + x] // replicate border
+                            };
                         sum += pixel as i32 * KERNEL[ky][kx];
                     }
                 }
@@ -188,15 +190,11 @@ pub mod scalar {
             }
         }
     }
-    
+
     /// Sobel Y pass (scalar version)
     pub fn sobel_y_scalar(src: &[u8], dst: &mut [i16], width: usize, height: usize) {
-        const KERNEL: [[i32; 3]; 3] = [
-            [-1, -2, -1],
-            [ 0,  0,  0],
-            [ 1,  2,  1],
-        ];
-        
+        const KERNEL: [[i32; 3]; 3] = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]];
+
         for y in 0..height {
             for x in 0..width {
                 let mut sum: i32 = 0;
@@ -204,11 +202,12 @@ pub mod scalar {
                     for kx in 0..3 {
                         let px = x as isize + kx as isize - 1;
                         let py = y as isize + ky as isize - 1;
-                        let pixel = if px >= 0 && px < width as isize && py >= 0 && py < height as isize {
-                            src[py as usize * width + px as usize]
-                        } else {
-                            src[y * width + x] // replicate border
-                        };
+                        let pixel =
+                            if px >= 0 && px < width as isize && py >= 0 && py < height as isize {
+                                src[py as usize * width + px as usize]
+                            } else {
+                                src[y * width + x] // replicate border
+                            };
                         sum += pixel as i32 * KERNEL[ky][kx];
                     }
                 }

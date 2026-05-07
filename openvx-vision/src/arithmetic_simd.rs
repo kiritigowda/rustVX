@@ -11,15 +11,15 @@ pub fn add_images_simd(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> 
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
     let len = width * height;
-    
+
     let src1_data = src1.data();
     let src2_data = src2.data();
     let mut dst_data = dst.data_mut();
-    
+
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use crate::x86_64_simd;
@@ -27,10 +27,10 @@ pub fn add_images_simd(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> 
             src1_data.as_ptr(),
             src2_data.as_ptr(),
             dst_data.as_mut_ptr(),
-            len
+            len,
         );
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     unsafe {
         use crate::aarch64_simd;
@@ -38,19 +38,15 @@ pub fn add_images_simd(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> 
             src1_data.as_ptr(),
             src2_data.as_ptr(),
             dst_data.as_mut_ptr(),
-            len
+            len,
         );
     }
-    
+
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        crate::simd_utils::scalar::add_images_sat_scalar(
-            &src1_data,
-            &src2_data,
-            &mut dst_data
-        );
+        crate::simd_utils::scalar::add_images_sat_scalar(&src1_data, &src2_data, &mut dst_data);
     }
-    
+
     Ok(())
 }
 
@@ -60,15 +56,15 @@ pub fn subtract_images_simd(src1: &Image, src2: &Image, dst: &Image) -> VxResult
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
     let len = width * height;
-    
+
     let src1_data = src1.data();
     let src2_data = src2.data();
     let mut dst_data = dst.data_mut();
-    
+
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use crate::x86_64_simd;
@@ -76,10 +72,10 @@ pub fn subtract_images_simd(src1: &Image, src2: &Image, dst: &Image) -> VxResult
             src1_data.as_ptr(),
             src2_data.as_ptr(),
             dst_data.as_mut_ptr(),
-            len
+            len,
         );
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     unsafe {
         use crate::aarch64_simd;
@@ -87,19 +83,15 @@ pub fn subtract_images_simd(src1: &Image, src2: &Image, dst: &Image) -> VxResult
             src1_data.as_ptr(),
             src2_data.as_ptr(),
             dst_data.as_mut_ptr(),
-            len
+            len,
         );
     }
-    
+
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        crate::simd_utils::scalar::sub_images_sat_scalar(
-            &src1_data,
-            &src2_data,
-            &mut dst_data
-        );
+        crate::simd_utils::scalar::sub_images_sat_scalar(&src1_data, &src2_data, &mut dst_data);
     }
-    
+
     Ok(())
 }
 
@@ -109,15 +101,15 @@ pub fn weighted_avg_simd(src1: &Image, src2: &Image, dst: &Image, alpha: u8) -> 
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
     let len = width * height;
-    
+
     let src1_data = src1.data();
     let src2_data = src2.data();
     let mut dst_data = dst.data_mut();
-    
+
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use crate::x86_64_simd;
@@ -126,10 +118,10 @@ pub fn weighted_avg_simd(src1: &Image, src2: &Image, dst: &Image, alpha: u8) -> 
             src2_data.as_ptr(),
             dst_data.as_mut_ptr(),
             len,
-            alpha
+            alpha,
         );
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     unsafe {
         use crate::aarch64_simd;
@@ -138,20 +130,20 @@ pub fn weighted_avg_simd(src1: &Image, src2: &Image, dst: &Image, alpha: u8) -> 
             src2_data.as_ptr(),
             dst_data.as_mut_ptr(),
             len,
-            alpha
+            alpha,
         );
     }
-    
+
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         crate::simd_utils::scalar::weighted_avg_scalar(
             &src1_data,
             &src2_data,
             &mut dst_data,
-            alpha
+            alpha,
         );
     }
-    
+
     Ok(())
 }
 
@@ -160,26 +152,26 @@ pub fn multiply_images_simd(src1: &Image, src2: &Image, dst: &Image, scale: f32)
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
-    
+
     let src1_data = src1.data();
     let src2_data = src2.data();
     let mut dst_data = dst.data_mut();
-    
+
     // Multiplication is harder to vectorize with fixed-point scale
     // For now, use optimized scalar with possible partial SIMD
-    
+
     #[cfg(feature = "simd")]
     {
         // Convert scale to fixed-point for faster computation
         let scale_q8 = (scale * 256.0) as i32;
-        
+
         // Process in SIMD chunks if available
         // (implementation would use 16-bit widening multiply)
     }
-    
+
     // Scalar fallback
     for y in 0..height {
         for x in 0..width {
@@ -190,7 +182,7 @@ pub fn multiply_images_simd(src1: &Image, src2: &Image, dst: &Image, scale: f32)
             dst_data[idx] = product.max(0.0).min(255.0) as u8;
         }
     }
-    
+
     Ok(())
 }
 

@@ -4,18 +4,42 @@
 //! the C API types to the Rust vision kernel implementations.
 
 #![allow(non_camel_case_types)]
+#![allow(
+    dead_code,
+    unreachable_patterns,
+    unused_assignments,
+    unused_unsafe,
+    unused_variables
+)]
 
-use std::ffi::c_void;
 use crate::c_api::{
-    vx_context, vx_image, vx_scalar, vx_array, vx_matrix, vx_convolution,
-    vx_pyramid, vx_threshold, vx_status, vx_bool, vx_float32,
-    vx_enum, vx_df_image, vx_uint32, vx_size, vx_char,
-    VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
-    VX_ERROR_INVALID_FORMAT, VX_ERROR_NOT_IMPLEMENTED,
-    VX_DF_IMAGE_S16, VX_DF_IMAGE_U16, VX_DF_IMAGE_U8,  // Add S16/U16/U8 format constants
+    vx_array,
+    vx_bool,
+    vx_context,
+    vx_convolution,
     vx_coordinates2d_t,
+    vx_df_image,
+    vx_enum,
+    vx_float32,
+    vx_image,
+    vx_map_id,
+    vx_matrix,
+    vx_pyramid,
+    vx_scalar,
+    vx_size,
+    vx_status,
+    vx_threshold,
+    vx_uint32,
+    VX_DF_IMAGE_S16,
+    VX_DF_IMAGE_U8, // Add S16/U16/U8 format constants
+    VX_ERROR_INVALID_FORMAT,
+    VX_ERROR_INVALID_PARAMETERS,
+    VX_ERROR_INVALID_REFERENCE,
+    VX_ERROR_NOT_IMPLEMENTED,
+    VX_SUCCESS,
 };
-use crate::unified_c_api::{vx_distribution, vx_remap, VxCImage, VxCPyramid, vx_border_t};
+use crate::unified_c_api::{vx_border_t, vx_distribution, vx_remap, VxCImage, VxCPyramid};
+use std::ffi::c_void;
 
 /// OpenVX enum constants for norm type
 const VX_NORM_L1: vx_enum = 0x10000;
@@ -46,26 +70,26 @@ fn read_scale_from_scalar(scalar: vx_scalar) -> f32 {
 /// Image format enum for internal use
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageFormat {
-    Gray,       // U8 - single byte per pixel
-    GrayU16,    // U16 - two bytes per pixel
-    GrayS16,    // S16 - two bytes per pixel (signed)
-    GrayU32,    // U32 - four bytes per pixel (for integral image)
+    Gray,    // U8 - single byte per pixel
+    GrayU16, // U16 - two bytes per pixel
+    GrayS16, // S16 - two bytes per pixel (signed)
+    GrayU32, // U32 - four bytes per pixel (for integral image)
     Rgb,
     Rgba,
     NV12,
     NV21,
     IYUV,
     YUV4,
-    YUYV,       // Packed YUV 4:2:2 - Y0 U0 Y1 V0
-    UYVY,       // Packed YUV 4:2:2 - U0 Y0 V0 Y1
+    YUYV, // Packed YUV 4:2:2 - Y0 U0 Y1 V0
+    UYVY, // Packed YUV 4:2:2 - U0 Y0 V0 Y1
 }
 
 impl ImageFormat {
     pub fn channels(&self) -> usize {
         match self {
             ImageFormat::Gray => 1,
-            ImageFormat::GrayU16 => 1,  // U16 is single channel, 2 bytes
-            ImageFormat::GrayS16 => 1,  // S16 is single channel, 2 bytes
+            ImageFormat::GrayU16 => 1, // U16 is single channel, 2 bytes
+            ImageFormat::GrayS16 => 1, // S16 is single channel, 2 bytes
             ImageFormat::GrayU32 => 4,
             ImageFormat::Rgb => 3,
             ImageFormat::Rgba => 4,
@@ -80,7 +104,7 @@ impl ImageFormat {
             ImageFormat::UYVY => 1,
         }
     }
-    
+
     /// Calculate buffer size for this format with given dimensions
     /// For planar formats, this accounts for subsampled chroma planes
     pub fn buffer_size(&self, width: usize, height: usize) -> usize {
@@ -132,30 +156,73 @@ impl Image {
     pub fn new(width: usize, height: usize, format: ImageFormat) -> Option<Self> {
         // Use format-specific buffer size calculation
         let size = format.buffer_size(width, height);
-        
+
         // Check for overflow (0 indicates overflow) and limit size
         if size == 0 || size > (1 << 30) {
             return None;
         }
-        
+
         let data = vec![0u8; size];
-        Some(Image { width, height, format, data, valid_start_x: 0, valid_start_y: 0, valid_end_x: width, valid_end_y: height })
+        Some(Image {
+            width,
+            height,
+            format,
+            data,
+            valid_start_x: 0,
+            valid_start_y: 0,
+            valid_end_x: width,
+            valid_end_y: height,
+        })
     }
 
     pub fn from_data(width: usize, height: usize, format: ImageFormat, data: Vec<u8>) -> Self {
-        Image { width, height, format, data, valid_start_x: 0, valid_start_y: 0, valid_end_x: width, valid_end_y: height }
+        Image {
+            width,
+            height,
+            format,
+            data,
+            valid_start_x: 0,
+            valid_start_y: 0,
+            valid_end_x: width,
+            valid_end_y: height,
+        }
     }
 
-    pub fn width(&self) -> usize { self.width }
-    pub fn height(&self) -> usize { self.height }
-    pub fn format(&self) -> ImageFormat { self.format }
-    pub fn data(&self) -> &[u8] { &self.data }
-    pub fn data_mut(&mut self) -> &mut [u8] { &mut self.data }
-    pub fn valid_rect(&self) -> (usize, usize, usize, usize) { (self.valid_start_x, self.valid_start_y, self.valid_end_x, self.valid_end_y) }
-    pub fn set_valid_rect(&mut self, sx: usize, sy: usize, ex: usize, ey: usize) { self.valid_start_x = sx; self.valid_start_y = sy; self.valid_end_x = ex; self.valid_end_y = ey; }
+    pub fn width(&self) -> usize {
+        self.width
+    }
+    pub fn height(&self) -> usize {
+        self.height
+    }
+    pub fn format(&self) -> ImageFormat {
+        self.format
+    }
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+    pub fn valid_rect(&self) -> (usize, usize, usize, usize) {
+        (
+            self.valid_start_x,
+            self.valid_start_y,
+            self.valid_end_x,
+            self.valid_end_y,
+        )
+    }
+    pub fn set_valid_rect(&mut self, sx: usize, sy: usize, ex: usize, ey: usize) {
+        self.valid_start_x = sx;
+        self.valid_start_y = sy;
+        self.valid_end_x = ex;
+        self.valid_end_y = ey;
+    }
     /// Check if a pixel is within the valid region
     pub fn is_valid_pixel(&self, x: i32, y: i32) -> bool {
-        x >= self.valid_start_x as i32 && x < self.valid_end_x as i32 && y >= self.valid_start_y as i32 && y < self.valid_end_y as i32
+        x >= self.valid_start_x as i32
+            && x < self.valid_end_x as i32
+            && y >= self.valid_start_y as i32
+            && y < self.valid_end_y as i32
     }
 
     pub fn get_pixel(&self, x: usize, y: usize) -> u8 {
@@ -170,7 +237,10 @@ impl Image {
         if x >= self.width || y >= self.height {
             return (0, 0, 0);
         }
-        let idx = y.saturating_mul(self.width).saturating_add(x).saturating_mul(3);
+        let idx = y
+            .saturating_mul(self.width)
+            .saturating_add(x)
+            .saturating_mul(3);
         if idx.saturating_add(2) >= self.data.len() {
             return (0, 0, 0);
         }
@@ -212,7 +282,10 @@ impl Image {
 
     pub fn set_rgb(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
         if x < self.width && y < self.height {
-            let idx = y.saturating_mul(self.width).saturating_add(x).saturating_mul(3);
+            let idx = y
+                .saturating_mul(self.width)
+                .saturating_add(x)
+                .saturating_mul(3);
             if idx.saturating_add(2) < self.data.len() {
                 self.data[idx] = r;
                 self.data[idx + 1] = g;
@@ -226,7 +299,7 @@ impl Image {
 fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
     match df {
         0x38303055 => Some(ImageFormat::Gray), // VX_DF_IMAGE_U8 ('U008')
-        0x31305555 => Some(ImageFormat::GrayU16), // VX_DF_IMAGE_U16 ('U016') 
+        0x31305555 => Some(ImageFormat::GrayU16), // VX_DF_IMAGE_U16 ('U016')
         0x53313053 => Some(ImageFormat::GrayS16), // VX_DF_IMAGE_S16 ('S016') - CORRECTED
         0x36313053 => Some(ImageFormat::GrayS16), // Alternative S16 format code
         0x32333055 => Some(ImageFormat::GrayU32), // VX_DF_IMAGE_U32 ('U032')
@@ -239,7 +312,7 @@ fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
         0x34565559 => Some(ImageFormat::YUV4), // Alternative YUV4 format code
         0x56595559 => Some(ImageFormat::YUYV), // VX_DF_IMAGE_YUYV ('YUYV')
         0x59565955 => Some(ImageFormat::UYVY), // VX_DF_IMAGE_UYVY ('UYVY')
-        _ => Some(ImageFormat::Gray), // Default to gray
+        _ => Some(ImageFormat::Gray),          // Default to gray
     }
 }
 
@@ -345,7 +418,12 @@ unsafe fn c_image_to_rust(image: vx_image) -> Option<Image> {
         }
         let mut result = Image::from_data(roi_w, roi_h, format, roi_data);
         if let Ok(vr) = img.valid_rect.read() {
-            result.set_valid_rect(vr.start_x as usize, vr.start_y as usize, vr.end_x as usize, vr.end_y as usize);
+            result.set_valid_rect(
+                vr.start_x as usize,
+                vr.start_y as usize,
+                vr.end_x as usize,
+                vr.end_y as usize,
+            );
         }
         return Some(result);
     }
@@ -353,7 +431,12 @@ unsafe fn c_image_to_rust(image: vx_image) -> Option<Image> {
     let mut result = Image::from_data(width as usize, height as usize, format, data);
     // Read valid rectangle from C image
     if let Ok(vr) = img.valid_rect.read() {
-        result.set_valid_rect(vr.start_x as usize, vr.start_y as usize, vr.end_x as usize, vr.end_y as usize);
+        result.set_valid_rect(
+            vr.start_x as usize,
+            vr.start_y as usize,
+            vr.end_x as usize,
+            vr.end_y as usize,
+        );
     }
     Some(result)
 }
@@ -440,7 +523,9 @@ unsafe fn copy_rust_to_c_image(src: &Image, dst: vx_image) -> vx_status {
                 let dst_offset = ((roi_start_y + y) * parent_stride) + roi_start_x * bpp;
                 let src_offset = y * roi_w * bpp;
                 let copy_len = roi_w * bpp;
-                if dst_offset + copy_len <= dst_data.len() && src_offset + copy_len <= src.data.len() {
+                if dst_offset + copy_len <= dst_data.len()
+                    && src_offset + copy_len <= src.data.len()
+                {
                     dst_data[dst_offset..dst_offset + copy_len]
                         .copy_from_slice(&src.data[src_offset..src_offset + copy_len]);
                 }
@@ -557,7 +642,7 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
         dst_data.copy_from_slice(&src.data);
         return VX_SUCCESS;
     }
-    
+
     // RGB to RGBA/RGBX conversion: 3 bytes/pixel to 4 bytes/pixel
     // src.data.len() == width * height * 3
     // dst_data.len() == width * height * 4
@@ -566,7 +651,7 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
         let height = src.height;
         let expected_src = width * height * 3;
         let expected_dst = width * height * 4;
-        
+
         if src.data.len() == expected_src && dst_data.len() == expected_dst {
             for y in 0..height {
                 for x in 0..width {
@@ -581,14 +666,14 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
             return VX_SUCCESS;
         }
     }
-    
+
     // Gray to RGB conversion: 1 byte/pixel to 3 bytes/pixel
     if src.format == ImageFormat::Gray && dst_format == ImageFormat::Rgb {
         let width = src.width;
         let height = src.height;
         let expected_src = width * height;
         let expected_dst = width * height * 3;
-        
+
         if src.data.len() == expected_src && dst_data.len() == expected_dst {
             for y in 0..height {
                 for x in 0..width {
@@ -602,14 +687,14 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
             return VX_SUCCESS;
         }
     }
-    
+
     // Gray to RGBA conversion: 1 byte/pixel to 4 bytes/pixel
     if src.format == ImageFormat::Gray && dst_format == ImageFormat::Rgba {
         let width = src.width;
         let height = src.height;
         let expected_src = width * height;
         let expected_dst = width * height * 4;
-        
+
         if src.data.len() == expected_src && dst_data.len() == expected_dst {
             for y in 0..height {
                 for x in 0..width {
@@ -624,14 +709,14 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
             return VX_SUCCESS;
         }
     }
-    
+
     // RGBA to RGB conversion: 4 bytes/pixel to 3 bytes/pixel
     if src.format == ImageFormat::Rgba && dst_format == ImageFormat::Rgb {
         let width = src.width;
         let height = src.height;
         let expected_src = width * height * 4;
         let expected_dst = width * height * 3;
-        
+
         if src.data.len() == expected_src && dst_data.len() == expected_dst {
             for y in 0..height {
                 for x in 0..width {
@@ -646,7 +731,7 @@ unsafe fn copy_rust_to_c_image_optimized(src: &Image, dst: vx_image) -> vx_statu
             return VX_SUCCESS;
         }
     }
-    
+
     VX_ERROR_INVALID_PARAMETERS
 }
 
@@ -704,9 +789,7 @@ unsafe fn convert_and_copy(src: &Image, dst: vx_image, target_format: vx_df_imag
             }
             VX_SUCCESS
         }
-        (src, dst) => {
-            VX_ERROR_INVALID_FORMAT
-        }
+        (_src, _dst) => VX_ERROR_INVALID_FORMAT,
     }
 }
 
@@ -724,17 +807,17 @@ unsafe fn create_matching_image(c_image: vx_image) -> Option<Image> {
 /// Y = 0.2126*R + 0.7152*G + 0.0722*B
 /// U = 128 - 0.1146*R - 0.3854*G + 0.5*B
 /// V = 128 + 0.5*R - 0.4542*G - 0.0458*B
-const Y_COEFF_R: i32 = 54;   // 0.2126 * 256 (BT.709)
-const Y_COEFF_G: i32 = 183;  // 0.7152 * 256 (BT.709)
-const Y_COEFF_B: i32 = 18;   // 0.0722 * 256 (BT.709)
+const Y_COEFF_R: i32 = 54; // 0.2126 * 256 (BT.709)
+const Y_COEFF_G: i32 = 183; // 0.7152 * 256 (BT.709)
+const Y_COEFF_B: i32 = 18; // 0.0722 * 256 (BT.709)
 
-const U_COEFF_R: i32 = -29;  // -0.1146 * 256 (BT.709)
-const U_COEFF_G: i32 = -99;  // -0.3854 * 256 (BT.709)
-const U_COEFF_B: i32 = 128;  // 0.5 * 256
+const U_COEFF_R: i32 = -29; // -0.1146 * 256 (BT.709)
+const U_COEFF_G: i32 = -99; // -0.3854 * 256 (BT.709)
+const U_COEFF_B: i32 = 128; // 0.5 * 256
 
-const V_COEFF_R: i32 = 128;  // 0.5 * 256
+const V_COEFF_R: i32 = 128; // 0.5 * 256
 const V_COEFF_G: i32 = -116; // -0.4542 * 256 (BT.709)
-const V_COEFF_B: i32 = -12;  // -0.0458 * 256 (BT.709)
+const V_COEFF_B: i32 = -12; // -0.0458 * 256 (BT.709)
 
 /// Clamp value to u8 range
 #[inline]
@@ -748,16 +831,15 @@ fn clamp_u8(val: i32) -> u8 {
 /// CTS uses: (int)(r*0.2126f + g*0.7152f + b*0.0722f + 0.5f)
 ///           (int)(-r*0.1146f - g*0.3854f + b*0.5f + 128.5f)
 ///           (int)(r*0.5f - g*0.4542f - b*0.0458f + 128.5f)
-#[inline]
 fn rgb_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let rf = r as f32;
     let gf = g as f32;
     let bf = b as f32;
-    
+
     let yval = (rf * 0.2126 + gf * 0.7152 + bf * 0.0722 + 0.5) as i32;
     let uval = (-rf * 0.1146 - gf * 0.3854 + bf * 0.5 + 128.5) as i32;
     let vval = (rf * 0.5 - gf * 0.4542 - bf * 0.0458 + 128.5) as i32;
-    
+
     (clamp_u8(yval), clamp_u8(uval), clamp_u8(vval))
 }
 
@@ -770,11 +852,11 @@ fn yuv_to_rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
     let yf = y as f32;
     let uf = (u as f32) - 128.0;
     let vf = (v as f32) - 128.0;
-    
+
     let rval = (yf + 1.5748 * vf + 0.5) as i32;
     let gval = (yf - 0.1873 * uf - 0.4681 * vf + 0.5) as i32;
     let bval = (yf + 1.8556 * uf + 0.5) as i32;
-    
+
     (clamp_u8(rval), clamp_u8(gval), clamp_u8(bval))
 }
 
@@ -827,7 +909,7 @@ fn get_nv12_uv_indices(x: usize, y: usize, width: usize, y_size: usize) -> usize
 }
 
 pub fn vxu_color_convert_impl(
-    context: vx_context,
+    _context: vx_context,
     input: vx_image,
     output: vx_image,
 ) -> vx_status {
@@ -862,13 +944,11 @@ pub fn vxu_color_convert_impl(
             Some(f) => f,
             None => return VX_ERROR_INVALID_FORMAT,
         };
-        
-
 
         // Access source and destination data directly
         let src_img = &*(input as *const VxCImage);
         let dst_img = &*(output as *const VxCImage);
-        
+
         let src_data = match src_img.data.read() {
             Ok(d) => d,
             Err(_) => return VX_ERROR_INVALID_REFERENCE,
@@ -929,7 +1009,7 @@ pub fn vxu_color_convert_impl(
                 if src_data.len() >= src_len && dst_data.len() >= dst_total {
                     // Clear destination first
                     dst_data.fill(128);
-                    
+
                     // First pass: compute Y plane
                     for y in 0..height {
                         for x in 0..width {
@@ -941,14 +1021,14 @@ pub fn vxu_color_convert_impl(
                             dst_data[y * width + x] = y_val;
                         }
                     }
-                    
+
                     // Second pass: compute UV plane (subsampled 2x2)
                     // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
                             let mut sum_u = 0i32;
                             let mut sum_v = 0i32;
-                            
+
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
@@ -962,10 +1042,10 @@ pub fn vxu_color_convert_impl(
                                     sum_v += v as i32;
                                 }
                             }
-                            
+
                             let u_val = (sum_u / 4) as u8;
                             let v_val = (sum_v / 4) as u8;
-                            
+
                             let uv_y = y / 2;
                             let uv_idx = y_size + uv_y * width + x;
                             if uv_idx + 1 < dst_data.len() {
@@ -986,10 +1066,10 @@ pub fn vxu_color_convert_impl(
                 if src_data.len() >= src_len && dst_data.len() >= dst_total {
                     // Clear destination
                     dst_data.fill(0);
-                    
+
                     let half_w = (width + 1) / 2;
-                    let half_h = (height + 1) / 2;
-                    
+                    let _half_h = (height + 1) / 2;
+
                     // Compute Y plane
                     for y in 0..height {
                         for x in 0..width {
@@ -1001,14 +1081,14 @@ pub fn vxu_color_convert_impl(
                             dst_data[y * width + x] = y_val;
                         }
                     }
-                    
+
                     // Compute U and V planes (subsampled 2x2)
                     // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
                             let mut sum_u = 0i32;
                             let mut sum_v = 0i32;
-                            
+
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
@@ -1022,15 +1102,15 @@ pub fn vxu_color_convert_impl(
                                     sum_v += v as i32;
                                 }
                             }
-                            
+
                             let u_val = (sum_u / 4) as u8;
                             let v_val = (sum_v / 4) as u8;
-                            
+
                             let uv_y = y / 2;
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            
+
                             if u_idx < dst_data.len() {
                                 dst_data[u_idx] = u_val;
                             }
@@ -1056,7 +1136,7 @@ pub fn vxu_color_convert_impl(
                             let g = src_data[src_idx + 1];
                             let b = src_data[src_idx + 2];
                             let (y_val, u_val, v_val) = rgb_to_yuv(r, g, b);
-                            
+
                             let idx = y * width + x;
                             dst_data[idx] = y_val;
                             dst_data[y_size + idx] = u_val;
@@ -1143,7 +1223,7 @@ pub fn vxu_color_convert_impl(
                 if src_data.len() >= src_len && dst_data.len() >= dst_total {
                     // Clear destination first
                     dst_data.fill(128);
-                    
+
                     // First pass: compute Y plane
                     for y in 0..height {
                         for x in 0..width {
@@ -1155,14 +1235,14 @@ pub fn vxu_color_convert_impl(
                             dst_data[y * width + x] = y_val;
                         }
                     }
-                    
+
                     // Second pass: compute UV plane (subsampled 2x2)
                     // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
                             let mut sum_u = 0i32;
                             let mut sum_v = 0i32;
-                            
+
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
@@ -1176,10 +1256,10 @@ pub fn vxu_color_convert_impl(
                                     sum_v += v as i32;
                                 }
                             }
-                            
+
                             let u_val = (sum_u / 4) as u8;
                             let v_val = (sum_v / 4) as u8;
-                            
+
                             let uv_y = y / 2;
                             let uv_idx = y_size + uv_y * width + x;
                             if uv_idx + 1 < dst_data.len() {
@@ -1204,11 +1284,19 @@ pub fn vxu_color_convert_impl(
                             let uv_y = y / 2;
                             let uv_x = (x / 2) * 2;
                             let uv_idx = y_size + uv_y * width + uv_x;
-                            let u = if uv_idx < src_data.len() { src_data[uv_idx] } else { 128 };
-                            let v = if uv_idx + 1 < src_data.len() { src_data[uv_idx + 1] } else { 128 };
-                            
+                            let u = if uv_idx < src_data.len() {
+                                src_data[uv_idx]
+                            } else {
+                                128
+                            };
+                            let v = if uv_idx + 1 < src_data.len() {
+                                src_data[uv_idx + 1]
+                            } else {
+                                128
+                            };
+
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
-                            
+
                             let dst_idx = y * width * 3 + x * 3;
                             dst_data[dst_idx] = r;
                             dst_data[dst_idx + 1] = g;
@@ -1231,9 +1319,17 @@ pub fn vxu_color_convert_impl(
                             let uv_y = y / 2;
                             let uv_x = (x / 2) * 2;
                             let uv_idx = y_size + uv_y * width + uv_x;
-                            let u = if uv_idx < src_data.len() { src_data[uv_idx] } else { 128 };
-                            let v = if uv_idx + 1 < src_data.len() { src_data[uv_idx + 1] } else { 128 };
-                            
+                            let u = if uv_idx < src_data.len() {
+                                src_data[uv_idx]
+                            } else {
+                                128
+                            };
+                            let v = if uv_idx + 1 < src_data.len() {
+                                src_data[uv_idx + 1]
+                            } else {
+                                128
+                            };
+
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
                             let dst_idx = y * width * 4 + x * 4;
                             dst_data[dst_idx] = r;
@@ -1254,10 +1350,10 @@ pub fn vxu_color_convert_impl(
                 if src_data.len() >= src_len && dst_data.len() >= dst_total {
                     // Clear destination
                     dst_data.fill(0);
-                    
+
                     let half_w = (width + 1) / 2;
-                    let half_h = (height + 1) / 2;
-                    
+                    let _half_h = (height + 1) / 2;
+
                     // Compute Y plane
                     for y in 0..height {
                         for x in 0..width {
@@ -1269,14 +1365,14 @@ pub fn vxu_color_convert_impl(
                             dst_data[y * width + x] = y_val;
                         }
                     }
-                    
+
                     // Compute U and V planes (subsampled 2x2)
                     // CTS reference: convert each pixel to YUV, then average the U and V values
                     for y in (0..height).step_by(2) {
                         for x in (0..width).step_by(2) {
                             let mut sum_u = 0i32;
                             let mut sum_v = 0i32;
-                            
+
                             for dy in 0..2 {
                                 for dx in 0..2 {
                                     let py = (y + dy).min(height - 1);
@@ -1290,15 +1386,15 @@ pub fn vxu_color_convert_impl(
                                     sum_v += v as i32;
                                 }
                             }
-                            
+
                             let u_val = (sum_u / 4) as u8;
                             let v_val = (sum_v / 4) as u8;
-                            
+
                             let uv_y = y / 2;
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            
+
                             if u_idx < dst_data.len() {
                                 dst_data[u_idx] = u_val;
                             }
@@ -1318,8 +1414,8 @@ pub fn vxu_color_convert_impl(
                 let dst_len = width * height * 3;
                 if src_data.len() >= src_total && dst_data.len() >= dst_len {
                     let half_w = (width + 1) / 2;
-                    let half_h = (height + 1) / 2;
-                    
+                    let _half_h = (height + 1) / 2;
+
                     for y in 0..height {
                         for x in 0..width {
                             let y_val = src_data[y * width + x];
@@ -1327,10 +1423,18 @@ pub fn vxu_color_convert_impl(
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            
-                            let u = if u_idx < src_data.len() { src_data[u_idx] } else { 128 };
-                            let v = if v_idx < src_data.len() { src_data[v_idx] } else { 128 };
-                            
+
+                            let u = if u_idx < src_data.len() {
+                                src_data[u_idx]
+                            } else {
+                                128
+                            };
+                            let v = if v_idx < src_data.len() {
+                                src_data[v_idx]
+                            } else {
+                                128
+                            };
+
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
                             let dst_idx = y * width * 3 + x * 3;
                             dst_data[dst_idx] = r;
@@ -1349,7 +1453,7 @@ pub fn vxu_color_convert_impl(
                 let dst_len = width * height * 4;
                 if src_data.len() >= src_total && dst_data.len() >= dst_len {
                     let half_w = (width + 1) / 2;
-                    
+
                     for y in 0..height {
                         for x in 0..width {
                             let y_val = src_data[y * width + x];
@@ -1357,10 +1461,18 @@ pub fn vxu_color_convert_impl(
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            
-                            let u = if u_idx < src_data.len() { src_data[u_idx] } else { 128 };
-                            let v = if v_idx < src_data.len() { src_data[v_idx] } else { 128 };
-                            
+
+                            let u = if u_idx < src_data.len() {
+                                src_data[u_idx]
+                            } else {
+                                128
+                            };
+                            let v = if v_idx < src_data.len() {
+                                src_data[v_idx]
+                            } else {
+                                128
+                            };
+
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
                             let dst_idx = y * width * 4 + x * 4;
                             dst_data[dst_idx] = r;
@@ -1386,7 +1498,7 @@ pub fn vxu_color_convert_impl(
                             let g = src_data[src_idx + 1];
                             let b = src_data[src_idx + 2];
                             let (y_val, u_val, v_val) = rgb_to_yuv(r, g, b);
-                            
+
                             dst_data[y * width + x] = y_val;
                             dst_data[y_size + y * width + x] = u_val;
                             dst_data[y_size + u_size + y * width + x] = v_val;
@@ -1408,7 +1520,7 @@ pub fn vxu_color_convert_impl(
                             let y_val = src_data[idx];
                             let u = src_data[y_size + idx];
                             let v = src_data[y_size + u_size + idx];
-                            
+
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
                             let dst_idx = y * width * 3 + x * 3;
                             dst_data[dst_idx] = r;
@@ -1432,7 +1544,7 @@ pub fn vxu_color_convert_impl(
                             let y_val = src_data[idx];
                             let u = src_data[y_size + idx];
                             let v = src_data[y_size + u_size + idx];
-                            
+
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
                             let dst_idx = y * width * 4 + x * 4;
                             dst_data[dst_idx] = r;
@@ -1448,26 +1560,27 @@ pub fn vxu_color_convert_impl(
             }
             // IYUV to NV12
             (ImageFormat::IYUV, ImageFormat::NV12) => {
-                let (src_y_size, src_u_size, _, src_total) = get_iyuv_plane_info(src_width, src_height);
+                let (src_y_size, src_u_size, _, src_total) =
+                    get_iyuv_plane_info(src_width, src_height);
                 let (dst_y_size, _, dst_total) = get_nv12_plane_info(src_width, src_height);
                 if src_data.len() >= src_total && dst_data.len() >= dst_total {
                     let half_w = (width + 1) / 2;
                     let half_h = (height + 1) / 2;
-                    
+
                     // Copy Y plane
                     for y in 0..height {
                         for x in 0..width {
                             dst_data[y * width + x] = src_data[y * width + x];
                         }
                     }
-                    
+
                     // Interleave U and V planes
                     for y in 0..half_h {
                         for x in 0..half_w {
                             let u_idx = src_y_size + y * half_w + x;
                             let v_idx = src_y_size + src_u_size + y * half_w + x;
                             let uv_idx = dst_y_size + y * width + x * 2;
-                            
+
                             if uv_idx + 1 < dst_data.len() {
                                 dst_data[uv_idx] = src_data[u_idx];
                                 dst_data[uv_idx + 1] = src_data[v_idx];
@@ -1482,25 +1595,26 @@ pub fn vxu_color_convert_impl(
             // NV12 to IYUV
             (ImageFormat::NV12, ImageFormat::IYUV) => {
                 let (src_y_size, _, src_total) = get_nv12_plane_info(src_width, src_height);
-                let (dst_y_size, dst_u_size, _, dst_total) = get_iyuv_plane_info(src_width, src_height);
+                let (dst_y_size, dst_u_size, _, dst_total) =
+                    get_iyuv_plane_info(src_width, src_height);
                 if src_data.len() >= src_total && dst_data.len() >= dst_total {
                     let half_w = (width + 1) / 2;
                     let half_h = (height + 1) / 2;
-                    
+
                     // Copy Y plane
                     for y in 0..height {
                         for x in 0..width {
                             dst_data[y * width + x] = src_data[y * width + x];
                         }
                     }
-                    
+
                     // De-interleave UV plane
                     for y in 0..half_h {
                         for x in 0..half_w {
                             let uv_idx = src_y_size + y * width + x * 2;
                             let u_idx = dst_y_size + y * half_w + x;
                             let v_idx = dst_y_size + dst_u_size + y * half_w + x;
-                            
+
                             if uv_idx + 1 < src_data.len() {
                                 if u_idx < dst_data.len() {
                                     dst_data[u_idx] = src_data[uv_idx];
@@ -1518,8 +1632,10 @@ pub fn vxu_color_convert_impl(
             }
             // NV12 to YUV4
             (ImageFormat::NV12, ImageFormat::YUV4) => {
-                let (src_y_size, _src_uv_size, src_total) = get_nv12_plane_info(src_width, src_height);
-                let (dst_y_size, dst_u_size, dst_total) = get_yuv4_plane_info(src_width, src_height);
+                let (src_y_size, _src_uv_size, src_total) =
+                    get_nv12_plane_info(src_width, src_height);
+                let (dst_y_size, dst_u_size, dst_total) =
+                    get_yuv4_plane_info(src_width, src_height);
                 if src_data.len() >= src_total && dst_data.len() >= dst_total {
                     // Copy Y plane
                     for y in 0..height {
@@ -1527,7 +1643,7 @@ pub fn vxu_color_convert_impl(
                             dst_data[y * width + x] = src_data[y * width + x];
                         }
                     }
-                    
+
                     // Expand UV to full size U and V planes
                     // NV12: UV interleaved, U first
                     // UV plane has same width as Y but half height
@@ -1539,9 +1655,17 @@ pub fn vxu_color_convert_impl(
                             // In NV12, UV pairs are stored interleaved
                             // Each UV pair takes 2 bytes, and there are width/2 pairs per row
                             let uv_idx = src_y_size + uv_y * width + uv_x * 2;
-                            let u = if uv_idx < src_data.len() { src_data[uv_idx] } else { 128 };
-                            let v = if uv_idx + 1 < src_data.len() { src_data[uv_idx + 1] } else { 128 };
-                            
+                            let u = if uv_idx < src_data.len() {
+                                src_data[uv_idx]
+                            } else {
+                                128
+                            };
+                            let v = if uv_idx + 1 < src_data.len() {
+                                src_data[uv_idx + 1]
+                            } else {
+                                128
+                            };
+
                             let idx = y * width + x;
                             dst_data[dst_y_size + idx] = u;
                             dst_data[dst_y_size + dst_u_size + idx] = v;
@@ -1555,7 +1679,8 @@ pub fn vxu_color_convert_impl(
             // NV21 to YUV4
             (ImageFormat::NV21, ImageFormat::YUV4) => {
                 let (src_y_size, _, src_total) = get_nv12_plane_info(src_width, src_height);
-                let (dst_y_size, dst_u_size, dst_total) = get_yuv4_plane_info(src_width, src_height);
+                let (dst_y_size, dst_u_size, dst_total) =
+                    get_yuv4_plane_info(src_width, src_height);
                 if src_data.len() >= src_total && dst_data.len() >= dst_total {
                     // Copy Y plane
                     for y in 0..height {
@@ -1563,7 +1688,7 @@ pub fn vxu_color_convert_impl(
                             dst_data[y * width + x] = src_data[y * width + x];
                         }
                     }
-                    
+
                     // Expand VU (NV21) to full size U and V planes
                     // NV21: VU interleaved, V first
                     for y in 0..height {
@@ -1572,9 +1697,17 @@ pub fn vxu_color_convert_impl(
                             let vu_x = x / 2;
                             // In NV21, VU pairs are stored at each even position
                             let vu_idx = src_y_size + vu_y * width + vu_x * 2;
-                            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
-                            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
-                            
+                            let v = if vu_idx < src_data.len() {
+                                src_data[vu_idx]
+                            } else {
+                                128
+                            };
+                            let u = if vu_idx + 1 < src_data.len() {
+                                src_data[vu_idx + 1]
+                            } else {
+                                128
+                            };
+
                             let idx = y * width + x;
                             dst_data[dst_y_size + idx] = u;
                             dst_data[dst_y_size + dst_u_size + idx] = v;
@@ -1596,8 +1729,16 @@ pub fn vxu_color_convert_impl(
                             let vu_x = (x / 2) * 2;
                             let vu_y = y / 2;
                             let vu_idx = y_size + vu_y * width + vu_x;
-                            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
-                            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+                            let v = if vu_idx < src_data.len() {
+                                src_data[vu_idx]
+                            } else {
+                                128
+                            };
+                            let u = if vu_idx + 1 < src_data.len() {
+                                src_data[vu_idx + 1]
+                            } else {
+                                128
+                            };
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
                             let dst_idx = (y * width + x) * 3;
                             dst_data[dst_idx] = r;
@@ -1621,8 +1762,16 @@ pub fn vxu_color_convert_impl(
                             let vu_x = (x / 2) * 2;
                             let vu_y = y / 2;
                             let vu_idx = y_size + vu_y * width + vu_x;
-                            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
-                            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+                            let v = if vu_idx < src_data.len() {
+                                src_data[vu_idx]
+                            } else {
+                                128
+                            };
+                            let u = if vu_idx + 1 < src_data.len() {
+                                src_data[vu_idx + 1]
+                            } else {
+                                128
+                            };
                             let (r, g, b) = yuv_to_rgb(y_val, u, v);
                             let dst_idx = (y * width + x) * 4;
                             dst_data[dst_idx] = r;
@@ -1639,7 +1788,8 @@ pub fn vxu_color_convert_impl(
             // NV21 to IYUV
             (ImageFormat::NV21, ImageFormat::IYUV) => {
                 let (src_y_size, _, src_total) = get_nv12_plane_info(src_width, src_height);
-                let (dst_y_size, dst_u_size, _, dst_total) = get_iyuv_plane_info(src_width, src_height);
+                let (dst_y_size, dst_u_size, _, dst_total) =
+                    get_iyuv_plane_info(src_width, src_height);
                 if src_data.len() >= src_total && dst_data.len() >= dst_total {
                     let half_w = (width + 1) / 2;
                     let half_h = (height + 1) / 2;
@@ -1653,12 +1803,24 @@ pub fn vxu_color_convert_impl(
                     for y in 0..half_h {
                         for x in 0..half_w {
                             let vu_idx = src_y_size + y * width + x * 2;
-                            let v = if vu_idx < src_data.len() { src_data[vu_idx] } else { 128 };
-                            let u = if vu_idx + 1 < src_data.len() { src_data[vu_idx + 1] } else { 128 };
+                            let v = if vu_idx < src_data.len() {
+                                src_data[vu_idx]
+                            } else {
+                                128
+                            };
+                            let u = if vu_idx + 1 < src_data.len() {
+                                src_data[vu_idx + 1]
+                            } else {
+                                128
+                            };
                             let u_idx = dst_y_size + y * half_w + x;
                             let v_idx = dst_y_size + dst_u_size + y * half_w + x;
-                            if u_idx < dst_data.len() { dst_data[u_idx] = u; }
-                            if v_idx < dst_data.len() { dst_data[v_idx] = v; }
+                            if u_idx < dst_data.len() {
+                                dst_data[u_idx] = u;
+                            }
+                            if v_idx < dst_data.len() {
+                                dst_data[v_idx] = v;
+                            }
                         }
                     }
                     VX_SUCCESS
@@ -1765,7 +1927,7 @@ pub fn vxu_color_convert_impl(
                 if src_data.len() >= width * height * 2 {
                     let (y_size, u_size, _, _) = get_iyuv_plane_info(src_width, src_height);
                     let half_w = (width + 1) / 2;
-                    let half_h = (height + 1) / 2;
+                    let _half_h = (height + 1) / 2;
                     // Y plane
                     for y in 0..height {
                         for x in 0..width {
@@ -1799,8 +1961,12 @@ pub fn vxu_color_convert_impl(
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            if u_idx < dst_data.len() { dst_data[u_idx] = u_avg; }
-                            if v_idx < dst_data.len() { dst_data[v_idx] = v_avg; }
+                            if u_idx < dst_data.len() {
+                                dst_data[u_idx] = u_avg;
+                            }
+                            if v_idx < dst_data.len() {
+                                dst_data[v_idx] = v_avg;
+                            }
                         }
                     }
                     VX_SUCCESS
@@ -1865,7 +2031,11 @@ pub fn vxu_color_convert_impl(
                     for y in 0..height {
                         for x in 0..width {
                             let pair_idx = (y * width + (x & !1)) * 2;
-                            let y_val = if x % 2 == 0 { src_data[pair_idx] } else { src_data[pair_idx + 2] };
+                            let y_val = if x % 2 == 0 {
+                                src_data[pair_idx]
+                            } else {
+                                src_data[pair_idx + 2]
+                            };
                             dst_data[y * width + x] = y_val;
                         }
                     }
@@ -1905,12 +2075,16 @@ pub fn vxu_color_convert_impl(
                 if src_data.len() >= width * height * 2 {
                     let (y_size, u_size, _, _) = get_iyuv_plane_info(src_width, src_height);
                     let half_w = (width + 1) / 2;
-                    let half_h = (height + 1) / 2;
+                    let _half_h = (height + 1) / 2;
                     // Y plane
                     for y in 0..height {
                         for x in 0..width {
                             let pair_idx = (y * width + (x & !1)) * 2;
-                            let y_val = if x % 2 == 0 { src_data[pair_idx] } else { src_data[pair_idx + 2] };
+                            let y_val = if x % 2 == 0 {
+                                src_data[pair_idx]
+                            } else {
+                                src_data[pair_idx + 2]
+                            };
                             dst_data[y * width + x] = y_val;
                         }
                     }
@@ -1937,8 +2111,12 @@ pub fn vxu_color_convert_impl(
                             let uv_x = x / 2;
                             let u_idx = y_size + uv_y * half_w + uv_x;
                             let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-                            if u_idx < dst_data.len() { dst_data[u_idx] = u_avg; }
-                            if v_idx < dst_data.len() { dst_data[v_idx] = v_avg; }
+                            if u_idx < dst_data.len() {
+                                dst_data[u_idx] = u_avg;
+                            }
+                            if v_idx < dst_data.len() {
+                                dst_data[v_idx] = v_avg;
+                            }
                         }
                     }
                     VX_SUCCESS
@@ -1948,19 +2126,21 @@ pub fn vxu_color_convert_impl(
             }
             // IYUV to YUV4
             (ImageFormat::IYUV, ImageFormat::YUV4) => {
-                let (src_y_size, src_u_size, _, src_total) = get_iyuv_plane_info(src_width, src_height);
-                let (dst_y_size, dst_u_size, dst_total) = get_yuv4_plane_info(src_width, src_height);
+                let (src_y_size, src_u_size, _, src_total) =
+                    get_iyuv_plane_info(src_width, src_height);
+                let (dst_y_size, dst_u_size, dst_total) =
+                    get_yuv4_plane_info(src_width, src_height);
                 if src_data.len() >= src_total && dst_data.len() >= dst_total {
                     let half_w = (width + 1) / 2;
-                    let half_h = (height + 1) / 2;
-                    
+                    let _half_h = (height + 1) / 2;
+
                     // Copy Y plane
                     for y in 0..height {
                         for x in 0..width {
                             dst_data[y * width + x] = src_data[y * width + x];
                         }
                     }
-                    
+
                     // Expand U and V planes from subsampled to full size
                     // IYUV: U and V planes are at half resolution, stored contiguously after Y
                     // Stride for U/V is half_w (same as in reference test's stride/2)
@@ -1972,10 +2152,18 @@ pub fn vxu_color_convert_impl(
                             // Each row of U/V has half_w elements
                             let u_idx = src_y_size + uv_y * half_w + uv_x;
                             let v_idx = src_y_size + src_u_size + uv_y * half_w + uv_x;
-                            
-                            let u = if u_idx < src_data.len() { src_data[u_idx] } else { 128 };
-                            let v = if v_idx < src_data.len() { src_data[v_idx] } else { 128 };
-                            
+
+                            let u = if u_idx < src_data.len() {
+                                src_data[u_idx]
+                            } else {
+                                128
+                            };
+                            let v = if v_idx < src_data.len() {
+                                src_data[v_idx]
+                            } else {
+                                128
+                            };
+
                             let idx = y * width + x;
                             dst_data[dst_y_size + idx] = u;
                             dst_data[dst_y_size + dst_u_size + idx] = v;
@@ -2000,16 +2188,14 @@ pub fn vxu_color_convert_impl(
     }
 }
 
-
-
 // OpenVX channel enum values (from vx_types.h)
-const VX_CHANNEL_R: vx_enum = 0x00009010;  // R channel for RGB/RGBX
-const VX_CHANNEL_G: vx_enum = 0x00009011;  // G channel for RGB/RGBX
-const VX_CHANNEL_B: vx_enum = 0x00009012;  // B channel for RGB/RGBX
-const VX_CHANNEL_A: vx_enum = 0x00009013;  // A channel for RGBX
-const VX_CHANNEL_Y: vx_enum = 0x00009014;  // Y channel for YUV
-const VX_CHANNEL_U: vx_enum = 0x00009015;  // U channel for YUV
-const VX_CHANNEL_V: vx_enum = 0x00009016;  // V channel for YUV
+const VX_CHANNEL_R: vx_enum = 0x00009010; // R channel for RGB/RGBX
+const VX_CHANNEL_G: vx_enum = 0x00009011; // G channel for RGB/RGBX
+const VX_CHANNEL_B: vx_enum = 0x00009012; // B channel for RGB/RGBX
+const VX_CHANNEL_A: vx_enum = 0x00009013; // A channel for RGBX
+const VX_CHANNEL_Y: vx_enum = 0x00009014; // Y channel for YUV
+const VX_CHANNEL_U: vx_enum = 0x00009015; // U channel for YUV
+const VX_CHANNEL_V: vx_enum = 0x00009016; // V channel for YUV
 
 pub fn vxu_channel_extract_impl(
     context: vx_context,
@@ -2036,7 +2222,7 @@ pub fn vxu_channel_extract_impl(
         let src_height = src.height();
         let dst_width = dst.width();
         let dst_height = dst.height();
-        let mut dst_data = dst.data_mut();
+        let dst_data = dst.data_mut();
         let src_data = src.data();
 
         match src.format() {
@@ -2090,8 +2276,7 @@ pub fn vxu_channel_extract_impl(
                                 // For destination pixel (x,y), the source UV is at
                                 // (x*2, y*2) in the UV plane
                                 let uv_idx = y_size + y * src_width + x * 2 + uv_offset;
-                                dst_data[y * dst_width + x] =
-                                    *src_data.get(uv_idx).unwrap_or(&128);
+                                dst_data[y * dst_width + x] = *src_data.get(uv_idx).unwrap_or(&128);
                             }
                         }
                     }
@@ -2115,8 +2300,7 @@ pub fn vxu_channel_extract_impl(
                         for y in 0..dst_height {
                             for x in 0..dst_width {
                                 let vu_idx = y_size + y * src_width + x * 2 + vu_offset;
-                                dst_data[y * dst_width + x] =
-                                    *src_data.get(vu_idx).unwrap_or(&128);
+                                dst_data[y * dst_width + x] = *src_data.get(vu_idx).unwrap_or(&128);
                             }
                         }
                     }
@@ -2178,7 +2362,7 @@ pub fn vxu_channel_extract_impl(
                                 let macro_x = x / 2;
                                 let byte_idx = y * src_width * 2 + macro_x * 4;
                                 let y_val = if x % 2 == 0 {
-                                    src_data[byte_idx]     // Y0
+                                    src_data[byte_idx] // Y0
                                 } else {
                                     src_data[byte_idx + 2] // Y1
                                 };
@@ -2227,8 +2411,7 @@ pub fn vxu_channel_extract_impl(
                         for y in 0..dst_height {
                             for x in 0..dst_width {
                                 let u_idx = y_size + y * half_w + x;
-                                dst_data[y * dst_width + x] =
-                                    *src_data.get(u_idx).unwrap_or(&128);
+                                dst_data[y * dst_width + x] = *src_data.get(u_idx).unwrap_or(&128);
                             }
                         }
                     }
@@ -2237,8 +2420,7 @@ pub fn vxu_channel_extract_impl(
                         for y in 0..dst_height {
                             for x in 0..dst_width {
                                 let v_idx = y_size + u_size + y * half_w + x;
-                                dst_data[y * dst_width + x] =
-                                    *src_data.get(v_idx).unwrap_or(&128);
+                                dst_data[y * dst_width + x] = *src_data.get(v_idx).unwrap_or(&128);
                             }
                         }
                     }
@@ -2265,7 +2447,8 @@ pub fn vxu_channel_extract_impl(
                     VX_CHANNEL_V => {
                         for y in 0..dst_height {
                             for x in 0..dst_width {
-                                dst_data[y * dst_width + x] = src_data[2 * y_size + y * src_width + x];
+                                dst_data[y * dst_width + x] =
+                                    src_data[2 * y_size + y * src_width + x];
                             }
                         }
                     }
@@ -2315,15 +2498,32 @@ pub fn vxu_channel_combine_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
         let dst_data = dst.data_mut();
-        
+
         // Get source plane images
-        let y_img = if plane0.is_null() { None } else { c_image_to_rust(plane0) };
-        let u_img = if plane1.is_null() { None } else { c_image_to_rust(plane1) };
-        let v_img = if plane2.is_null() { None } else { c_image_to_rust(plane2) };
-        let a_img = if plane3.is_null() { None } else { c_image_to_rust(plane3) };
+        let y_img = if plane0.is_null() {
+            None
+        } else {
+            c_image_to_rust(plane0)
+        };
+        let u_img = if plane1.is_null() {
+            None
+        } else {
+            c_image_to_rust(plane1)
+        };
+        let v_img = if plane2.is_null() {
+            None
+        } else {
+            c_image_to_rust(plane2)
+        };
+        let a_img = if plane3.is_null() {
+            None
+        } else {
+            c_image_to_rust(plane3)
+        };
 
         match format as u32 {
-            0x32424752 => { // VX_DF_IMAGE_RGB
+            0x32424752 => {
+                // VX_DF_IMAGE_RGB
                 // Interleaved RGB: R, G, B per pixel
                 for y in 0..height {
                     for x in 0..width {
@@ -2339,7 +2539,8 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x41424752 => { // VX_DF_IMAGE_RGBX
+            0x41424752 => {
+                // VX_DF_IMAGE_RGBX
                 // Interleaved RGBX: R, G, B, X per pixel
                 for y in 0..height {
                     for x in 0..width {
@@ -2357,7 +2558,8 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x3231564E => { // VX_DF_IMAGE_NV12
+            0x3231564E => {
+                // VX_DF_IMAGE_NV12
                 // Planar: Y (full), UV interleaved (half size)
                 let y_size = width * height;
                 // Y plane
@@ -2382,7 +2584,8 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x3132564E => { // VX_DF_IMAGE_NV21
+            0x3132564E => {
+                // VX_DF_IMAGE_NV21
                 // Planar: Y (full), VU interleaved (half size, V first)
                 let y_size = width * height;
                 // Y plane
@@ -2407,7 +2610,8 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x56555949 => { // VX_DF_IMAGE_IYUV
+            0x56555949 => {
+                // VX_DF_IMAGE_IYUV
                 // Planar: Y (full), U (quarter), V (quarter)
                 let y_size = width * height;
                 let half_w = (width + 1) / 2;
@@ -2441,7 +2645,8 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x34565559 => { // VX_DF_IMAGE_YUV4
+            0x34565559 => {
+                // VX_DF_IMAGE_YUV4
                 // Planar: Three full-size planes
                 let y_size = width * height;
                 // Y plane
@@ -2466,16 +2671,30 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x59565955 => { // VX_DF_IMAGE_UYVY
+            0x59565955 => {
+                // VX_DF_IMAGE_UYVY
                 // Interleaved: U, Y0, V, Y1 (4:2:2, UYVY order)
                 for y in 0..height {
                     for x in (0..width).step_by(2) {
                         let y0 = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let y1 = y_img.as_ref().map(|img| {
-                            if x + 1 < width { img.get_pixel(x + 1, y) } else { y0 }
-                        }).unwrap_or(y0);
-                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
-                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
+                        let y1 = y_img
+                            .as_ref()
+                            .map(|img| {
+                                if x + 1 < width {
+                                    img.get_pixel(x + 1, y)
+                                } else {
+                                    y0
+                                }
+                            })
+                            .unwrap_or(y0);
+                        let u_val = u_img
+                            .as_ref()
+                            .map(|img| img.get_pixel(x / 2, y))
+                            .unwrap_or(128);
+                        let v_val = v_img
+                            .as_ref()
+                            .map(|img| img.get_pixel(x / 2, y))
+                            .unwrap_or(128);
                         let idx = y * width * 2 + x * 2;
                         if idx + 3 < dst_data.len() {
                             dst_data[idx] = u_val;
@@ -2486,16 +2705,30 @@ pub fn vxu_channel_combine_impl(
                     }
                 }
             }
-            0x56595559 => { // VX_DF_IMAGE_YUYV
+            0x56595559 => {
+                // VX_DF_IMAGE_YUYV
                 // Interleaved: Y0, U, Y1, V (4:2:2, YUYV order)
                 for y in 0..height {
                     for x in (0..width).step_by(2) {
                         let y0 = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let y1 = y_img.as_ref().map(|img| {
-                            if x + 1 < width { img.get_pixel(x + 1, y) } else { y0 }
-                        }).unwrap_or(y0);
-                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
-                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x / 2, y)).unwrap_or(128);
+                        let y1 = y_img
+                            .as_ref()
+                            .map(|img| {
+                                if x + 1 < width {
+                                    img.get_pixel(x + 1, y)
+                                } else {
+                                    y0
+                                }
+                            })
+                            .unwrap_or(y0);
+                        let u_val = u_img
+                            .as_ref()
+                            .map(|img| img.get_pixel(x / 2, y))
+                            .unwrap_or(128);
+                        let v_val = v_img
+                            .as_ref()
+                            .map(|img| img.get_pixel(x / 2, y))
+                            .unwrap_or(128);
                         let idx = y * width * 2 + x * 2;
                         if idx + 3 < dst_data.len() {
                             dst_data[idx] = y0;
@@ -2519,11 +2752,7 @@ pub fn vxu_channel_combine_impl(
 /// VXU Filter Functions
 /// ===========================================================================
 
-pub fn vxu_gaussian3x3_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_gaussian3x3_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -2564,11 +2793,7 @@ pub fn vxu_gaussian5x5_impl_with_border(
     vxu_gaussian5x5_impl(_context, input, output)
 }
 
-pub fn vxu_gaussian5x5_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_gaussian5x5_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -2591,11 +2816,7 @@ pub fn vxu_gaussian5x5_impl(
     }
 }
 
-pub fn vxu_box3x3_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_box3x3_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     vxu_box3x3_impl_with_border(context, input, output, None)
 }
 
@@ -2637,11 +2858,7 @@ pub fn vxu_box3x3_impl_with_border(
     }
 }
 
-pub fn vxu_median3x3_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_median3x3_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     vxu_median3x3_impl_with_border(context, input, output, None)
 }
 
@@ -2786,11 +3003,7 @@ pub fn vxu_convolve_impl(
 /// VXU Morphology Functions
 /// ===========================================================================
 
-pub fn vxu_dilate3x3_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_dilate3x3_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     vxu_dilate3x3_impl_with_border(context, input, output, None)
 }
 
@@ -2836,11 +3049,7 @@ pub fn vxu_dilate3x3_impl_with_border(
     }
 }
 
-pub fn vxu_erode3x3_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_erode3x3_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     vxu_erode3x3_impl_with_border(context, input, output, None)
 }
 
@@ -2886,20 +3095,12 @@ pub fn vxu_erode3x3_impl_with_border(
     }
 }
 
-pub fn vxu_dilate5x5_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_dilate5x5_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     // For now, use 3x3 dilate twice as approximation
     vxu_dilate3x3_impl(context, input, output)
 }
 
-pub fn vxu_erode5x5_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_erode5x5_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     // For now, use 3x3 erode twice as approximation
     vxu_erode3x3_impl(context, input, output)
 }
@@ -3120,7 +3321,14 @@ pub fn vxu_multiply_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match multiply(&src1, &src2, &mut dst, scale_value, overflow_policy, rounding_policy) {
+        match multiply(
+            &src1,
+            &src2,
+            &mut dst,
+            scale_value,
+            overflow_policy,
+            rounding_policy,
+        ) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -3159,7 +3367,14 @@ pub fn vxu_multiply_impl_direct_scale(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match multiply(&src1, &src2, &mut dst, scale_value, overflow_policy, rounding_policy) {
+        match multiply(
+            &src1,
+            &src2,
+            &mut dst,
+            scale_value,
+            overflow_policy,
+            rounding_policy,
+        ) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
         }
@@ -3187,12 +3402,13 @@ pub fn vxu_weighted_average_impl(
                 0x11001, // VX_READ_ONLY
                 0x0,     // VX_MEMORY_TYPE_HOST
             );
-            if status != 0 { // 0 = VX_SUCCESS
+            if status != 0 {
+                // 0 = VX_SUCCESS
                 alpha_f32 = 0.5; // fallback
             }
         }
     }
-    
+
     // Convert float alpha [0,1] - pass directly to weighted function
     // alpha_f32 is already in [0,1] range from the scalar
 
@@ -3304,14 +3520,16 @@ pub fn vxu_mean_std_dev_impl(
                     crate::c_api_data::vxCopyScalarData(
                         mean_scalar,
                         &mean_val as *const f32 as *mut c_void,
-                        0x11002, 0x0 // VX_WRITE_ONLY
+                        0x11002,
+                        0x0, // VX_WRITE_ONLY
                     );
                 }
                 if !stddev_scalar.is_null() {
                     crate::c_api_data::vxCopyScalarData(
                         stddev_scalar,
                         &stddev_val as *const f32 as *mut c_void,
-                        0x11002, 0x0
+                        0x11002,
+                        0x0,
                     );
                 }
                 VX_SUCCESS
@@ -3352,14 +3570,16 @@ pub fn vxu_min_max_loc_impl(
                         crate::c_api_data::vxCopyScalarData(
                             min_val_scalar,
                             &v as *const i16 as *mut c_void,
-                            0x11002, 0x0
+                            0x11002,
+                            0x0,
                         );
                     } else {
                         let v = result.min_val as u8;
                         crate::c_api_data::vxCopyScalarData(
                             min_val_scalar,
                             &v as *const u8 as *mut c_void,
-                            0x11002, 0x0
+                            0x11002,
+                            0x0,
                         );
                     }
                 }
@@ -3369,41 +3589,95 @@ pub fn vxu_min_max_loc_impl(
                         crate::c_api_data::vxCopyScalarData(
                             max_val_scalar,
                             &v as *const i16 as *mut c_void,
-                            0x11002, 0x0
+                            0x11002,
+                            0x0,
                         );
                     } else {
                         let v = result.max_val as u8;
                         crate::c_api_data::vxCopyScalarData(
                             max_val_scalar,
                             &v as *const u8 as *mut c_void,
-                            0x11002, 0x0
+                            0x11002,
+                            0x0,
                         );
                     }
                 }
                 // Write min/max locations to arrays
                 extern "C" {
                     fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
-                    fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
-                    fn vxQueryArray(arr: vx_array, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+                    fn vxAddArrayItems(
+                        arr: vx_array,
+                        count: vx_size,
+                        ptr: *const c_void,
+                        stride: vx_size,
+                    ) -> vx_status;
+                    fn vxQueryArray(
+                        arr: vx_array,
+                        attribute: vx_enum,
+                        ptr: *mut c_void,
+                        size: vx_size,
+                    ) -> vx_status;
                 }
                 if !min_loc_array.is_null() {
                     vxTruncateArray(min_loc_array, 0);
-                    let coords: Vec<vx_coordinates2d_t> = result.min_locs.iter().map(|c| vx_coordinates2d_t { x: c.x as u32, y: c.y as u32 }).collect();
+                    let coords: Vec<vx_coordinates2d_t> = result
+                        .min_locs
+                        .iter()
+                        .map(|c| vx_coordinates2d_t {
+                            x: c.x as u32,
+                            y: c.y as u32,
+                        })
+                        .collect();
                     if !coords.is_empty() {
                         let mut cap: vx_size = 0;
-                        vxQueryArray(min_loc_array, 0x80E02, &mut cap as *mut _ as *mut c_void, std::mem::size_of::<vx_size>() as vx_size); // VX_ARRAY_CAPACITY
-                        let add_count = if cap > 0 { coords.len().min(cap) } else { coords.len() };
-                        vxAddArrayItems(min_loc_array, add_count as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                        vxQueryArray(
+                            min_loc_array,
+                            0x80E02,
+                            &mut cap as *mut _ as *mut c_void,
+                            std::mem::size_of::<vx_size>() as vx_size,
+                        ); // VX_ARRAY_CAPACITY
+                        let add_count = if cap > 0 {
+                            coords.len().min(cap)
+                        } else {
+                            coords.len()
+                        };
+                        vxAddArrayItems(
+                            min_loc_array,
+                            add_count as vx_size,
+                            coords.as_ptr() as *const c_void,
+                            std::mem::size_of::<vx_coordinates2d_t>() as vx_size,
+                        );
                     }
                 }
                 if !max_loc_array.is_null() {
                     vxTruncateArray(max_loc_array, 0);
-                    let coords: Vec<vx_coordinates2d_t> = result.max_locs.iter().map(|c| vx_coordinates2d_t { x: c.x as u32, y: c.y as u32 }).collect();
+                    let coords: Vec<vx_coordinates2d_t> = result
+                        .max_locs
+                        .iter()
+                        .map(|c| vx_coordinates2d_t {
+                            x: c.x as u32,
+                            y: c.y as u32,
+                        })
+                        .collect();
                     if !coords.is_empty() {
                         let mut cap: vx_size = 0;
-                        vxQueryArray(max_loc_array, 0x80E02, &mut cap as *mut _ as *mut c_void, std::mem::size_of::<vx_size>() as vx_size); // VX_ARRAY_CAPACITY
-                        let add_count = if cap > 0 { coords.len().min(cap) } else { coords.len() };
-                        vxAddArrayItems(max_loc_array, add_count as vx_size, coords.as_ptr() as *const c_void, std::mem::size_of::<vx_coordinates2d_t>() as vx_size);
+                        vxQueryArray(
+                            max_loc_array,
+                            0x80E02,
+                            &mut cap as *mut _ as *mut c_void,
+                            std::mem::size_of::<vx_size>() as vx_size,
+                        ); // VX_ARRAY_CAPACITY
+                        let add_count = if cap > 0 {
+                            coords.len().min(cap)
+                        } else {
+                            coords.len()
+                        };
+                        vxAddArrayItems(
+                            max_loc_array,
+                            add_count as vx_size,
+                            coords.as_ptr() as *const c_void,
+                            std::mem::size_of::<vx_coordinates2d_t>() as vx_size,
+                        );
                     }
                 }
                 if !min_count_scalar.is_null() {
@@ -3411,7 +3685,8 @@ pub fn vxu_min_max_loc_impl(
                     crate::c_api_data::vxCopyScalarData(
                         min_count_scalar,
                         &count as *const u32 as *mut c_void,
-                        0x11002, 0x0
+                        0x11002,
+                        0x0,
                     );
                 }
                 if !max_count_scalar.is_null() {
@@ -3419,7 +3694,8 @@ pub fn vxu_min_max_loc_impl(
                     crate::c_api_data::vxCopyScalarData(
                         max_count_scalar,
                         &count as *const u32 as *mut c_void,
-                        0x11002, 0x0
+                        0x11002,
+                        0x0,
                     );
                 }
                 VX_SUCCESS
@@ -3625,7 +3901,9 @@ pub fn vxu_warp_perspective_impl(
             // OpenVX stores matrices in COLUMN-MAJOR order:
             // data[0-2] = first column, data[3-5] = second column, data[6-8] = third column
             // Pass the data as-is to warp_perspective which handles column-major
-            [data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8]]
+            [
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+            ]
         };
 
         let border = override_border.unwrap_or_else(|| get_border_from_context(context));
@@ -3666,30 +3944,51 @@ pub fn vxu_harris_corners_impl(
         let status = crate::c_api_data::vxCopyScalarData(
             strength_thresh,
             &mut val as *mut f32 as *mut c_void,
-            0x11001, 0x0
+            0x11001,
+            0x0,
         );
-        if status == VX_SUCCESS { val } else { 0.001 }
-    } else { 0.001 };
+        if status == VX_SUCCESS {
+            val
+        } else {
+            0.001
+        }
+    } else {
+        0.001
+    };
 
     let min_dist: f32 = if !min_distance.is_null() {
         let mut val: f32 = 0.0;
         let status = crate::c_api_data::vxCopyScalarData(
             min_distance,
             &mut val as *mut f32 as *mut c_void,
-            0x11001, 0x0
+            0x11001,
+            0x0,
         );
-        if status == VX_SUCCESS { val } else { 3.0 }
-    } else { 3.0 };
+        if status == VX_SUCCESS {
+            val
+        } else {
+            3.0
+        }
+    } else {
+        3.0
+    };
 
     let k: f32 = if !sensitivity.is_null() {
         let mut val: f32 = 0.0;
         let status = crate::c_api_data::vxCopyScalarData(
             sensitivity,
             &mut val as *mut f32 as *mut c_void,
-            0x11001, 0x0
+            0x11001,
+            0x0,
         );
-        if status == VX_SUCCESS { val } else { 0.04 }
-    } else { 0.04 };
+        if status == VX_SUCCESS {
+            val
+        } else {
+            0.04
+        }
+    } else {
+        0.04
+    };
 
     let gs = gradient_size as usize;
     let bs = block_size as usize;
@@ -3724,7 +4023,8 @@ pub fn vxu_harris_corners_impl(
                 crate::c_api_data::vxCopyScalarData(
                     num_corners,
                     &num as *const usize as *mut c_void,
-                    0x11002, 0x0
+                    0x11002,
+                    0x0,
                 );
             }
             return VX_SUCCESS;
@@ -3737,7 +4037,14 @@ pub fn vxu_harris_corners_impl(
 
         // Compute GxGx, GxGy, GyGy structure tensor components
         // using separable Sobel filters (horizontal then vertical pass)
-        let mut gxy = vec![GxyComponent { ixx: 0.0f32, ixy: 0.0f32, iyy: 0.0f32 }; width * height];
+        let mut gxy = vec![
+            GxyComponent {
+                ixx: 0.0f32,
+                ixy: 0.0f32,
+                iyy: 0.0f32
+            };
+            width * height
+        ];
 
         match gs {
             5 => harris_sobel_5x5(&img_data, width, height, &mut gxy),
@@ -3812,19 +4119,23 @@ pub fn vxu_harris_corners_impl(
                 // p0[1] >= p0[0] &&                                 (left)
                 // p0[1] > p0[2] &&                                  (right)
                 // p0[1] > p1[0] && p0[1] > p1[1] && p0[1] > p1[2]   (bottom-left, bottom, bottom-right)
-                let top_left     = responses[((y-1) as usize) * width + (x-1) as usize];
-                let top          = responses[((y-1) as usize) * width + x as usize];
-                let top_right    = responses[((y-1) as usize) * width + (x+1) as usize];
-                let left         = responses[(y as usize) * width + (x-1) as usize];
-                let right        = responses[(y as usize) * width + (x+1) as usize];
-                let bottom_left  = responses[((y+1) as usize) * width + (x-1) as usize];
-                let bottom       = responses[((y+1) as usize) * width + x as usize];
-                let bottom_right = responses[((y+1) as usize) * width + (x+1) as usize];
+                let top_left = responses[((y - 1) as usize) * width + (x - 1) as usize];
+                let top = responses[((y - 1) as usize) * width + x as usize];
+                let top_right = responses[((y - 1) as usize) * width + (x + 1) as usize];
+                let left = responses[(y as usize) * width + (x - 1) as usize];
+                let right = responses[(y as usize) * width + (x + 1) as usize];
+                let bottom_left = responses[((y + 1) as usize) * width + (x - 1) as usize];
+                let bottom = responses[((y + 1) as usize) * width + x as usize];
+                let bottom_right = responses[((y + 1) as usize) * width + (x + 1) as usize];
 
-                if vc >= top_left && vc >= top && vc >= top_right &&
-                   vc >= left &&
-                   vc > right &&
-                   vc > bottom_left && vc > bottom && vc > bottom_right
+                if vc >= top_left
+                    && vc >= top
+                    && vc >= top_right
+                    && vc >= left
+                    && vc > right
+                    && vc > bottom_left
+                    && vc > bottom
+                    && vc > bottom_right
                 {
                     candidates.push((x, y, vc));
                 }
@@ -3868,7 +4179,9 @@ pub fn vxu_harris_corners_impl(
                             }
                         }
                     }
-                    if too_close { break; }
+                    if too_close {
+                        break;
+                    }
                 }
 
                 if !too_close {
@@ -3886,7 +4199,12 @@ pub fn vxu_harris_corners_impl(
             // First truncate the array to 0 items
             extern "C" {
                 fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
-                fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+                fn vxAddArrayItems(
+                    arr: vx_array,
+                    count: vx_size,
+                    ptr: *const c_void,
+                    stride: vx_size,
+                ) -> vx_status;
             }
             unsafe {
                 vxTruncateArray(corners, 0);
@@ -3906,16 +4224,20 @@ pub fn vxu_harris_corners_impl(
                 };
                 let kp_bytes = std::slice::from_raw_parts(
                     &kp as *const vx_keypoint_t as *const u8,
-                    keypoint_size
+                    keypoint_size,
                 );
                 buf.extend_from_slice(kp_bytes);
             }
 
             // Add all keypoints at once
             unsafe {
-                let status = vxAddArrayItems(corners, corner_list.len() as vx_size, buf.as_ptr() as *const c_void, keypoint_size as vx_size);
-                if status != VX_SUCCESS {
-                }
+                let status = vxAddArrayItems(
+                    corners,
+                    corner_list.len() as vx_size,
+                    buf.as_ptr() as *const c_void,
+                    keypoint_size as vx_size,
+                );
+                if status != VX_SUCCESS {}
             }
         }
 
@@ -3926,7 +4248,7 @@ pub fn vxu_harris_corners_impl(
                 num_corners,
                 &num as *const usize as *mut c_void,
                 0x11002, // VX_WRITE_ONLY
-                0x0
+                0x0,
             );
         }
 
@@ -3979,21 +4301,20 @@ fn harris_sobel_3x3(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
 
 /// 5x5 Sobel + structure tensor computation
 fn harris_sobel_5x5(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent]) {
-
     // 5x5 Sobel kernels (from OpenVX spec)
     let gx_kernel: [[i32; 5]; 5] = [
-        [-1, -2,  0,  2,  1],
-        [-4, -8,  0,  8,  4],
-        [-6,-12,  0, 12,  6],
-        [-4, -8,  0,  8,  4],
-        [-1, -2,  0,  2,  1],
+        [-1, -2, 0, 2, 1],
+        [-4, -8, 0, 8, 4],
+        [-6, -12, 0, 12, 6],
+        [-4, -8, 0, 8, 4],
+        [-1, -2, 0, 2, 1],
     ];
     let gy_kernel: [[i32; 5]; 5] = [
         [-1, -4, -6, -4, -1],
-        [-2, -8,-12, -8, -2],
-        [ 0,  0,  0,  0,  0],
-        [ 2,  8, 12,  8,  2],
-        [ 1,  4,  6,  4,  1],
+        [-2, -8, -12, -8, -2],
+        [0, 0, 0, 0, 0],
+        [2, 8, 12, 8, 2],
+        [1, 4, 6, 4, 1],
     ];
 
     for y in 2..height - 2 {
@@ -4024,25 +4345,24 @@ fn harris_sobel_5x5(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
 
 /// 7x7 Sobel + structure tensor computation
 fn harris_sobel_7x7(img_data: &[u8], width: usize, height: usize, gxy: &mut [GxyComponent]) {
-
     // 7x7 Sobel kernels
     let gx_kernel: [[i32; 7]; 7] = [
-        [-1, -4, -5,  0,  5,  4,  1],
-        [-6,-24,-30,  0, 30, 24,  6],
-        [-15,-60,-75, 0, 75, 60, 15],
-        [-20,-80,-100,0,100, 80, 20],
-        [-15,-60,-75, 0, 75, 60, 15],
-        [ -6,-24,-30,  0, 30, 24,  6],
-        [ -1, -4, -5,  0,  5,  4,  1],
+        [-1, -4, -5, 0, 5, 4, 1],
+        [-6, -24, -30, 0, 30, 24, 6],
+        [-15, -60, -75, 0, 75, 60, 15],
+        [-20, -80, -100, 0, 100, 80, 20],
+        [-15, -60, -75, 0, 75, 60, 15],
+        [-6, -24, -30, 0, 30, 24, 6],
+        [-1, -4, -5, 0, 5, 4, 1],
     ];
     let gy_kernel: [[i32; 7]; 7] = [
-        [-1, -6,-15,-20,-15, -6, -1],
-        [-4,-24,-60,-80,-60,-24, -4],
-        [-5,-30,-75,-100,-75,-30, -5],
-        [ 0,  0,  0,  0,  0,  0,  0],
-        [ 5, 30, 75,100, 75, 30,  5],
-        [ 4, 24, 60, 80, 60, 24,  4],
-        [ 1,  6, 15, 20, 15,  6,  1],
+        [-1, -6, -15, -20, -15, -6, -1],
+        [-4, -24, -60, -80, -60, -24, -4],
+        [-5, -30, -75, -100, -75, -30, -5],
+        [0, 0, 0, 0, 0, 0, 0],
+        [5, 30, 75, 100, 75, 30, 5],
+        [4, 24, 60, 80, 60, 24, 4],
+        [1, 6, 15, 20, 15, 6, 1],
     ];
 
     for y in 3..height - 3 {
@@ -4094,10 +4414,17 @@ pub fn vxu_fast_corners_impl(
             let status = crate::c_api_data::vxCopyScalarData(
                 strength_thresh,
                 &mut val as *mut f32 as *mut c_void,
-                0x11001, 0x0
+                0x11001,
+                0x0,
             );
-            if status == VX_SUCCESS { val } else { 20.0 }
-        } else { 20.0 };
+            if status == VX_SUCCESS {
+                val
+            } else {
+                20.0
+            }
+        } else {
+            20.0
+        };
 
         let threshold_val = threshold.max(0.0).min(255.0) as u8;
         let do_nms = nonmax_suppression != 0;
@@ -4107,8 +4434,22 @@ pub fn vxu_fast_corners_impl(
 
         // FAST-9 corner detection
         const CIRCLE_OFFSETS: [(isize, isize); 16] = [
-            (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
-            (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
+            (0, -3),
+            (1, -3),
+            (2, -2),
+            (3, -1),
+            (3, 0),
+            (3, 1),
+            (2, 2),
+            (1, 3),
+            (0, 3),
+            (-1, 3),
+            (-2, 2),
+            (-3, 1),
+            (-3, 0),
+            (-3, -1),
+            (-2, -2),
+            (-1, -3),
         ];
 
         // Phase 1: Detect all FAST corners and compute strengths
@@ -4146,8 +4487,12 @@ pub fn vxu_fast_corners_impl(
                         up_count = 0;
                         lo_count = 0;
                     }
-                    if up_count > max_up { max_up = up_count; }
-                    if lo_count > max_lo { max_lo = lo_count; }
+                    if up_count > max_up {
+                        max_up = up_count;
+                    }
+                    if lo_count > max_lo {
+                        max_lo = lo_count;
+                    }
                 }
 
                 if max_up < 9 && max_lo < 9 {
@@ -4179,8 +4524,12 @@ pub fn vxu_fast_corners_impl(
                             up_count = 0;
                             lo_count = 0;
                         }
-                        if up_count > max_up { max_up = up_count; }
-                        if lo_count > max_lo { max_lo = lo_count; }
+                        if up_count > max_up {
+                            max_up = up_count;
+                        }
+                        if lo_count > max_lo {
+                            max_lo = lo_count;
+                        }
                     }
 
                     if max_up >= 9 || max_lo >= 9 {
@@ -4219,19 +4568,23 @@ pub fn vxu_fast_corners_impl(
                 }
                 let c = strength_img[iy * width + ix] as i32;
                 // Asymmetric: >= for top/left neighbors, > for right/bottom
-                let top_left     = strength_img[(iy - 1) * width + ix - 1] as i32;
-                let top          = strength_img[(iy - 1) * width + ix] as i32;
-                let top_right    = strength_img[(iy - 1) * width + ix + 1] as i32;
-                let left         = strength_img[iy * width + ix - 1] as i32;
-                let right        = strength_img[iy * width + ix + 1] as i32;
-                let bottom_left  = strength_img[(iy + 1) * width + ix - 1] as i32;
-                let bottom       = strength_img[(iy + 1) * width + ix] as i32;
+                let top_left = strength_img[(iy - 1) * width + ix - 1] as i32;
+                let top = strength_img[(iy - 1) * width + ix] as i32;
+                let top_right = strength_img[(iy - 1) * width + ix + 1] as i32;
+                let left = strength_img[iy * width + ix - 1] as i32;
+                let right = strength_img[iy * width + ix + 1] as i32;
+                let bottom_left = strength_img[(iy + 1) * width + ix - 1] as i32;
+                let bottom = strength_img[(iy + 1) * width + ix] as i32;
                 let bottom_right = strength_img[(iy + 1) * width + ix + 1] as i32;
 
-                if c >= top_left && c >= top && c >= top_right &&
-                   c >= left &&
-                   c > right &&
-                   c > bottom_left && c > bottom && c > bottom_right
+                if c >= top_left
+                    && c >= top
+                    && c >= top_right
+                    && c >= left
+                    && c > right
+                    && c > bottom_left
+                    && c > bottom
+                    && c > bottom_right
                 {
                     nms_corners.push((x, y, c as f32));
                 }
@@ -4248,7 +4601,12 @@ pub fn vxu_fast_corners_impl(
 
             extern "C" {
                 fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
-                fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+                fn vxAddArrayItems(
+                    arr: vx_array,
+                    count: vx_size,
+                    ptr: *const c_void,
+                    stride: vx_size,
+                ) -> vx_status;
             }
             unsafe {
                 vxTruncateArray(corners, 0);
@@ -4267,13 +4625,18 @@ pub fn vxu_fast_corners_impl(
                 };
                 let kp_bytes = std::slice::from_raw_parts(
                     &kp as *const vx_keypoint_t as *const u8,
-                    keypoint_size
+                    keypoint_size,
                 );
                 buf.extend_from_slice(kp_bytes);
             }
 
             unsafe {
-                vxAddArrayItems(corners, corner_list.len() as vx_size, buf.as_ptr() as *const c_void, keypoint_size as vx_size);
+                vxAddArrayItems(
+                    corners,
+                    corner_list.len() as vx_size,
+                    buf.as_ptr() as *const c_void,
+                    keypoint_size as vx_size,
+                );
             }
         }
 
@@ -4284,7 +4647,7 @@ pub fn vxu_fast_corners_impl(
                 num_corners,
                 &num as *const u32 as *mut c_void,
                 0x11002, // VX_WRITE_ONLY
-                0x0
+                0x0,
             );
         }
 
@@ -4355,7 +4718,11 @@ pub fn vxu_gaussian_pyramid_impl(
         let num_levels = pyramid.num_levels;
 
         // Copy input to level 0 of the pyramid
-        let level0 = pyramid.levels.get(0).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+        let level0 = pyramid
+            .levels
+            .get(0)
+            .map(|&img| img as vx_image)
+            .unwrap_or(std::ptr::null_mut());
         if level0.is_null() {
             return VX_ERROR_INVALID_REFERENCE;
         }
@@ -4391,8 +4758,16 @@ pub fn vxu_gaussian_pyramid_impl(
         // Generate subsequent levels using Gaussian blur + downscale
         let is_half_scale = (pyramid.scale - 0.5_f32).abs() < 0.001;
         for level_idx in 1..num_levels {
-            let prev_level = pyramid.levels.get(level_idx - 1).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
-            let curr_level = pyramid.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+            let prev_level = pyramid
+                .levels
+                .get(level_idx - 1)
+                .map(|&img| img as vx_image)
+                .unwrap_or(std::ptr::null_mut());
+            let curr_level = pyramid
+                .levels
+                .get(level_idx)
+                .map(|&img| img as vx_image)
+                .unwrap_or(std::ptr::null_mut());
             if prev_level.is_null() || curr_level.is_null() {
                 break;
             }
@@ -4410,11 +4785,8 @@ pub fn vxu_gaussian_pyramid_impl(
 
                 // 5x5 Gaussian kernel weights (integer)
                 let kernel: [i32; 25] = [
-                    1, 4, 6, 4, 1,
-                    4, 16, 24, 16, 4,
-                    6, 24, 36, 24, 6,
-                    4, 16, 24, 16, 4,
-                    1, 4, 6, 4, 1,
+                    1, 4, 6, 4, 1, 4, 16, 24, 16, 4, 6, 24, 36, 24, 6, 4, 16, 24, 16, 4, 1, 4, 6,
+                    4, 1,
                 ];
 
                 let mut blurred = vec![0u8; prev_w * prev_h];
@@ -4425,7 +4797,8 @@ pub fn vxu_gaussian_pyramid_impl(
                             for kx in 0..5_i32 {
                                 let sy = (y as i32 + ky - 2).clamp(0, prev_h as i32 - 1) as usize;
                                 let sx = (x as i32 + kx - 2).clamp(0, prev_w as i32 - 1) as usize;
-                                sum += prev_img.get_pixel(sx, sy) as i32 * kernel[(ky * 5 + kx) as usize];
+                                sum += prev_img.get_pixel(sx, sy) as i32
+                                    * kernel[(ky * 5 + kx) as usize];
                             }
                         }
                         blurred[y * prev_w + x] = (sum >> 8).clamp(0, 255) as u8;
@@ -4490,7 +4863,14 @@ pub fn vxu_laplacian_pyramid_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
         extern "C" {
-            fn vxCreatePyramid(ctx: vx_context, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid;
+            fn vxCreatePyramid(
+                ctx: vx_context,
+                levels: vx_size,
+                scale: vx_float32,
+                w: vx_uint32,
+                h: vx_uint32,
+                fmt: vx_df_image,
+            ) -> vx_pyramid;
             fn vxReleasePyramid(pyr: *mut vx_pyramid) -> vx_status;
         }
         let gauss_pyr = vxCreatePyramid(
@@ -4516,12 +4896,28 @@ pub fn vxu_laplacian_pyramid_impl(
 
         // Compute Laplacian levels: L[i] = G[i] - expand(G[i+1])
         for level_idx in 0..num_levels {
-            let level_img = pyr.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
-            if level_img.is_null() { break; }
+            let level_img = pyr
+                .levels
+                .get(level_idx)
+                .map(|&img| img as vx_image)
+                .unwrap_or(std::ptr::null_mut());
+            if level_img.is_null() {
+                break;
+            }
 
-            let g_curr = gauss.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
-            let g_next = gauss.levels.get(level_idx + 1).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
-            if g_curr.is_null() || g_next.is_null() { break; }
+            let g_curr = gauss
+                .levels
+                .get(level_idx)
+                .map(|&img| img as vx_image)
+                .unwrap_or(std::ptr::null_mut());
+            let g_next = gauss
+                .levels
+                .get(level_idx + 1)
+                .map(|&img| img as vx_image)
+                .unwrap_or(std::ptr::null_mut());
+            if g_curr.is_null() || g_next.is_null() {
+                break;
+            }
 
             // Use vxuSubtract: L[i] = G[i] - expand(G[i+1])
             // First expand G[i+1] to size of G[i]
@@ -4559,11 +4955,7 @@ pub fn vxu_laplacian_pyramid_impl(
 
             // Step 2: convolve with 5x5 Gaussian (integer arithmetic, /256)
             let kernel: [i32; 25] = [
-                1, 4, 6, 4, 1,
-                4, 16, 24, 16, 4,
-                6, 24, 36, 24, 6,
-                4, 16, 24, 16, 4,
-                1, 4, 6, 4, 1,
+                1, 4, 6, 4, 1, 4, 16, 24, 16, 4, 6, 24, 36, 24, 6, 4, 16, 24, 16, 4, 1, 4, 6, 4, 1,
             ];
             let mut convolved = vec![0i16; gw * gh];
             for y in 0..gh {
@@ -4573,7 +4965,8 @@ pub fn vxu_laplacian_pyramid_impl(
                         for kx in 0..5_i32 {
                             let sy = (y as i32 + ky - 2).clamp(0, gh as i32 - 1) as usize;
                             let sx = (x as i32 + kx - 2).clamp(0, gw as i32 - 1) as usize;
-                            sum += interleaved[sy * gw + sx] as i32 * kernel[(ky * 5 + kx) as usize];
+                            sum +=
+                                interleaved[sy * gw + sx] as i32 * kernel[(ky * 5 + kx) as usize];
                         }
                     }
                     convolved[y * gw + x] = (sum / 256) as i16;
@@ -4609,7 +5002,11 @@ pub fn vxu_laplacian_pyramid_impl(
         }
 
         // Output image = lowest Gaussian level (G[num_levels])
-        let last_gauss = gauss.levels.get(num_levels).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
+        let last_gauss = gauss
+            .levels
+            .get(num_levels)
+            .map(|&img| img as vx_image)
+            .unwrap_or(std::ptr::null_mut());
         if !last_gauss.is_null() {
             let last_img = c_image_to_rust(last_gauss);
             if let Some(img) = last_img {
@@ -4622,7 +5019,24 @@ pub fn vxu_laplacian_pyramid_impl(
     }
 }
 
-/// Laplacian reconstruct: upsample and add Laplacian levels back
+/// Laplacian reconstruct: upsample and add Laplacian levels back.
+///
+/// Implements the algorithm from `own_laplacian_reconstruct_reference` in
+/// `OpenVX-cts/test_conformance/test_laplacianpyramid.c`:
+///
+/// 1. Start with the U8 input image as the running reconstruction.
+/// 2. For each laplacian level from coarsest (`num_levels-1`) to finest (0):
+///    - Build a U8 zero-interleaved buffer at the laplacian level dimensions
+///      (only even-coord pixels carry data, odd-coord pixels are zero), with
+///      pre-interleaved values clamped to `[0, 255]`.
+///    - Convolve with the 5x5 Burt-Adelson Gaussian (sum/256) using the
+///      CTS's "upsample replicate" border rule: out-of-bounds positions whose
+///      *interleaved* coordinates would be odd are zero, while out-of-bounds
+///      positions at even-even coordinates are taken from the pre-interleaved
+///      buffer with REPLICATE.
+///    - Multiply by 4 (S16 saturate) and add the laplacian level (S16
+///      saturate). Saturate to U8 to form the next running reconstruction.
+/// 3. The final running reconstruction is the U8 output.
 pub fn vxu_laplacian_reconstruct_impl(
     context: vx_context,
     laplacian: vx_pyramid,
@@ -4633,98 +5047,154 @@ pub fn vxu_laplacian_reconstruct_impl(
         return VX_ERROR_INVALID_REFERENCE;
     }
 
+    // 5x5 Gaussian kernel from the OpenVX spec / Burt-Adelson; sums to 256.
+    const GAUSSIAN5X5: [i32; 25] = [
+        1, 4, 6, 4, 1, 4, 16, 24, 16, 4, 6, 24, 36, 24, 6, 4, 16, 24, 16, 4, 1, 4, 6, 4, 1,
+    ];
+
+    /// Sample the conceptually upsampled image at integer coords `(sx, sy)`,
+    /// which may be out of bounds. `pre` is the pre-interleaved (smaller)
+    /// buffer with U8 values; `(pw, ph)` is its size; `(uw, uh)` is the
+    /// upsampled size. Out-of-bounds even-even positions REPLICATE the
+    /// pre-image; everything else (odd-coord positions) returns 0.
+    fn sample_upsample(
+        sx: i32,
+        sy: i32,
+        pre: &[u8],
+        pw: usize,
+        ph: usize,
+        _uw: usize,
+        _uh: usize,
+    ) -> u8 {
+        // Odd-coord positions are zero by construction of the zero-interleave.
+        if (sx & 1) != 0 || (sy & 1) != 0 {
+            return 0;
+        }
+        // Even-even positions map back to the pre-interleaved image.
+        let px = (sx >> 1).clamp(0, pw as i32 - 1) as usize;
+        let py = (sy >> 1).clamp(0, ph as i32 - 1) as usize;
+        pre[py * pw + px]
+    }
+
     unsafe {
         let pyr = &*(laplacian as *const VxCPyramid);
         let num_levels = pyr.num_levels;
+        if num_levels == 0 {
+            if let Some(img) = c_image_to_rust(input) {
+                copy_rust_to_c_image(&img, output);
+            }
+            return VX_SUCCESS;
+        }
 
-        // Start from the lowest resolution (input image)
-        let mut current = match c_image_to_rust(input) {
+        let input_img = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
+        let mut cur_w = input_img.width();
+        let mut cur_h = input_img.height();
+        let mut current: Vec<u8> = Vec::with_capacity(cur_w * cur_h);
+        for y in 0..cur_h {
+            for x in 0..cur_w {
+                current.push(input_img.get_pixel(x, y));
+            }
+        }
 
-        // Reconstruct from bottom to top: G[i] = expand(G[i+1]) + L[i]
         for level_idx in (0..num_levels).rev() {
-            let level_img = pyr.levels.get(level_idx).map(|&img| img as vx_image).unwrap_or(std::ptr::null_mut());
-            if level_img.is_null() { break; }
+            let level_img = pyr
+                .levels
+                .get(level_idx)
+                .map(|&img| img as vx_image)
+                .unwrap_or(std::ptr::null_mut());
+            if level_img.is_null() {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
             let (lw, lh, _) = match get_image_info(level_img) {
                 Some(info) => (info.0 as usize, info.1 as usize, info.2),
-                None => break,
+                None => return VX_ERROR_INVALID_PARAMETERS,
             };
 
-            // Read Laplacian level data (S16)
             let img_ref = &*(level_img as *const VxCImage);
             let lap_data = match img_ref.data.read() {
                 Ok(d) => d.clone(),
-                Err(_) => break,
+                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
             };
 
-            let (cw, ch) = (current.width(), current.height());
-
-            // Burt-Adelson expand current to lw x lh
-            // Step 1: zero-interleave
-            let mut interleaved = vec![0u8; lw * lh];
-            for y in 0..lh {
-                for x in 0..lw {
-                    if x % 2 == 0 && y % 2 == 0 {
-                        let sx = x / 2;
-                        let sy = y / 2;
-                        if sx < cw && sy < ch {
-                            interleaved[y * lw + x] = current.get_pixel(sx, sy);
-                        }
-                    }
-                }
-            }
-
-            // Step 2: convolve with 5x5 Gaussian (integer, /256)
-            let kernel: [i32; 25] = [
-                1, 4, 6, 4, 1,
-                4, 16, 24, 16, 4,
-                6, 24, 36, 24, 6,
-                4, 16, 24, 16, 4,
-                1, 4, 6, 4, 1,
-            ];
-            let mut expanded = vec![0i16; lw * lh];
+            // 1) Convolve the zero-interleaved view of `current` (lw x lh) with
+            //    the 5x5 Gaussian / 256, using the CTS's special upsample-with-
+            //    replicate rule for out-of-bounds samples.
+            let mut expanded: Vec<i16> = vec![0i16; lw * lh];
             for y in 0..lh {
                 for x in 0..lw {
                     let mut sum: i32 = 0;
                     for ky in 0..5_i32 {
                         for kx in 0..5_i32 {
-                            let sy = (y as i32 + ky - 2).clamp(0, lh as i32 - 1) as usize;
-                            let sx = (x as i32 + kx - 2).clamp(0, lw as i32 - 1) as usize;
-                            sum += interleaved[sy * lw + sx] as i32 * kernel[(ky * 5 + kx) as usize];
+                            let sx = x as i32 + kx - 2;
+                            let sy = y as i32 + ky - 2;
+                            let pixel = if sx >= 0
+                                && sx < lw as i32
+                                && sy >= 0
+                                && sy < lh as i32
+                            {
+                                // In-bounds: zero-interleaved value.
+                                if (sx & 1) != 0 || (sy & 1) != 0 {
+                                    0u8
+                                } else {
+                                    let px = (sx as usize) / 2;
+                                    let py = (sy as usize) / 2;
+                                    if px < cur_w && py < cur_h {
+                                        current[py * cur_w + px]
+                                    } else {
+                                        0
+                                    }
+                                }
+                            } else {
+                                // Out-of-bounds: emulate REPLICATE on the
+                                // pre-interleaved image and re-zero-interleave.
+                                sample_upsample(sx, sy, &current, cur_w, cur_h, lw, lh)
+                            };
+                            sum += pixel as i32 * GAUSSIAN5X5[(ky * 5 + kx) as usize];
                         }
                     }
-                    // Divide by 256 then multiply by 4
-                    expanded[y * lw + x] = ((sum / 256) * 4).clamp(-32768, 32767) as i16;
+                    let conv = (sum / 256).clamp(i16::MIN as i32, i16::MAX as i32);
+                    let scaled = conv
+                        .saturating_mul(4)
+                        .clamp(i16::MIN as i32, i16::MAX as i32);
+                    expanded[y * lw + x] = scaled as i16;
                 }
             }
 
-            // Step 3: reconstruct = expand(current) + Laplacian
-            let mut reconstructed = match Image::new(lw, lh, ImageFormat::Gray) {
-                Some(img) => img,
-                None => break,
-            };
-
+            // 2) Add the laplacian level with S16 saturation, then saturate to
+            //    U8 to form the next running reconstruction.
+            let mut next: Vec<u8> = Vec::with_capacity(lw * lh);
             for y in 0..lh {
                 for x in 0..lw {
-                    let exp_val = expanded[y * lw + x] as i32;
-                    let offset = (y * lw + x) * 2;
-                    let lap_val = if offset + 1 < lap_data.len() {
-                        i16::from_le_bytes([lap_data[offset], lap_data[offset + 1]]) as i32
+                    let off = (y * lw + x) * 2;
+                    let lap = if off + 1 < lap_data.len() {
+                        i16::from_le_bytes([lap_data[off], lap_data[off + 1]]) as i32
                     } else {
                         0
                     };
-                    let val = (exp_val + lap_val).clamp(0, 255) as u8;
-                    reconstructed.set_pixel(x, y, val);
+                    let s16_sum = (expanded[y * lw + x] as i32 + lap)
+                        .clamp(i16::MIN as i32, i16::MAX as i32);
+                    next.push(s16_sum.clamp(0, 255) as u8);
                 }
             }
 
-            current = reconstructed;
+            current = next;
+            cur_w = lw;
+            cur_h = lh;
         }
 
-        // Copy result to output
-        copy_rust_to_c_image(&current, output);
+        let mut out_img = match Image::new(cur_w, cur_h, ImageFormat::Gray) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        for y in 0..cur_h {
+            for x in 0..cur_w {
+                out_img.set_pixel(x, y, current[y * cur_w + x]);
+            }
+        }
+        copy_rust_to_c_image(&out_img, output);
         VX_SUCCESS
     }
 }
@@ -4784,8 +5254,7 @@ pub fn vxu_remap_impl(
 
         let border = override_border.unwrap_or_else(|| get_border_from_context(context));
         let nearest_neighbor = _policy == 0x4000; // VX_INTERPOLATION_NEAREST_NEIGHBOR
-    
-    
+
         let src_width = src.width as f32;
         let src_height = src.height as f32;
         let src_w = src.width as i32;
@@ -4797,13 +5266,13 @@ pub fn vxu_remap_impl(
                 let idx = y * dst_w + x;
                 let src_x = map_x[idx];
                 let src_y = map_y[idx];
-                
+
                 let out_idx: usize = y.saturating_mul(dst_w).saturating_add(x);
-                
+
                 if nearest_neighbor {
                     let nx = (src_x + 0.5).floor() as i32;
                     let ny = (src_y + 0.5).floor() as i32;
-                    
+
                     if nx >= 0 && nx < src_w && ny >= 0 && ny < src_h {
                         if let Some(p) = dst_data.get_mut(out_idx) {
                             *p = src.get_pixel(nx as usize, ny as usize);
@@ -4865,9 +5334,9 @@ pub enum VxStatus {
 /// ===========================================================================
 /// Border Helper Functions
 /// ===========================================================================
-
-use crate::unified_c_api::{CONTEXTS, VX_BORDER_UNDEFINED, VX_BORDER_CONSTANT, VX_BORDER_REPLICATE};
-use crate::c_api_data::vx_pixel_value_t;
+use crate::unified_c_api::{
+    CONTEXTS, VX_BORDER_CONSTANT, VX_BORDER_REPLICATE, VX_BORDER_UNDEFINED,
+};
 
 fn get_border_from_context(context: vx_context) -> BorderMode {
     if let Ok(contexts) = CONTEXTS.lock() {
@@ -4882,7 +5351,7 @@ fn get_border_from_context(context: vx_context) -> BorderMode {
                     }
                     VX_BORDER_REPLICATE => BorderMode::Replicate,
                     VX_BORDER_UNDEFINED | _ => BorderMode::Undefined,
-                }
+                };
             }
         }
     }
@@ -5004,7 +5473,9 @@ fn rgba_to_rgb(src: &Image, dst: &mut Image) -> VxResult<()> {
         for x in 0..width {
             let src_idx = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
             let dst_idx = y.saturating_mul(width).saturating_add(x).saturating_mul(3);
-            if src_idx.saturating_add(2) < src_data.len() && dst_idx.saturating_add(2) < dst_data.len() {
+            if src_idx.saturating_add(2) < src_data.len()
+                && dst_idx.saturating_add(2) < dst_data.len()
+            {
                 dst_data[dst_idx] = src_data[src_idx];
                 dst_data[dst_idx + 1] = src_data[src_idx + 1];
                 dst_data[dst_idx + 2] = src_data[src_idx + 2];
@@ -5037,14 +5508,21 @@ fn get_pixel_bordered(img: &Image, x: isize, y: isize, border: BorderMode) -> u8
 }
 
 fn quickselect(arr: &mut [u8], k: usize) -> u8 {
-    if k >= arr.len() { return 0; }
+    if k >= arr.len() {
+        return 0;
+    }
 
     let mut sorted = arr.to_vec();
     sorted.sort_unstable();
     sorted[k]
 }
 
-fn convolve_generic(src: &Image, dst: &mut Image, kernel: &[[i32; 3]; 3], border: BorderMode) -> VxResult<()> {
+fn convolve_generic(
+    src: &Image,
+    dst: &mut Image,
+    kernel: &[[i32; 3]; 3],
+    border: BorderMode,
+) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
     let kernel_sum: i32 = kernel.iter().flat_map(|r| r.iter()).sum::<i32>().max(1);
@@ -5075,38 +5553,38 @@ fn convolve_generic(src: &Image, dst: &mut Image, kernel: &[[i32; 3]; 3], border
 fn gaussian3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
-    
+
     let dst_data = dst.data_mut();
-    
+
     // For VX_BORDER_UNDEFINED, only process pixels where full 3x3 neighborhood exists
     // This matches the OpenVX conformance test expectations
     for y in 1..height.saturating_sub(1) {
         for x in 1..width.saturating_sub(1) {
             // Full 3x3 Gaussian kernel: [1,2,1; 2,4,2; 1,2,1] / 16
             let mut sum: i32 = 0;
-            
+
             // Row y-1
             sum += src.get_pixel(x - 1, y - 1) as i32 * 1;
-            sum += src.get_pixel(x,     y - 1) as i32 * 2;
+            sum += src.get_pixel(x, y - 1) as i32 * 2;
             sum += src.get_pixel(x + 1, y - 1) as i32 * 1;
-            
+
             // Row y
             sum += src.get_pixel(x - 1, y) as i32 * 2;
-            sum += src.get_pixel(x,     y) as i32 * 4;
+            sum += src.get_pixel(x, y) as i32 * 4;
             sum += src.get_pixel(x + 1, y) as i32 * 2;
-            
+
             // Row y+1
             sum += src.get_pixel(x - 1, y + 1) as i32 * 1;
-            sum += src.get_pixel(x,     y + 1) as i32 * 2;
+            sum += src.get_pixel(x, y + 1) as i32 * 2;
             sum += src.get_pixel(x + 1, y + 1) as i32 * 1;
-            
+
             let idx = y.saturating_mul(width).saturating_add(x);
             if let Some(p) = dst_data.get_mut(idx) {
                 *p = (sum >> 4) as u8; // Divide by 16
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -5311,17 +5789,9 @@ fn erode3x3(src: &Image, dst: &mut Image, border: BorderMode) -> VxResult<()> {
 // Gradient Operations
 // ============================================================================
 
-const SOBEL_X: [[i32; 3]; 3] = [
-    [-1, 0, 1],
-    [-2, 0, 2],
-    [-1, 0, 1],
-];
+const SOBEL_X: [[i32; 3]; 3] = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]];
 
-const SOBEL_Y: [[i32; 3]; 3] = [
-    [-1, -2, -1],
-    [ 0,  0,  0],
-    [ 1,  2,  1],
-];
+const SOBEL_Y: [[i32; 3]; 3] = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]];
 
 /// Compute Sobel gradients outputting S16 directly, with proper border handling
 fn sobel3x3_s16(src: &Image, grad_x: &mut Image, grad_y: &mut Image, border: BorderMode) {
@@ -5332,7 +5802,7 @@ fn sobel3x3_s16(src: &Image, grad_x: &mut Image, grad_y: &mut Image, border: Bor
     // VX_BORDER_UNDEFINED: only compute inner pixels (1-pixel border left as zero)
     let (start_y, end_y, start_x, end_x) = match border {
         BorderMode::Undefined => (1, height.saturating_sub(1), 1, width.saturating_sub(1)),
-        _ => (0, height, 0, width),  // Replicate and Constant process all pixels
+        _ => (0, height, 0, width), // Replicate and Constant process all pixels
     };
 
     for y in start_y..end_y {
@@ -5431,21 +5901,21 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult
         // S16 output - compute with 32-bit intermediate to avoid overflow
         for y in 0..height {
             for x in 0..width {
-                let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src1.get_pixel(x, y) as i32 
+                let a = if src1_is_s16 {
+                    src1.get_pixel_s16(x, y) as i32
+                } else {
+                    src1.get_pixel(x, y) as i32
                 };
-                let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src2.get_pixel(x, y) as i32 
+                let b = if src2_is_s16 {
+                    src2.get_pixel_s16(x, y) as i32
+                } else {
+                    src2.get_pixel(x, y) as i32
                 };
                 let sum = a + b;
                 let result = if saturate {
                     sum.clamp(-32768, 32767) as i16
                 } else {
-                    sum as i16  // Wrap
+                    sum as i16 // Wrap
                 };
                 dst.set_pixel_s16(x, y, result);
             }
@@ -5455,22 +5925,22 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult
         let dst_data = dst.data_mut();
         for y in 0..height {
             for x in 0..width {
-                let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src1.get_pixel(x, y) as i32 
+                let a = if src1_is_s16 {
+                    src1.get_pixel_s16(x, y) as i32
+                } else {
+                    src1.get_pixel(x, y) as i32
                 };
-                let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src2.get_pixel(x, y) as i32 
+                let b = if src2_is_s16 {
+                    src2.get_pixel_s16(x, y) as i32
+                } else {
+                    src2.get_pixel(x, y) as i32
                 };
                 let sum = a + b;
                 // Apply saturation or wrap policy
                 let result = if saturate {
                     sum.clamp(0, 255) as u8
                 } else {
-                    sum as u8  // Truncation to u8 acts as wrap
+                    sum as u8 // Truncation to u8 acts as wrap
                 };
                 let idx = y.saturating_mul(width).saturating_add(x);
                 if let Some(p) = dst_data.get_mut(idx) {
@@ -5503,21 +5973,21 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
         // S16 output
         for y in 0..height {
             for x in 0..width {
-                let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src1.get_pixel(x, y) as i32 
+                let a = if src1_is_s16 {
+                    src1.get_pixel_s16(x, y) as i32
+                } else {
+                    src1.get_pixel(x, y) as i32
                 };
-                let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src2.get_pixel(x, y) as i32 
+                let b = if src2_is_s16 {
+                    src2.get_pixel_s16(x, y) as i32
+                } else {
+                    src2.get_pixel(x, y) as i32
                 };
                 let diff = a - b;
                 let result = if saturate {
                     diff.clamp(-32768, 32767) as i16
                 } else {
-                    diff as i16  // Wrap
+                    diff as i16 // Wrap
                 };
                 dst.set_pixel_s16(x, y, result);
             }
@@ -5527,22 +5997,22 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
         let dst_data = dst.data_mut();
         for y in 0..height {
             for x in 0..width {
-                let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src1.get_pixel(x, y) as i32 
+                let a = if src1_is_s16 {
+                    src1.get_pixel_s16(x, y) as i32
+                } else {
+                    src1.get_pixel(x, y) as i32
                 };
-                let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i32 
-                } else { 
-                    src2.get_pixel(x, y) as i32 
+                let b = if src2_is_s16 {
+                    src2.get_pixel_s16(x, y) as i32
+                } else {
+                    src2.get_pixel(x, y) as i32
                 };
                 let diff = a - b;
                 // Apply saturation or wrap policy
                 let result = if saturate {
                     diff.clamp(0, 255) as u8
                 } else {
-                    diff as u8  // Truncation to u8 acts as wrap
+                    diff as u8 // Truncation to u8 acts as wrap
                 };
                 let idx = y.saturating_mul(width).saturating_add(x);
                 if let Some(p) = dst_data.get_mut(idx) {
@@ -5558,7 +6028,14 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
 /// Pixel-wise multiplication with scale, overflow and rounding policies
 /// overflow_policy: 0 = WRAP, 1 = SATURATE
 /// rounding_policy: 1 = TO_ZERO, 2 = TO_NEAREST_EVEN
-fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_policy: vx_enum, rounding_policy: vx_enum) -> VxResult<()> {
+fn multiply(
+    src1: &Image,
+    src2: &Image,
+    dst: &mut Image,
+    scale: f32,
+    overflow_policy: vx_enum,
+    rounding_policy: vx_enum,
+) -> VxResult<()> {
     if src1.width != src2.width || src1.height != src2.height {
         return Err(VxStatus::ErrorInvalidDimension);
     }
@@ -5582,17 +6059,17 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_po
         // S16 output - use 64-bit intermediate
         for y in 0..height {
             for x in 0..width {
-                let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i64 
-                } else { 
-                    src1.get_pixel(x, y) as i64 
+                let a = if src1_is_s16 {
+                    src1.get_pixel_s16(x, y) as i64
+                } else {
+                    src1.get_pixel(x, y) as i64
                 };
-                let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i64 
-                } else { 
-                    src2.get_pixel(x, y) as i64 
+                let b = if src2_is_s16 {
+                    src2.get_pixel_s16(x, y) as i64
+                } else {
+                    src2.get_pixel(x, y) as i64
                 };
-                
+
                 // Compute: a * b * scale with proper rounding
                 let product = (a as f64) * (b as f64) * (scale as f64);
                 let rounded = if round_to_nearest {
@@ -5605,7 +6082,7 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_po
                         product.ceil() as i64
                     }
                 };
-                
+
                 let result = if saturate {
                     rounded.clamp(-32768, 32767) as i16
                 } else {
@@ -5620,17 +6097,17 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_po
         let dst_data = dst.data_mut();
         for y in 0..height {
             for x in 0..width {
-                let a = if src1_is_s16 { 
-                    src1.get_pixel_s16(x, y) as i64 
-                } else { 
-                    src1.get_pixel(x, y) as i64 
+                let a = if src1_is_s16 {
+                    src1.get_pixel_s16(x, y) as i64
+                } else {
+                    src1.get_pixel(x, y) as i64
                 };
-                let b = if src2_is_s16 { 
-                    src2.get_pixel_s16(x, y) as i64 
-                } else { 
-                    src2.get_pixel(x, y) as i64 
+                let b = if src2_is_s16 {
+                    src2.get_pixel_s16(x, y) as i64
+                } else {
+                    src2.get_pixel(x, y) as i64
                 };
-                
+
                 // Compute: a * b * scale with proper rounding
                 let product = (a as f64) * (b as f64) * (scale as f64);
                 let rounded = if round_to_nearest {
@@ -5643,14 +6120,14 @@ fn multiply(src1: &Image, src2: &Image, dst: &mut Image, scale: f32, overflow_po
                         product.ceil() as i64
                     }
                 };
-                
+
                 let result = if saturate {
                     rounded.clamp(0, 255) as u8
                 } else {
                     // Wrap: just truncate to u8
                     rounded as u8
                 };
-                
+
                 let idx = y.saturating_mul(width).saturating_add(x);
                 if let Some(p) = dst_data.get_mut(idx) {
                     *p = result;
@@ -5742,7 +6219,12 @@ fn min_max_loc(src: &Image) -> VxResult<MinMaxLocResult> {
         }
     }
 
-    Ok(MinMaxLocResult { min_val, max_val, min_locs, max_locs })
+    Ok(MinMaxLocResult {
+        min_val,
+        max_val,
+        min_locs,
+        max_locs,
+    })
 }
 
 fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
@@ -5909,19 +6391,36 @@ fn bilinear_interpolate(img: &Image, x: f32, y: f32) -> u8 {
     let fy = y - y0 as f32;
 
     let p00 = img.get_pixel(x0 as usize, y0 as usize) as f32;
-    let p10 = if x1 < width { img.get_pixel(x1 as usize, y0 as usize) as f32 } else { p00 };
-    let p01 = if y1 < height { img.get_pixel(x0 as usize, y1 as usize) as f32 } else { p00 };
-    let p11 = if x1 < width && y1 < height { img.get_pixel(x1 as usize, y1 as usize) as f32 } else { p00 };
+    let p10 = if x1 < width {
+        img.get_pixel(x1 as usize, y0 as usize) as f32
+    } else {
+        p00
+    };
+    let p01 = if y1 < height {
+        img.get_pixel(x0 as usize, y1 as usize) as f32
+    } else {
+        p00
+    };
+    let p11 = if x1 < width && y1 < height {
+        img.get_pixel(x1 as usize, y1 as usize) as f32
+    } else {
+        p00
+    };
 
-    let value = (1.0 - fx) * (1.0 - fy) * p00 +
-                fx * (1.0 - fy) * p10 +
-                (1.0 - fx) * fy * p01 +
-                fx * fy * p11;
+    let value = (1.0 - fx) * (1.0 - fy) * p00
+        + fx * (1.0 - fy) * p10
+        + (1.0 - fx) * fy * p01
+        + fx * fy * p11;
 
     clamp_u8(value as i32)
 }
 
-fn scale_image(src: &Image, dst: &mut Image, interpolation: InterpolationType, border: BorderMode) -> VxResult<()> {
+fn scale_image(
+    src: &Image,
+    dst: &mut Image,
+    interpolation: InterpolationType,
+    border: BorderMode,
+) -> VxResult<()> {
     let src_width = src.width;
     let src_height = src.height;
     let dst_width = dst.width;
@@ -5973,12 +6472,12 @@ fn scale_image(src: &Image, dst: &mut Image, interpolation: InterpolationType, b
 fn nearest_neighbor_interpolate(img: &Image, x: f32, y: f32, border: BorderMode) -> u8 {
     let width = img.width as i32;
     let height = img.height as i32;
-    
+
     // OpenVX nearest neighbor: round to nearest integer (round-half-up)
     // floor(x + 0.5)
     let nx = (x + 0.5).floor() as i32;
     let ny = (y + 0.5).floor() as i32;
-    
+
     // Check if within valid region
     if !img.is_valid_pixel(nx, ny) {
         return match border {
@@ -5991,7 +6490,7 @@ fn nearest_neighbor_interpolate(img: &Image, x: f32, y: f32, border: BorderMode)
             BorderMode::Undefined => 0,
         };
     }
-    
+
     img.get_pixel(nx as usize, ny as usize)
 }
 
@@ -6029,16 +6528,23 @@ fn bilinear_interpolate_with_border(img: &Image, x: f32, y: f32, border: BorderM
     let p01 = get_pixel_bilinear(x0, y1) as f32;
     let p11 = get_pixel_bilinear(x1, y1) as f32;
 
-    let value = (1.0 - fx) * (1.0 - fy) * p00 +
-                fx * (1.0 - fy) * p10 +
-                (1.0 - fx) * fy * p01 +
-                fx * fy * p11;
+    let value = (1.0 - fx) * (1.0 - fy) * p00
+        + fx * (1.0 - fy) * p10
+        + (1.0 - fx) * fy * p01
+        + fx * fy * p11;
 
     // Round to nearest integer (CTS reference uses ref_float + 0.5f)
     clamp_u8(value.round() as i32)
 }
 
-fn area_interpolate(img: &Image, x: f32, y: f32, x_scale: f32, y_scale: f32, border: BorderMode) -> u8 {
+fn area_interpolate(
+    img: &Image,
+    x: f32,
+    y: f32,
+    x_scale: f32,
+    y_scale: f32,
+    border: BorderMode,
+) -> u8 {
     // For area interpolation (used when downscaling), compute the average
     // over the source region that maps to this output pixel.
     // For integer downscaling (e.g., 4:1), this should average exactly
@@ -6049,12 +6555,12 @@ fn area_interpolate(img: &Image, x: f32, y: f32, x_scale: f32, y_scale: f32, bor
     let y_start = y.floor() as i32;
     // For exact integer downscale: x_start should be the block start,
     // and the region should cover exactly x_scale * y_scale pixels.
-    let x_end = (x + x_scale).floor() as i32;  // Use floor, not ceil
+    let x_end = (x + x_scale).floor() as i32; // Use floor, not ceil
     let y_end = (y + y_scale).floor() as i32;
-    
+
     let mut sum: u32 = 0;
     let mut count: u32 = 0;
-    
+
     for py in y_start..y_end {
         for px in x_start..x_end {
             if img.is_valid_pixel(px, py) {
@@ -6083,9 +6589,9 @@ fn area_interpolate(img: &Image, x: f32, y: f32, x_scale: f32, y_scale: f32, bor
             }
         }
     }
-    
+
     if count > 0 {
-        ((sum + count / 2) / count) as u8  // Round to nearest
+        ((sum + count / 2) / count) as u8 // Round to nearest
     } else {
         0
     }
@@ -6098,11 +6604,17 @@ enum InterpolationType {
     Area,
 }
 
-fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMode, nearest_neighbor: bool) -> VxResult<()> {
+fn warp_affine(
+    src: &Image,
+    matrix: &[f32; 6],
+    dst: &mut Image,
+    border: BorderMode,
+    nearest_neighbor: bool,
+) -> VxResult<()> {
     let dst_width = dst.width;
     let dst_height = dst.height;
-    let src_w = src.width as i32;
-    let src_h = src.height as i32;
+    let _src_w = src.width as i32;
+    let _src_h = src.height as i32;
 
     let dst_data = dst.data_mut();
 
@@ -6122,11 +6634,11 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMo
             let src_y = a21 * xf + a22 * yf + a23;
 
             let idx = y.saturating_mul(dst_width).saturating_add(x);
-            
+
             if nearest_neighbor {
                 let nx = (src_x + 0.5).floor() as i32;
                 let ny = (src_y + 0.5).floor() as i32;
-                
+
                 if src.is_valid_pixel(nx, ny) {
                     if let Some(p) = dst_data.get_mut(idx) {
                         *p = src.get_pixel(nx as usize, ny as usize);
@@ -6146,8 +6658,11 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMo
                     // Check if the full 2x2 neighborhood is within valid region
                     let x0 = src_x.floor() as i32;
                     let y0 = src_y.floor() as i32;
-                    if src.is_valid_pixel(x0, y0) && src.is_valid_pixel(x0 + 1, y0)
-                        && src.is_valid_pixel(x0, y0 + 1) && src.is_valid_pixel(x0 + 1, y0 + 1) {
+                    if src.is_valid_pixel(x0, y0)
+                        && src.is_valid_pixel(x0 + 1, y0)
+                        && src.is_valid_pixel(x0, y0 + 1)
+                        && src.is_valid_pixel(x0 + 1, y0 + 1)
+                    {
                         if let Some(p) = dst_data.get_mut(idx) {
                             *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
                         }
@@ -6164,13 +6679,18 @@ fn warp_affine(src: &Image, matrix: &[f32; 6], dst: &mut Image, border: BorderMo
     Ok(())
 }
 
-fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: BorderMode, nearest_neighbor: bool) -> VxResult<()> {
+fn warp_perspective(
+    src: &Image,
+    matrix: &[f32; 9],
+    dst: &mut Image,
+    border: BorderMode,
+    nearest_neighbor: bool,
+) -> VxResult<()> {
     let dst_width = dst.width;
     let dst_height = dst.height;
 
-
-    let src_w = src.width as i32;
-    let src_h = src.height as i32;
+    let _src_w = src.width as i32;
+    let _src_h = src.height as i32;
 
     let dst_data = dst.data_mut();
 
@@ -6195,7 +6715,7 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: Bor
             let x_h = h00 * xf + h01 * yf + h02;
             let y_h = h10 * xf + h11 * yf + h12;
             let w_h = h20 * xf + h21 * yf + h22;
-            
+
             let idx = y.saturating_mul(dst_width).saturating_add(x);
             if w_h.abs() < 1e-6 {
                 let val = match border {
@@ -6214,7 +6734,7 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: Bor
             if nearest_neighbor {
                 let nx = (src_x + 0.5).floor() as i32;
                 let ny = (src_y + 0.5).floor() as i32;
-                
+
                 if src.is_valid_pixel(nx, ny) {
                     if let Some(p) = dst_data.get_mut(idx) {
                         *p = src.get_pixel(nx as usize, ny as usize);
@@ -6233,8 +6753,11 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: Bor
                 if matches!(border, BorderMode::Undefined) {
                     let x0 = src_x.floor() as i32;
                     let y0 = src_y.floor() as i32;
-                    if src.is_valid_pixel(x0, y0) && src.is_valid_pixel(x0 + 1, y0)
-                        && src.is_valid_pixel(x0, y0 + 1) && src.is_valid_pixel(x0 + 1, y0 + 1) {
+                    if src.is_valid_pixel(x0, y0)
+                        && src.is_valid_pixel(x0 + 1, y0)
+                        && src.is_valid_pixel(x0, y0 + 1)
+                        && src.is_valid_pixel(x0 + 1, y0 + 1)
+                    {
                         if let Some(p) = dst_data.get_mut(idx) {
                             *p = bilinear_interpolate_with_border(src, src_x, src_y, border);
                         }
@@ -6256,7 +6779,12 @@ fn warp_perspective(src: &Image, matrix: &[f32; 9], dst: &mut Image, border: Bor
 // Feature Detection
 // ============================================================================
 
-fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -> VxResult<Vec<Corner>> {
+fn harris_corners(
+    image: &Image,
+    k: f32,
+    threshold: f32,
+    _min_distance: usize,
+) -> VxResult<Vec<Corner>> {
     let width = image.width;
     let height = image.height;
     // Use checked operations to prevent integer overflow
@@ -6318,7 +6846,9 @@ fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -
                     }
                     let nx = x as isize + dx;
                     let ny = y as isize + dy;
-                    let idx = (ny as usize).saturating_mul(width).saturating_add(nx as usize);
+                    let idx = (ny as usize)
+                        .saturating_mul(width)
+                        .saturating_add(nx as usize);
                     if responses.get(idx).copied().unwrap_or(0.0) > response {
                         is_max = false;
                         break;
@@ -6340,7 +6870,11 @@ fn harris_corners(image: &Image, k: f32, threshold: f32, _min_distance: usize) -
     }
 
     // Sort by strength
-    corners.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
+    corners.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(corners)
 }
@@ -6351,8 +6885,22 @@ fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
     let mut corners = Vec::new();
 
     const CIRCLE_OFFSETS: [(isize, isize); 16] = [
-        (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
-        (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
+        (0, -3),
+        (1, -3),
+        (2, -2),
+        (3, -1),
+        (3, 0),
+        (3, 1),
+        (2, 2),
+        (1, 3),
+        (0, 3),
+        (-1, 3),
+        (-2, 2),
+        (-3, 1),
+        (-3, 0),
+        (-3, -1),
+        (-2, -2),
+        (-1, -3),
     ];
 
     for y in 3..height - 3 {
@@ -6410,7 +6958,11 @@ fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
         }
     }
 
-    corners.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
+    corners.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(corners)
 }
 
@@ -6466,9 +7018,12 @@ fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
 // ============================================================================
 
 fn canny_edge_detector(
-    src: &Image, dst: &mut Image,
-    low_thresh: i32, high_thresh: i32,
-    gsz: i32, norm: vx_enum,
+    src: &Image,
+    dst: &mut Image,
+    low_thresh: i32,
+    high_thresh: i32,
+    gsz: i32,
+    norm: vx_enum,
 ) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
@@ -6614,12 +7169,24 @@ fn canny_edge_detector(
 
     // Recursive edge tracing (follow_edge)
     let offsets: [(isize, isize); 8] = [
-        (-1, -1), (0, -1), (1, -1),
-        (-1,  0),          (1,  0),
-        (-1,  1), (0,  1), (1,  1),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
     ];
 
-    fn follow_edge(tmp: &mut [u8], width: usize, height: usize, x: usize, y: usize, offsets: &[(isize, isize); 8]) {
+    fn follow_edge(
+        tmp: &mut [u8],
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+        offsets: &[(isize, isize); 8],
+    ) {
         tmp[y * width + x] = 255;
         for &(oy, ox) in offsets.iter() {
             let ny = y as isize + oy;
@@ -6636,7 +7203,11 @@ fn canny_edge_detector(
                             for &(oy2, ox2) in offsets.iter() {
                                 let ny2 = sy as isize + oy2;
                                 let nx2 = sx as isize + ox2;
-                                if ny2 >= 0 && ny2 < height as isize && nx2 >= 0 && nx2 < width as isize {
+                                if ny2 >= 0
+                                    && ny2 < height as isize
+                                    && nx2 >= 0
+                                    && nx2 < width as isize
+                                {
                                     let nidx = (ny2 as usize) * width + (nx2 as usize);
                                     if tmp[nidx] == 1 {
                                         stack.push((nx2 as usize, ny2 as usize));
@@ -6684,7 +7255,16 @@ fn canny_edge_detector(
 
 /// Threshold an image using a threshold object
 /// Supports both BINARY and RANGE threshold types
-fn threshold_image(src: &Image, dst: &mut Image, thresh_type: vx_enum, value: i32, lower: i32, upper: i32, true_val: i32, false_val: i32) -> VxResult<()> {
+fn threshold_image(
+    src: &Image,
+    dst: &mut Image,
+    thresh_type: vx_enum,
+    value: i32,
+    lower: i32,
+    upper: i32,
+    true_val: i32,
+    false_val: i32,
+) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
     let dst_data = dst.data_mut();
@@ -6702,7 +7282,8 @@ fn threshold_image(src: &Image, dst: &mut Image, thresh_type: vx_enum, value: i3
                 } else {
                     false_v
                 }
-            } else { // VX_THRESHOLD_TYPE_RANGE
+            } else {
+                // VX_THRESHOLD_TYPE_RANGE
                 if pixel < lower || pixel > upper {
                     false_v
                 } else {
@@ -6737,28 +7318,28 @@ pub fn vxu_threshold_impl(
         let width = img.width as usize;
         let height = img.height as usize;
         let format = img.format;
-        
+
         // Check if input is S16 format (0x36313053 = 'S016')
         let is_s16 = format == 0x36313053;
-        
+
         // Get threshold values from threshold object
         let t = &*(threshold as *const crate::c_api_data::VxCThresholdData);
-        
+
         // Get source and destination data
         let src_data = match img.data.read() {
             Ok(d) => d,
             Err(_) => return VX_ERROR_INVALID_REFERENCE,
         };
-        
+
         let dst_img = &*(output as *const VxCImage);
         let mut dst_data = match dst_img.data.write() {
             Ok(d) => d,
             Err(_) => return VX_ERROR_INVALID_REFERENCE,
         };
-        
+
         let true_v = t.true_value.max(0).min(255) as u8;
         let false_v = t.false_value.max(0).min(255) as u8;
-        
+
         // Process based on format
         if is_s16 {
             // S16 format: 2 bytes per pixel, interpreted as signed 16-bit
@@ -6766,17 +7347,17 @@ pub fn vxu_threshold_impl(
             if src_data.len() < expected_size {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            
+
             // Ensure output has enough space
             if dst_data.len() < width * height {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            
+
             for y in 0..height {
                 for x in 0..width {
                     let idx = y * width + x;
                     let byte_idx = idx * 2;
-                    
+
                     // Read as little-endian signed 16-bit
                     let pixel = if byte_idx + 1 < src_data.len() {
                         let low = src_data[byte_idx] as i16;
@@ -6785,14 +7366,16 @@ pub fn vxu_threshold_impl(
                     } else {
                         0i32
                     };
-                    
-                    let output_val = if t.thresh_type == crate::c_api_data::VX_THRESHOLD_TYPE_BINARY {
+
+                    let output_val = if t.thresh_type == crate::c_api_data::VX_THRESHOLD_TYPE_BINARY
+                    {
                         if pixel > t.value {
                             true_v
                         } else {
                             false_v
                         }
-                    } else { // VX_THRESHOLD_TYPE_RANGE
+                    } else {
+                        // VX_THRESHOLD_TYPE_RANGE
                         if pixel < t.lower || pixel > t.upper {
                             false_v
                         } else {
@@ -6817,25 +7400,27 @@ pub fn vxu_threshold_impl(
                     let idx = y * width + x;
                     let pixel = src_data[idx] as i32;
 
-                    let output_val = if t.thresh_type == crate::c_api_data::VX_THRESHOLD_TYPE_BINARY {
+                    let output_val = if t.thresh_type == crate::c_api_data::VX_THRESHOLD_TYPE_BINARY
+                    {
                         if pixel > t.value {
                             true_v
                         } else {
                             false_v
                         }
-                    } else { // VX_THRESHOLD_TYPE_RANGE
+                    } else {
+                        // VX_THRESHOLD_TYPE_RANGE
                         if pixel < t.lower || pixel > t.upper {
                             false_v
                         } else {
                             true_v
                         }
                     };
-                    
+
                     dst_data[idx] = output_val;
                 }
             }
         }
-        
+
         VX_SUCCESS
     }
 }
@@ -6937,10 +7522,10 @@ pub fn vxu_non_linear_filter_impl(
     // VX_NONLINEAR_FILTER_MEDIAN = 0x16000 = 90112
     // VX_NONLINEAR_FILTER_MIN = 0x16001 = 90113
     // VX_NONLINEAR_FILTER_MAX = 0x16002 = 90114
-    
+
     // Convert border mode
     let border_mode = crate::unified_c_api::border_from_vx(&border);
-    
+
     unsafe {
         let src = match c_image_to_rust(input) {
             Some(img) => img,
@@ -6960,14 +7545,14 @@ pub fn vxu_non_linear_filter_impl(
             for x in 0..width {
                 // Collect values within the mask
                 let mut values = Vec::new();
-                
+
                 for my in 0..mask_rows {
                     for mx in 0..mask_cols {
                         // Only include pixels where mask is non-zero
                         if mask_data[my * mask_cols + mx] != 0 {
                             let py = y as isize + my as isize - origin_y as isize;
                             let px = x as isize + mx as isize - origin_x as isize;
-                            
+
                             let pixel = match &border_mode {
                                 BorderMode::Replicate => {
                                     let cy = py.max(0).min(height as isize - 1) as usize;
@@ -6975,14 +7560,22 @@ pub fn vxu_non_linear_filter_impl(
                                     src.get_pixel(cx, cy)
                                 }
                                 BorderMode::Constant(val) => {
-                                    if py < 0 || py >= height as isize || px < 0 || px >= width as isize {
+                                    if py < 0
+                                        || py >= height as isize
+                                        || px < 0
+                                        || px >= width as isize
+                                    {
                                         *val
                                     } else {
                                         src.get_pixel(px as usize, py as usize)
                                     }
                                 }
                                 BorderMode::Undefined => {
-                                    if py < 0 || py >= height as isize || px < 0 || px >= width as isize {
+                                    if py < 0
+                                        || py >= height as isize
+                                        || px < 0
+                                        || px >= width as isize
+                                    {
                                         continue; // Skip out-of-bounds for undefined border
                                     }
                                     src.get_pixel(px as usize, py as usize)
@@ -6992,20 +7585,16 @@ pub fn vxu_non_linear_filter_impl(
                         }
                     }
                 }
-                
+
                 if values.is_empty() {
                     continue; // No valid pixels in mask
                 }
-                
+
                 let value = match function {
                     // VX_NONLINEAR_FILTER_MIN = 0x16001 = 90113
-                    90113 => {
-                        values.iter().copied().min().unwrap_or(0)
-                    }
+                    90113 => values.iter().copied().min().unwrap_or(0),
                     // VX_NONLINEAR_FILTER_MAX = 0x16002 = 90114
-                    90114 => {
-                        values.iter().copied().max().unwrap_or(0)
-                    }
+                    90114 => values.iter().copied().max().unwrap_or(0),
                     // VX_NONLINEAR_FILTER_MEDIAN = 0x16000 = 90112 (default)
                     _ => {
                         values.sort_unstable();
@@ -7057,7 +7646,7 @@ pub fn vxu_and_impl(
         // Bitwise AND implementation
         let width = dst.width();
         let height = dst.height();
-        let mut dst_data = dst.data_mut();
+        let dst_data = dst.data_mut();
 
         for y in 0..height {
             for x in 0..width {
@@ -7080,7 +7669,6 @@ pub fn vxu_or_impl(
     in2: vx_image,
     output: vx_image,
 ) -> vx_status {
-    
     if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -7110,7 +7698,7 @@ pub fn vxu_or_impl(
         // Bitwise OR implementation
         let width = dst.width();
         let height = dst.height();
-        let mut dst_data = dst.data_mut();
+        let dst_data = dst.data_mut();
 
         for y in 0..height {
             for x in 0..width {
@@ -7156,7 +7744,7 @@ pub fn vxu_xor_impl(
         // Bitwise XOR implementation
         let width = dst.width();
         let height = dst.height();
-        let mut dst_data = dst.data_mut();
+        let dst_data = dst.data_mut();
 
         for y in 0..height {
             for x in 0..width {
@@ -7173,11 +7761,7 @@ pub fn vxu_xor_impl(
     }
 }
 
-pub fn vxu_not_impl(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> vx_status {
+pub fn vxu_not_impl(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -7197,7 +7781,7 @@ pub fn vxu_not_impl(
         let width = dst.width();
         let height = dst.height();
 
-        let mut dst_data = dst.data_mut();
+        let dst_data = dst.data_mut();
 
         for y in 0..height {
             for x in 0..width {
@@ -7231,7 +7815,7 @@ pub struct vx_keypoint_t {
 }
 
 /// Optical flow implementation using Lucas-Kanade pyramidal algorithm
-/// 
+///
 /// Parameters:
 /// - old_images: Pyramid of previous frame
 /// - new_images: Pyramid of current frame
@@ -7244,7 +7828,7 @@ pub struct vx_keypoint_t {
 /// - use_initial_estimate: Whether to use new_points_estimates
 /// - window_dimension: Size of the tracking window (3, 5, 7, etc.)
 pub fn vxu_optical_flow_pyr_lk_impl(
-    _context: vx_context,
+    context: vx_context,
     old_images: vx_pyramid,
     new_images: vx_pyramid,
     old_points: vx_array,
@@ -7256,153 +7840,366 @@ pub fn vxu_optical_flow_pyr_lk_impl(
     use_initial_estimate: vx_bool,
     window_dimension: vx_size,
 ) -> vx_status {
-    // Validate inputs
-    if _context.is_null() || old_images.is_null() || new_images.is_null() ||
-       old_points.is_null() || new_points.is_null() {
+    if context.is_null()
+        || old_images.is_null()
+        || new_images.is_null()
+        || old_points.is_null()
+        || new_points.is_null()
+    {
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // Validate window dimension (must be odd and > 0)
     let window_size = window_dimension as usize;
     if window_size == 0 || window_size % 2 == 0 {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
-    let max_iter = num_iterations as usize;
-    let eps = epsilon;
+    optical_flow_pyr_lk_run(
+        old_images,
+        new_images,
+        old_points,
+        new_points_estimates,
+        new_points,
+        epsilon,
+        num_iterations as usize,
+        use_initial_estimate != 0,
+        window_size,
+    )
+}
+
+/// Shared Lucas-Kanade pyramidal optical flow runner used by both the immediate
+/// (`vxuOpticalFlowPyrLK`) and graph-mode dispatch paths.
+///
+/// Reads the input keypoint array via the public `vxQueryArray` /
+/// `vxMapArrayRange` FFI (so it works regardless of the array's internal
+/// struct layout), walks the U8 pyramid levels by treating each
+/// `pyr.levels[i]` pointer as a `*const VxCImage`, runs a coarse-to-fine
+/// Lucas-Kanade tracker, and writes results back via `vxTruncateArray` /
+/// `vxAddArrayItems`.
+pub(crate) fn optical_flow_pyr_lk_run(
+    old_images: vx_pyramid,
+    new_images: vx_pyramid,
+    old_points: vx_array,
+    new_points_estimates: vx_array,
+    new_points: vx_array,
+    epsilon: vx_float32,
+    max_iterations: usize,
+    use_initial_estimate: bool,
+    window_size: usize,
+) -> vx_status {
+    extern "C" {
+        fn vxQueryArray(
+            arr: vx_array,
+            attr: vx_enum,
+            ptr: *mut c_void,
+            size: vx_size,
+        ) -> vx_status;
+        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+        fn vxAddArrayItems(
+            arr: vx_array,
+            count: vx_size,
+            ptr: *const c_void,
+            stride: vx_size,
+        ) -> vx_status;
+        fn vxMapArrayRange(
+            arr: vx_array,
+            start: vx_size,
+            end: vx_size,
+            map_id: *mut vx_map_id,
+            stride: *mut vx_size,
+            ptr: *mut *mut c_void,
+            usage: vx_enum,
+            mem_type: vx_enum,
+            flags: vx_uint32,
+        ) -> vx_status;
+        fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_status;
+    }
+
+    const VX_ARRAY_NUMITEMS_ATTR: vx_enum = 0x80E01;
+    const VX_READ_ONLY_USAGE: vx_enum = 0x11001;
+    const VX_MEMORY_TYPE_HOST_C: vx_enum = 0xE001;
+
+    if window_size < 3 || window_size % 2 == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    let half_window = (window_size / 2) as i32;
+    let kp_size = std::mem::size_of::<vx_keypoint_t>() as vx_size;
 
     unsafe {
-        // Get array data for old_points
-        let old_pts_arr = &*(old_points as *const crate::unified_c_api::VxCArray);
-        let num_points = old_pts_arr.capacity;
-
-        if num_points == 0 {
-            return VX_SUCCESS; // Nothing to track
+        // 1) Number of input keypoints.
+        let mut num_items: vx_size = 0;
+        let qstatus = vxQueryArray(
+            old_points,
+            VX_ARRAY_NUMITEMS_ATTR,
+            &mut num_items as *mut vx_size as *mut c_void,
+            std::mem::size_of::<vx_size>() as vx_size,
+        );
+        if qstatus != VX_SUCCESS {
+            return qstatus;
+        }
+        if num_items == 0 {
+            // Just clear the output array.
+            let _ = vxTruncateArray(new_points, 0);
+            return VX_SUCCESS;
         }
 
-        // Read keypoints from array
-        let old_pts_data = match old_pts_arr.items.read() {
-            Ok(d) => d,
-            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
-        };
-        
-        let mut keypoints: Vec<(f32, f32)> = Vec::with_capacity(num_points);
+        // 2) Read input keypoints into a local buffer (avoid leaving array mapped).
+        let mut input_keys: Vec<vx_keypoint_t> = vec![std::mem::zeroed(); num_items];
+        {
+            let mut map_id: vx_map_id = 0;
+            let mut stride: vx_size = 0;
+            let mut data_ptr: *mut c_void = std::ptr::null_mut();
+            let map_status = vxMapArrayRange(
+                old_points,
+                0,
+                num_items,
+                &mut map_id,
+                &mut stride,
+                &mut data_ptr,
+                VX_READ_ONLY_USAGE,
+                VX_MEMORY_TYPE_HOST_C,
+                0,
+            );
+            if map_status != VX_SUCCESS || data_ptr.is_null() {
+                return if map_status != VX_SUCCESS {
+                    map_status
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                };
+            }
+            let stride = if stride == 0 { kp_size } else { stride };
+            for i in 0..num_items {
+                let kp_ptr = (data_ptr as *const u8).add(i * stride) as *const vx_keypoint_t;
+                input_keys[i] = *kp_ptr;
+            }
+            let _ = vxUnmapArrayRange(old_points, map_id);
+        }
 
-        // VX_TYPE_KEYPOINT is a struct with 6 floats (24 bytes)
-        let keypoint_size = std::mem::size_of::<vx_keypoint_t>();
-        for i in 0..num_points {
-            let offset = i * keypoint_size;
-            if offset + keypoint_size <= old_pts_data.len() {
-                let kp_ptr = old_pts_data.as_ptr().add(offset) as *const vx_keypoint_t;
-                let kp = &*kp_ptr;
-                keypoints.push((kp.x as f32, kp.y as f32));
+        // 3) Optionally read initial estimates. The CTS frequently passes
+        // `old_points` here as the same array, in which case the values
+        // already match `input_keys`.
+        let mut initial_keys: Vec<vx_keypoint_t> = Vec::new();
+        if use_initial_estimate && !new_points_estimates.is_null() {
+            let mut est_num: vx_size = 0;
+            let est_status = vxQueryArray(
+                new_points_estimates,
+                VX_ARRAY_NUMITEMS_ATTR,
+                &mut est_num as *mut vx_size as *mut c_void,
+                std::mem::size_of::<vx_size>() as vx_size,
+            );
+            if est_status == VX_SUCCESS && est_num > 0 {
+                let mut map_id: vx_map_id = 0;
+                let mut stride: vx_size = 0;
+                let mut data_ptr: *mut c_void = std::ptr::null_mut();
+                let map_status = vxMapArrayRange(
+                    new_points_estimates,
+                    0,
+                    est_num,
+                    &mut map_id,
+                    &mut stride,
+                    &mut data_ptr,
+                    VX_READ_ONLY_USAGE,
+                    VX_MEMORY_TYPE_HOST_C,
+                    0,
+                );
+                if map_status == VX_SUCCESS && !data_ptr.is_null() {
+                    let stride = if stride == 0 { kp_size } else { stride };
+                    initial_keys.resize(est_num.min(num_items), std::mem::zeroed());
+                    for i in 0..initial_keys.len() {
+                        let kp_ptr =
+                            (data_ptr as *const u8).add(i * stride) as *const vx_keypoint_t;
+                        initial_keys[i] = *kp_ptr;
+                    }
+                    let _ = vxUnmapArrayRange(new_points_estimates, map_id);
+                }
             }
         }
 
-        // Read initial estimates if provided
-        let mut initial_flow: Vec<(f32, f32)> = Vec::new();
-        if use_initial_estimate != 0 && !new_points_estimates.is_null() {
-            let est_arr = &*(new_points_estimates as *const crate::unified_c_api::VxCArray);
-            let est_data = match est_arr.items.read() {
-                Ok(d) => d,
-                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        // 4) Load every pyramid level as Vec<u8> (U8 only - CTS pyramids are U8).
+        let old_pyr = &*(old_images as *const VxCPyramid);
+        let new_pyr = &*(new_images as *const VxCPyramid);
+        let levels = old_pyr.num_levels.min(new_pyr.num_levels);
+        if levels == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let mut old_levels: Vec<(usize, usize, Vec<u8>)> = Vec::with_capacity(levels);
+        let mut new_levels: Vec<(usize, usize, Vec<u8>)> = Vec::with_capacity(levels);
+        for li in 0..levels {
+            let load = |pyr: &VxCPyramid, idx: usize| -> Option<(usize, usize, Vec<u8>)> {
+                let img_addr = *pyr.levels.get(idx)?;
+                if img_addr == 0 {
+                    return None;
+                }
+                let img = &*(img_addr as *const VxCImage);
+                let w = img.width as usize;
+                let h = img.height as usize;
+                let data = img.data.read().ok()?.clone();
+                if data.len() < w * h {
+                    return None;
+                }
+                Some((w, h, data))
             };
-            for i in 0..num_points.min(est_arr.capacity) {
-                let offset = i * keypoint_size;
-                if offset + keypoint_size <= est_data.len() {
-                    let kp_ptr = est_data.as_ptr().add(offset) as *const vx_keypoint_t;
-                    let kp = &*kp_ptr;
-                    initial_flow.push((kp.x as f32, kp.y as f32));
-                }
-            }
+            let old_l = match load(old_pyr, li) {
+                Some(v) => v,
+                None => return VX_ERROR_INVALID_PARAMETERS,
+            };
+            let new_l = match load(new_pyr, li) {
+                Some(v) => v,
+                None => return VX_ERROR_INVALID_PARAMETERS,
+            };
+            old_levels.push(old_l);
+            new_levels.push(new_l);
         }
 
-        // Create placeholder for output keypoints
-        let mut output_keypoints: Vec<vx_keypoint_t> = Vec::with_capacity(num_points);
-
-        let half_window = (window_size / 2) as isize;
-
-        // Simple optical flow implementation
-        // In a full implementation, this would use pyramid levels
-        for (i, &(px, py)) in keypoints.iter().enumerate() {
-            let mut u: f32 = 0.0;
-            let mut v: f32 = 0.0;
-            
-            // Use initial estimate if available
-            if use_initial_estimate != 0 && i < initial_flow.len() {
-                let (ex, ey) = initial_flow[i];
-                u = ex - px;
-                v = ey - py;
+        // 5) Run pyramidal Lucas-Kanade per keypoint (coarse to fine).
+        let eps_sq = epsilon * epsilon;
+        let mut output_keys: Vec<vx_keypoint_t> = Vec::with_capacity(num_items);
+        for (i, kp_in) in input_keys.iter().enumerate() {
+            // Per OpenVX, an input keypoint with tracking_status==0 is dropped.
+            if kp_in.tracking_status == 0 {
+                let mut out = *kp_in;
+                out.tracking_status = 0;
+                output_keys.push(out);
+                continue;
             }
 
-            let mut converged = false;
-            let mut valid = true;
+            let px0 = kp_in.x as f32;
+            let py0 = kp_in.y as f32;
 
-            // Iterative refinement (simplified - without actual image data access)
-            // In a full implementation, this would compute gradients from images
-            for _ in 0..max_iter {
-                let mut sum_ix2: f32 = 1.0;  // Placeholder
-                let mut sum_iy2: f32 = 1.0;  // Placeholder
-                let mut sum_ixiy: f32 = 0.0; // Placeholder
-                let mut sum_ixit: f32 = 0.0; // Placeholder
-                let mut sum_iyit: f32 = 0.0; // Placeholder
+            // Initial flow at full resolution.
+            let (mut u, mut v) = if use_initial_estimate && i < initial_keys.len() {
+                let est = &initial_keys[i];
+                (est.x as f32 - px0, est.y as f32 - py0)
+            } else {
+                (0.0, 0.0)
+            };
 
-                // Solve 2x2 system using Cramer's rule
-                let det = sum_ix2 * sum_iy2 - sum_ixiy * sum_ixiy;
-                if det.abs() < 1e-6 {
-                    valid = false;
+            let mut tracked = true;
+
+            // Iterate from coarsest level (levels-1) down to finest (0).
+            for li in (0..levels).rev() {
+                let scale = (1u32 << li) as f32;
+                let (lw, lh, ref old_data) = old_levels[li];
+                let (_, _, ref new_data) = new_levels[li];
+
+                // Coordinates and current flow estimate at this level.
+                let px = px0 / scale;
+                let py = py0 / scale;
+                let mut lu = u / scale;
+                let mut lv = v / scale;
+
+                for _iter in 0..max_iterations {
+                    let mut sum_ix2: f32 = 0.0;
+                    let mut sum_iy2: f32 = 0.0;
+                    let mut sum_ixiy: f32 = 0.0;
+                    let mut sum_ixit: f32 = 0.0;
+                    let mut sum_iyit: f32 = 0.0;
+                    let mut valid_pixels = 0i32;
+
+                    for wy in -half_window..=half_window {
+                        for wx in -half_window..=half_window {
+                            let xi = px as i32 + wx;
+                            let yi = py as i32 + wy;
+                            if xi < 1 || xi >= lw as i32 - 1 || yi < 1 || yi >= lh as i32 - 1 {
+                                continue;
+                            }
+                            let xs = xi as usize;
+                            let ys = yi as usize;
+                            // Spatial gradients (central difference) on the previous frame.
+                            let gx = (old_data[ys * lw + (xs + 1)] as f32
+                                - old_data[ys * lw + (xs - 1)] as f32)
+                                * 0.5;
+                            let gy = (old_data[(ys + 1) * lw + xs] as f32
+                                - old_data[(ys - 1) * lw + xs] as f32)
+                                * 0.5;
+                            // Temporal gradient: bilinearly-sampled new frame at (x+lu, y+lv) minus old frame.
+                            let nx = xi as f32 + lu;
+                            let ny = yi as f32 + lv;
+                            let ix0 = nx.floor() as i32;
+                            let iy0 = ny.floor() as i32;
+                            if ix0 < 0
+                                || ix0 + 1 >= lw as i32
+                                || iy0 < 0
+                                || iy0 + 1 >= lh as i32
+                            {
+                                continue;
+                            }
+                            let fx = nx - ix0 as f32;
+                            let fy = ny - iy0 as f32;
+                            let ix0u = ix0 as usize;
+                            let iy0u = iy0 as usize;
+                            let p00 = new_data[iy0u * lw + ix0u] as f32;
+                            let p10 = new_data[iy0u * lw + (ix0u + 1)] as f32;
+                            let p01 = new_data[(iy0u + 1) * lw + ix0u] as f32;
+                            let p11 = new_data[(iy0u + 1) * lw + (ix0u + 1)] as f32;
+                            let new_val = (1.0 - fx) * (1.0 - fy) * p00
+                                + fx * (1.0 - fy) * p10
+                                + (1.0 - fx) * fy * p01
+                                + fx * fy * p11;
+                            let it = new_val - old_data[ys * lw + xs] as f32;
+
+                            sum_ix2 += gx * gx;
+                            sum_iy2 += gy * gy;
+                            sum_ixiy += gx * gy;
+                            sum_ixit += gx * it;
+                            sum_iyit += gy * it;
+                            valid_pixels += 1;
+                        }
+                    }
+
+                    let need_pixels = (window_size as i32 * window_size as i32) / 2;
+                    if valid_pixels < need_pixels {
+                        tracked = false;
+                        break;
+                    }
+
+                    let det = sum_ix2 * sum_iy2 - sum_ixiy * sum_ixiy;
+                    if det.abs() < 1e-6 {
+                        tracked = false;
+                        break;
+                    }
+
+                    let du = (sum_iy2 * sum_ixit - sum_ixiy * sum_iyit) / det;
+                    let dv = (sum_ix2 * sum_iyit - sum_ixiy * sum_ixit) / det;
+                    lu -= du;
+                    lv -= dv;
+
+                    if du * du + dv * dv < eps_sq {
+                        break;
+                    }
+                }
+
+                if !tracked {
                     break;
                 }
-
-                let du = (sum_iy2 * sum_ixit - sum_ixiy * sum_iyit) / det;
-                let dv = (sum_ix2 * sum_iyit - sum_ixiy * sum_ixit) / det;
-
-                u -= du;
-                v -= dv;
-
-                // Check convergence
-                if du * du + dv * dv < eps * eps {
-                    converged = true;
-                    break;
-                }
+                u = lu * scale;
+                v = lv * scale;
             }
 
-            // Create output keypoint
-            output_keypoints.push(vx_keypoint_t {
-                x: (px + u) as i32,
-                y: (py + v) as i32,
-                strength: if valid { 1.0 } else { 0.0 },
-                scale: 1.0,
-                orientation: 0.0,
-                tracking_status: if valid { 1 } else { 0 },
-                error: if valid { 0.0 } else { f32::MAX },
-            });
+            let nx = px0 + u;
+            let ny = py0 + v;
+            let mut out = *kp_in;
+            out.x = nx.round() as i32;
+            out.y = ny.round() as i32;
+            out.tracking_status = if tracked { 1 } else { 0 };
+            out.error = if tracked { 0.0 } else { f32::MAX };
+            output_keys.push(out);
         }
 
-        // Write output keypoints to new_points array
-        let new_pts_arr = &*(new_points as *const crate::unified_c_api::VxCArray);
-        let mut new_pts_data = match new_pts_arr.items.write() {
-            Ok(d) => d,
-            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
-        };
-        
-        // Resize output array if needed
-        let output_size = output_keypoints.len() * keypoint_size;
-        if new_pts_data.len() < output_size {
-            new_pts_data.resize(output_size, 0);
+        // 6) Write results back via the public array API.
+        let _ = vxTruncateArray(new_points, 0);
+        let add_status = vxAddArrayItems(
+            new_points,
+            output_keys.len() as vx_size,
+            output_keys.as_ptr() as *const c_void,
+            kp_size,
+        );
+        if add_status != VX_SUCCESS {
+            return add_status;
         }
-
-        // Copy output keypoints
-        for (i, kp) in output_keypoints.iter().enumerate() {
-            let offset = i * keypoint_size;
-            if offset + keypoint_size <= new_pts_data.len() {
-                let kp_ptr = new_pts_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
-                *kp_ptr = *kp;
-            }
-        }
-
-        VX_SUCCESS
     }
+
+    VX_SUCCESS
 }
 
 /// VXU Convert Depth Implementation
@@ -7541,7 +8338,7 @@ pub fn vxu_half_scale_gaussian_impl(
     }
 
     unsafe {
-        let (src_width, src_height, src_format) = match get_image_info(input) {
+        let (src_width, src_height, _src_format) = match get_image_info(input) {
             Some(info) => info,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
@@ -7641,7 +8438,11 @@ pub fn vxu_half_scale_gaussian_impl(
                     let v2 = blurred[sy * width + sx] as i32;
                     let v3 = blurred[(sy + 1).min(height - 1) * width + sx] as i32;
                     let v4 = blurred[(sy + 2).min(height - 1) * width + sx] as i32;
-                    dst.set_pixel(dx, dy, ((v0 + 4 * v1 + 6 * v2 + 4 * v3 + v4 + 8) / 16) as u8);
+                    dst.set_pixel(
+                        dx,
+                        dy,
+                        ((v0 + 4 * v1 + 6 * v2 + 4 * v3 + v4 + 8) / 16) as u8,
+                    );
                 }
             }
         }

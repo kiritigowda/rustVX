@@ -6,7 +6,7 @@ use openvx_vision::utils::BorderMode;
 
 #[test]
 fn test_dilate_expands_white() {
-    let mut input = Image::new(5, 5, ImageFormat::Gray);
+    let input = Image::new(5, 5, ImageFormat::Gray);
     let output = Image::new(5, 5, ImageFormat::Gray);
 
     // Single white pixel
@@ -19,15 +19,20 @@ fn test_dilate_expands_white() {
     // Dilation should expand the white pixel to 3x3
     for y in 1..4 {
         for x in 1..4 {
-            assert_eq!(output_data[y * 5 + x], 255,
-                "Dilation should expand white pixel at ({}, {})", x, y);
+            assert_eq!(
+                output_data[y * 5 + x],
+                255,
+                "Dilation should expand white pixel at ({}, {})",
+                x,
+                y
+            );
         }
     }
 }
 
 #[test]
 fn test_erode_shrinks_white() {
-    let mut input = Image::new(5, 5, ImageFormat::Gray);
+    let input = Image::new(5, 5, ImageFormat::Gray);
     let output = Image::new(5, 5, ImageFormat::Gray);
 
     // Fill with white except edges
@@ -46,8 +51,11 @@ fn test_erode_shrinks_white() {
 
     // Erosion should shrink white regions - the black pixel should expand
     // Check center is now black
-    assert_eq!(output_data[2 * 5 + 2], 0,
-        "Erosion should expand black pixel");
+    assert_eq!(
+        output_data[2 * 5 + 2],
+        0,
+        "Erosion should expand black pixel"
+    );
 }
 
 #[test]
@@ -87,7 +95,7 @@ fn test_erode_on_uniform_white() {
 
 #[test]
 fn test_opening_removes_small_noise() {
-    let mut input = Image::new(7, 7, ImageFormat::Gray);
+    let input = Image::new(7, 7, ImageFormat::Gray);
 
     // Black background with single white pixel
     input.set_pixel(3, 3, 255);
@@ -98,13 +106,16 @@ fn test_opening_removes_small_noise() {
     let output_data = output.data();
 
     // Opening should remove small white spots
-    assert_eq!(output_data[3 * 7 + 3], 0,
-        "Opening should remove isolated white pixel");
+    assert_eq!(
+        output_data[3 * 7 + 3],
+        0,
+        "Opening should remove isolated white pixel"
+    );
 }
 
 #[test]
 fn test_closing_fills_small_holes() {
-    let mut input = Image::new(7, 7, ImageFormat::Gray);
+    let input = Image::new(7, 7, ImageFormat::Gray);
 
     // White background with single black pixel
     for y in 0..7 {
@@ -120,13 +131,16 @@ fn test_closing_fills_small_holes() {
     let output_data = output.data();
 
     // Closing should fill small black holes
-    assert_eq!(output_data[3 * 7 + 3], 255,
-        "Closing should fill isolated black pixel");
+    assert_eq!(
+        output_data[3 * 7 + 3],
+        255,
+        "Closing should fill isolated black pixel"
+    );
 }
 
 #[test]
 fn test_morphological_gradient() {
-    let mut input = Image::new(5, 5, ImageFormat::Gray);
+    let input = Image::new(5, 5, ImageFormat::Gray);
 
     // Gradient should be high at edges
     for y in 0..5 {
@@ -144,6 +158,10 @@ fn test_morphological_gradient() {
     // Gradient should be non-zero at edge
     for y in 0..5 {
         let edge_val = output_data[y * 5 + 2];
-        assert!(edge_val > 0, "Gradient should be non-zero at edge (y={}, x=2)", y);
+        assert!(
+            edge_val > 0,
+            "Gradient should be non-zero at edge (y={}, x=2)",
+            y
+        );
     }
 }

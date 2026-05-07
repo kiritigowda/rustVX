@@ -4,6 +4,14 @@
 //! they are visible in the shared library.
 
 #![allow(non_camel_case_types)]
+#![allow(
+    dead_code,
+    hidden_glob_reexports,
+    non_upper_case_globals,
+    unused_assignments,
+    unused_unsafe,
+    unreachable_patterns
+)]
 
 // Re-export all functions from the core c_api
 pub use crate::c_api::*;
@@ -14,11 +22,11 @@ use crate::c_api_data::vx_pixel_value_t;
 
 // Include the image C API functions directly
 // These are duplicated here to ensure proper symbol export
-use std::ffi::{CStr, CString, c_void};
+use log::error;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
-use std::collections::{HashMap, HashSet};
-use log::error;
 
 // ============================================================================
 // Graph State and Management
@@ -82,7 +90,7 @@ pub struct vx_border_t {
 pub struct VxCImage {
     pub width: u32,
     pub height: u32,
-    pub format: u32,  // vx_df_image (u32) format
+    pub format: u32, // vx_df_image (u32) format
     pub is_virtual: bool,
     pub context: vx_context,
     pub data: Arc<RwLock<Vec<u8>>>,
@@ -109,7 +117,7 @@ pub struct VxCImage {
     pub external_dim_y: Vec<vx_uint32>,
     /// ROI offset in the parent image (start_x, start_y for each plane)
     /// For non-ROI images, these are all 0
-    pub roi_offsets: Vec<(usize, usize)>,  // (start_x, start_y) per plane in parent coordinates
+    pub roi_offsets: Vec<(usize, usize)>, // (start_x, start_y) per plane in parent coordinates
     /// True only if created via vxCreateImageFromHandle (not inherited by ROI/channel sub-images)
     pub is_from_handle: bool,
     /// For channel images: byte offset of this channel's plane within the parent's data buffer.
@@ -126,14 +134,14 @@ pub struct VxCImage {
 impl VxCImage {
     pub fn bytes_per_pixel(format: u32) -> usize {
         match format {
-            0x38303055 => 1, // VX_DF_IMAGE_U8 ('U008')
-            0x38303053 => 1, // VX_DF_IMAGE_S8 ('S008')
+            0x38303055 => 1,              // VX_DF_IMAGE_U8 ('U008')
+            0x38303053 => 1,              // VX_DF_IMAGE_S8 ('S008')
             0x36313055 | 0x36313053 => 2, // VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16 ('U016'|'S016')
             0x32333055 | 0x32333053 => 4, // VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32 ('U032'|'S032')
-            0x32424752 => 3, // VX_DF_IMAGE_RGB ('RGB2')
-            0x41424752 => 4, // VX_DF_IMAGE_RGBA/RGBX ('RGBA')
+            0x32424752 => 3,              // VX_DF_IMAGE_RGB ('RGB2')
+            0x41424752 => 4,              // VX_DF_IMAGE_RGBA/RGBX ('RGBA')
             0x3231564E | 0x3132564E => 1, // VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21 (luma only per-pixel)
-            0x56555949 => 1, // VX_DF_IMAGE_IYUV (Y plane only per-pixel)
+            0x56555949 => 1,              // VX_DF_IMAGE_IYUV (Y plane only per-pixel)
             0x59565955 | 0x56595559 => 2, // VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV
             0x34565559 | 0x34565559 => 3, // VX_DF_IMAGE_YUV4
             _ => 1,
@@ -145,10 +153,10 @@ impl VxCImage {
             0x38303055 | 0x38303053 => 1, // VX_DF_IMAGE_U8 | VX_DF_IMAGE_S8
             0x36313055 | 0x36313053 => 1, // VX_DF_IMAGE_U16 | VX_DF_IMAGE_S16
             0x32333055 | 0x32333053 => 1, // VX_DF_IMAGE_U32 | VX_DF_IMAGE_S32
-            0x32424752 => 3, // VX_DF_IMAGE_RGB
-            0x41424752 => 4, // VX_DF_IMAGE_RGBA/RGBX
+            0x32424752 => 3,              // VX_DF_IMAGE_RGB
+            0x41424752 => 4,              // VX_DF_IMAGE_RGBA/RGBX
             0x3231564E | 0x3132564E => 3, // VX_DF_IMAGE_NV12 | VX_DF_IMAGE_NV21
-            0x56555949 => 3, // VX_DF_IMAGE_IYUV
+            0x56555949 => 3,              // VX_DF_IMAGE_IYUV
             0x59565955 | 0x56595559 => 2, // VX_DF_IMAGE_UYVY | VX_DF_IMAGE_YUYV
             0x34565559 | 0x34565559 => 3, // VX_DF_IMAGE_YUV4
             _ => 1,
@@ -157,17 +165,20 @@ impl VxCImage {
 
     /// Check if the format is a planar YUV format
     pub fn is_planar_format(format: u32) -> bool {
-        matches!(format, 0x3231564E | 0x3132564E | 0x56555949 | 0x34565559 | 0x34565559)
-            // NV12 | NV21 | IYUV | YUV4 | YVU4
+        matches!(
+            format,
+            0x3231564E | 0x3132564E | 0x56555949 | 0x34565559 | 0x34565559
+        )
+        // NV12 | NV21 | IYUV | YUV4 | YVU4
     }
 
     /// Get the number of planes for a format
     pub fn num_planes(format: u32) -> usize {
         match format {
             0x3231564E | 0x3132564E => 2, // NV12, NV21: Y plane + interleaved UV plane
-            0x56555949 => 3, // IYUV: Y, U, V planes (I420)
+            0x56555949 => 3,              // IYUV: Y, U, V planes (I420)
             0x34565559 | 0x34565559 => 3, // YUV4, YVU4: Y, U, V planes (4:4:4)
-            _ => 1, // All other formats are single plane
+            _ => 1,                       // All other formats are single plane
         }
     }
 
@@ -184,7 +195,7 @@ impl VxCImage {
             // NV12/NV21: Plane 0 is Y (full size), Plane 1 is UV (half height rounded up, full width interleaved)
             0x3231564E | 0x3132564E => {
                 match plane_index {
-                    0 => w * h, // Y plane
+                    0 => w * h,             // Y plane
                     1 => w * ((h + 1) / 2), // UV interleaved plane (height rounds up to match plane_dimensions)
                     _ => 0,
                 }
@@ -194,19 +205,17 @@ impl VxCImage {
                 let half_w = (w + 1) / 2;
                 let half_h = (h + 1) / 2;
                 match plane_index {
-                    0 => w * h, // Y plane
+                    0 => w * h,           // Y plane
                     1 => half_w * half_h, // U plane
                     2 => half_w * half_h, // V plane
                     _ => 0,
                 }
             }
             // YUV4: All planes are full size
-            0x34565559 | 0x34565559 => {
-                match plane_index {
-                    0 | 1 | 2 => w * h,
-                    _ => 0,
-                }
-            }
+            0x34565559 | 0x34565559 => match plane_index {
+                0 | 1 | 2 => w * h,
+                _ => 0,
+            },
             _ => {
                 if plane_index == 0 {
                     w * h * Self::bytes_per_pixel(format)
@@ -231,7 +240,12 @@ impl VxCImage {
     }
 
     /// Get the dimensions of a specific plane
-    pub fn plane_dimensions(width: u32, height: u32, format: u32, plane_index: usize) -> (u32, u32) {
+    pub fn plane_dimensions(
+        width: u32,
+        height: u32,
+        format: u32,
+        plane_index: usize,
+    ) -> (u32, u32) {
         if plane_index == 0 {
             return (width, height);
         }
@@ -275,7 +289,11 @@ impl VxCImage {
         match format {
             0x3231564E | 0x3132564E => {
                 // NV12/NV21: plane 0 (Y) = 1 byte, plane 1 (UV) = 2 bytes (interleaved)
-                if plane_index == 1 { 2 } else { 1 }
+                if plane_index == 1 {
+                    2
+                } else {
+                    1
+                }
             }
             0x56555949 | 0x34565559 | 0x34565559 => {
                 // IYUV, YUV4: all planes are single-byte per pixel
@@ -392,7 +410,7 @@ pub struct VxCThreshold {
 /// Pyramid data
 /// A pyramid contains multiple levels of scaled images
 pub struct VxCPyramid {
-    pub context: usize,  // Store as usize for thread safety (Send + Sync)
+    pub context: usize, // Store as usize for thread safety (Send + Sync)
     pub num_levels: usize,
     pub scale: f32,
     pub width: vx_uint32,
@@ -429,11 +447,11 @@ pub struct VxCObjectArray {
 /// Slot -1 is the previous slot, accessed as (current_index + slots - 1) % slots
 /// Uses usize instead of vx_reference for thread safety (Send + Sync)
 pub struct VxCDelay {
-    pub slots: Vec<usize>,  // Circular buffer of reference addresses (0 = null)
-    pub slot_count: usize,        // Number of slots
-    pub current_index: usize,     // Index of slot 0
-    pub ref_type: vx_enum,        // Type of references stored
-    pub context_id: u64,          // Context that owns this delay
+    pub slots: Vec<usize>,    // Circular buffer of reference addresses (0 = null)
+    pub slot_count: usize,    // Number of slots
+    pub current_index: usize, // Index of slot 0
+    pub ref_type: vx_enum,    // Type of references stored
+    pub context_id: u64,      // Context that owns this delay
     pub ref_count: AtomicUsize,
 }
 
@@ -513,20 +531,16 @@ pub struct VxCParameter {
 }
 
 // Node registry
-static NODES: Lazy<Mutex<HashMap<u64, Arc<VxCNode>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static NODES: Lazy<Mutex<HashMap<u64, Arc<VxCNode>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Parameter registry (pub for use by c_api.rs)
-pub static PARAMETERS: Lazy<Mutex<HashMap<u64, Arc<VxCParameter>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static PARAMETERS: Lazy<Mutex<HashMap<u64, Arc<VxCParameter>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Node parameter bindings: (node_id, param_index) -> (graph_param_index or direct_value)
 // This maps node parameters to either graph parameters or direct references
-pub static NODE_PARAMETER_BINDINGS: Lazy<Mutex<HashMap<(u64, usize), NodeParamBinding>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static NODE_PARAMETER_BINDINGS: Lazy<Mutex<HashMap<(u64, usize), NodeParamBinding>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Node parameter binding - either bound to a graph parameter or a direct value
 #[derive(Clone, Copy, Debug)]
@@ -541,18 +555,14 @@ pub enum NodeParamBinding {
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 
-pub static GRAPHS_DATA: Lazy<Mutex<HashMap<u64, Arc<VxCGraphData>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static GRAPHS_DATA: Lazy<Mutex<HashMap<u64, Arc<VxCGraphData>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Graph parameter bindings: (graph_id, param_index) -> reference_address
-pub static GRAPH_PARAMETER_BINDINGS: Lazy<Mutex<HashMap<(u64, usize), usize>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static GRAPH_PARAMETER_BINDINGS: Lazy<Mutex<HashMap<(u64, usize), usize>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
-static NEXT_GRAPH_ID: Lazy<AtomicUsize> = Lazy::new(|| {
-    AtomicUsize::new(1)
-});
+static NEXT_GRAPH_ID: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(1));
 
 fn generate_graph_id() -> u64 {
     NEXT_GRAPH_ID.fetch_add(1, Ordering::SeqCst) as u64
@@ -567,12 +577,12 @@ fn generate_graph_id() -> u64 {
 
 // Graph attribute constants (from vx_types.h)
 // VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_GRAPH) = 0x00080200
-pub const VX_GRAPH_ATTRIBUTE_NUM_NODES: vx_enum = 0x00080200;        // +0x0
-pub const VX_GRAPH_ATTRIBUTE_PERFORMANCE: vx_enum = 0x00080202;      // +0x2 (VX_GRAPH_PERFORMANCE)
-pub const VX_GRAPH_ATTRIBUTE_NUM_PARAMETERS: vx_enum = 0x00080203;   // +0x3
-pub const VX_GRAPH_ATTRIBUTE_STATE: vx_enum = 0x00080204;            // +0x4
-pub const VX_GRAPH_ATTRIBUTE_STATUS: vx_enum = 0x00080205;           // +0x5
-// Backwards compat aliases
+pub const VX_GRAPH_ATTRIBUTE_NUM_NODES: vx_enum = 0x00080200; // +0x0
+pub const VX_GRAPH_ATTRIBUTE_PERFORMANCE: vx_enum = 0x00080202; // +0x2 (VX_GRAPH_PERFORMANCE)
+pub const VX_GRAPH_ATTRIBUTE_NUM_PARAMETERS: vx_enum = 0x00080203; // +0x3
+pub const VX_GRAPH_ATTRIBUTE_STATE: vx_enum = 0x00080204; // +0x4
+pub const VX_GRAPH_ATTRIBUTE_STATUS: vx_enum = 0x00080205; // +0x5
+                                                           // Backwards compat aliases
 pub const VX_GRAPH_PERFORMANCE: vx_enum = VX_GRAPH_ATTRIBUTE_PERFORMANCE;
 
 // Graph state enum values (from vx_types.h)
@@ -603,7 +613,9 @@ fn read_scalar_enum(scalar: vx_scalar) -> Option<vx_enum> {
     unsafe {
         let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
         let result = if s.data.len() >= 4 {
-            Some(i32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+            Some(i32::from_le_bytes([
+                s.data[0], s.data[1], s.data[2], s.data[3],
+            ]))
         } else if s.data.len() >= 2 {
             Some(i16::from_le_bytes([s.data[0], s.data[1]]) as i32)
         } else if s.data.len() >= 1 {
@@ -671,7 +683,9 @@ fn validate_image(image: vx_image) -> vx_status {
 }
 
 /// Get image data safely with validation
-unsafe fn get_image_data_safe(image: vx_image) -> Result<std::sync::RwLockReadGuard<'static, Vec<u8>>, vx_status> {
+unsafe fn get_image_data_safe(
+    image: vx_image,
+) -> Result<std::sync::RwLockReadGuard<'static, Vec<u8>>, vx_status> {
     if image.is_null() {
         return Err(VX_ERROR_INVALID_REFERENCE);
     }
@@ -680,7 +694,9 @@ unsafe fn get_image_data_safe(image: vx_image) -> Result<std::sync::RwLockReadGu
 }
 
 /// Get mutable image data safely with validation
-unsafe fn get_image_data_mut_safe(image: vx_image) -> Result<std::sync::RwLockWriteGuard<'static, Vec<u8>>, vx_status> {
+unsafe fn get_image_data_mut_safe(
+    image: vx_image,
+) -> Result<std::sync::RwLockWriteGuard<'static, Vec<u8>>, vx_status> {
     if image.is_null() {
         return Err(VX_ERROR_INVALID_REFERENCE);
     }
@@ -693,21 +709,20 @@ unsafe fn get_image_data_mut_safe(image: vx_image) -> Result<std::sync::RwLockWr
 pub struct VirtualImageInfo {
     pub width: u32,
     pub height: u32,
-    pub format: u32,  // vx_df_image
+    pub format: u32, // vx_df_image
     pub is_virtual: bool,
     pub backing_image: Option<usize>, // Address of backing image if allocated
 }
 
 /// Global registry of virtual images
 pub static VIRTUAL_IMAGES: Lazy<Mutex<HashMap<usize, VirtualImageInfo>>> =
-    Lazy::new(|| {
-        Mutex::new(HashMap::new())
-    });
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Check if an image is virtual
 fn is_virtual_image(image_id: u64) -> bool {
     if let Ok(registry) = VIRTUAL_IMAGES.lock() {
-        registry.get(&(image_id as usize))
+        registry
+            .get(&(image_id as usize))
             .map(|info| info.is_virtual)
             .unwrap_or(false)
     } else {
@@ -718,8 +733,8 @@ fn is_virtual_image(image_id: u64) -> bool {
 /// Infer the output format for a kernel based on its name and input image formats.
 /// Returns the inferred output vx_df_image format.
 fn infer_output_format(kernel_name: &str, input_formats: &[vx_df_image]) -> vx_df_image {
-    const VX_DF_IMAGE_U8: vx_df_image = 0x38303055;   // VX_DF_IMAGE('U','0','0','8')
-    const VX_DF_IMAGE_S16: vx_df_image = 0x36313053;   // VX_DF_IMAGE('S','0','1','6')
+    const VX_DF_IMAGE_U8: vx_df_image = 0x38303055; // VX_DF_IMAGE('U','0','0','8')
+    const VX_DF_IMAGE_S16: vx_df_image = 0x36313053; // VX_DF_IMAGE('S','0','1','6')
 
     // If we have no inputs, default to U8
     if input_formats.is_empty() {
@@ -732,10 +747,7 @@ fn infer_output_format(kernel_name: &str, input_formats: &[vx_df_image]) -> vx_d
         // (per OpenVX spec, these overflow into S16 even from U8 inputs)
         // AbsDiff: U8→U8, S16→S16 (absolute difference stays in range)
         // Min/Max: same format as inputs
-        k if k.contains("add")
-            || k.contains("subtract") => {
-            VX_DF_IMAGE_S16
-        }
+        k if k.contains("add") || k.contains("subtract") => VX_DF_IMAGE_S16,
         k if k.contains("absdiff") => {
             if input_formats.iter().any(|f| *f == VX_DF_IMAGE_S16) {
                 VX_DF_IMAGE_S16
@@ -743,19 +755,14 @@ fn infer_output_format(kernel_name: &str, input_formats: &[vx_df_image]) -> vx_d
                 VX_DF_IMAGE_U8
             }
         }
-        k if k.contains("min_max") => {
-            VX_DF_IMAGE_S16
-        }
+        k if k.contains("min_max") => VX_DF_IMAGE_S16,
         k if k.contains("multiply") => {
             // Multiply always produces S16 output (U8*U8 can exceed U8 range)
             VX_DF_IMAGE_S16
         }
 
         // Bitwise kernels: output = input format (always U8 in practice)
-        k if k.contains("and")
-            || k.contains(".or")
-            || k.contains("xor")
-            || k.contains(".not") => {
+        k if k.contains("and") || k.contains(".or") || k.contains("xor") || k.contains(".not") => {
             input_formats[0]
         }
 
@@ -772,22 +779,19 @@ fn infer_output_format(kernel_name: &str, input_formats: &[vx_df_image]) -> vx_d
         k if k.contains("scale_image")
             || k.contains("warp_affine")
             || k.contains("warp_perspective")
-            || k.contains("remap") => {
+            || k.contains("remap") =>
+        {
             input_formats[0]
         }
 
         // ChannelExtract: single channel -> U8
-        k if k.contains("channel_extract") => {
-            VX_DF_IMAGE_U8
-        }
+        k if k.contains("channel_extract") => VX_DF_IMAGE_U8,
 
         // ChannelCombine: depends on input planes
-        k if k.contains("channel_combine") => {
-            input_formats[0]
-        }
+        k if k.contains("channel_combine") => input_formats[0],
 
         // Default: use first input format
-        _ => input_formats[0]
+        _ => input_formats[0],
     }
 }
 
@@ -816,9 +820,17 @@ fn infer_virtual_image_dimensions(
         if img.width > 0 && img.height > 0 {
             let format = if let Ok(registry) = VIRTUAL_IMAGES.lock() {
                 if let Some(info) = registry.get(&(image_id as usize)) {
-                    if info.format != 0 { info.format } else { img.format }
-                } else { img.format }
-            } else { img.format };
+                    if info.format != 0 {
+                        info.format
+                    } else {
+                        img.format
+                    }
+                } else {
+                    img.format
+                }
+            } else {
+                img.format
+            };
             if format != 0 {
                 return Some((img.width, img.height, format as vx_df_image));
             }
@@ -840,7 +852,7 @@ fn infer_virtual_image_dimensions(
     // Find the producer node's parameters
     if let Some((_, producer_params)) = node_params.iter().find(|(id, _)| *id == producer_node) {
         // Find input images and collect their formats and dimensions
-        for (idx, param_opt) in producer_params.iter().enumerate() {
+        for (_idx, param_opt) in producer_params.iter().enumerate() {
             if let Some(param_ref) = param_opt {
                 if *param_ref != image_id && is_image_reference(*param_ref) {
                     // Skip output images - look for input images
@@ -945,7 +957,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             // Collect all parameter references to analyze connections
             // Also get kernel name for each node to determine param directions
             let mut node_params: Vec<(u64, Vec<Option<u64>>)> = Vec::new();
-            let mut node_kernel_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+            let mut node_kernel_names: std::collections::HashMap<u64, String> =
+                std::collections::HashMap::new();
             for node_id in nodes_vec.iter() {
                 if let Ok(nodes_data) = crate::c_api::NODES.lock() {
                     if let Some(node_data) = nodes_data.get(node_id) {
@@ -970,7 +983,10 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                 let kid_i32 = node_data.kernel_id as i32;
                                 let kid_alt = (node_data.kernel_id & 0xFFFFFFFF) as i32;
                                 if let Ok(user_kernels) = USER_KERNELS.lock() {
-                                    if let Some(uk) = user_kernels.get(&kid_i32).or_else(|| user_kernels.get(&kid_alt)) {
+                                    if let Some(uk) = user_kernels
+                                        .get(&kid_i32)
+                                        .or_else(|| user_kernels.get(&kid_alt))
+                                    {
                                         node_kernel_names.insert(*node_id, uk.name.clone());
                                     }
                                 }
@@ -982,7 +998,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             }
 
             // Check all nodes have required parameters
-            for (node_id, params) in &node_params {
+            for (_node_id, params) in &node_params {
                 // Param 0 is always a required input for vision kernels
                 // If it's NULL/None, the graph is invalid
                 if params.is_empty() || params[0].is_none() || params[0] == Some(0) {
@@ -990,10 +1006,11 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 }
             }
 
-
             // Build connection graph to detect cycles and validate structure
-            let mut param_to_producer: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
-            let mut param_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+            let mut param_to_producer: std::collections::HashMap<u64, u64> =
+                std::collections::HashMap::new();
+            let mut param_to_consumers: std::collections::HashMap<u64, Vec<u64>> =
+                std::collections::HashMap::new();
 
             // Determine which params are inputs vs outputs for each kernel
             let kernel_output_indices: std::collections::HashMap<&str, Vec<usize>> = [
@@ -1014,45 +1031,51 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.gaussian_pyramid", vec![1]),
                 ("org.khronos.openvx.laplacian_pyramid", vec![1]),
                 // 3-param kernels
-                ("org.khronos.openvx.channel_extract", vec![2]),  // [input, channel_enum, output]
-                ("org.khronos.openvx.absdiff", vec![2]),  // [in1, in2, output]
-                ("org.khronos.openvx.magnitude", vec![2]),  // [grad_x, grad_y, output]
-                ("org.khronos.openvx.phase", vec![2]),  // [grad_x, grad_y, output]
-                ("org.khronos.openvx.scale_image", vec![2]),  // [input, type_enum, output]
-                ("org.khronos.openvx.and", vec![2]),  // [in1, in2, output]
-                ("org.khronos.openvx.or", vec![2]),  // [in1, in2, output]
-                ("org.khronos.openvx.xor", vec![2]),  // [in1, in2, output]
-                ("org.khronos.openvx.threshold", vec![2]),  // [input, thresh, output]
-                ("org.khronos.openvx.table_lookup", vec![2]),  // [input, lut, output]
-                ("org.khronos.openvx.convolve", vec![2]),  // [input, conv, output]
+                ("org.khronos.openvx.channel_extract", vec![2]), // [input, channel_enum, output]
+                ("org.khronos.openvx.absdiff", vec![2]),         // [in1, in2, output]
+                ("org.khronos.openvx.magnitude", vec![2]),       // [grad_x, grad_y, output]
+                ("org.khronos.openvx.phase", vec![2]),           // [grad_x, grad_y, output]
+                ("org.khronos.openvx.scale_image", vec![2]),     // [input, type_enum, output]
+                ("org.khronos.openvx.and", vec![2]),             // [in1, in2, output]
+                ("org.khronos.openvx.or", vec![2]),              // [in1, in2, output]
+                ("org.khronos.openvx.xor", vec![2]),             // [in1, in2, output]
+                ("org.khronos.openvx.threshold", vec![2]),       // [input, thresh, output]
+                ("org.khronos.openvx.table_lookup", vec![2]),    // [input, lut, output]
+                ("org.khronos.openvx.convolve", vec![2]),        // [input, conv, output]
                 ("org.khronos.openvx.custom_convolution", vec![2]),
-                ("org.khronos.openvx.sobel_3x3", vec![1, 2]),  // [input, grad_x, grad_y]
+                ("org.khronos.openvx.sobel_3x3", vec![1, 2]), // [input, grad_x, grad_y]
                 ("org.khronos.openvx.laplacian_reconstruct", vec![2]),
-                ("org.khronos.openvx.non_linear_filter", vec![3]),  // [input, matrix, border, output]
+                ("org.khronos.openvx.non_linear_filter", vec![3]), // [input, matrix, border, output]
                 // 4-param kernels
-                ("org.khronos.openvx.channel_combine", vec![4]),  // [plane0, plane1, plane2, plane3, output]
-                ("org.khronos.openvx.add", vec![3]),  // [in1, in2, policy_scalar, output]
-                ("org.khronos.openvx.subtract", vec![3]),  // [in1, in2, policy_scalar, output]
-                ("org.khronos.openvx.warp_affine", vec![3]),  // [input, matrix, type, output]
+                ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
+                ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
+                ("org.khronos.openvx.subtract", vec![3]), // [in1, in2, policy_scalar, output]
+                ("org.khronos.openvx.warp_affine", vec![3]), // [input, matrix, type, output]
                 ("org.khronos.openvx.warp_perspective", vec![3]),
                 ("org.khronos.openvx.remap", vec![3]),
-                ("org.khronos.openvx.mean_stddev", vec![2, 3]),  // [input, mean, stddev]
+                ("org.khronos.openvx.mean_stddev", vec![2, 3]), // [input, mean, stddev]
                 ("org.khronos.openvx.weighted_average", vec![3]),
-                ("org.khronos.openvx.convertdepth", vec![1]),  // [input, output, policy_scalar, shift_scalar]
+                ("org.khronos.openvx.convertdepth", vec![1]), // [input, output, policy_scalar, shift_scalar]
                 ("org.khronos.openvx.halfscale_gaussian", vec![2]),
                 // 5-param kernels
                 ("org.khronos.openvx.canny_edge_detector", vec![4]),
-                ("org.khronos.openvx.fast_corners", vec![3, 4]),  // [input, thresh, nonmax, corners, num_corners]
+                ("org.khronos.openvx.fast_corners", vec![3, 4]), // [input, thresh, nonmax, corners, num_corners]
                 // 6-param kernels
-                ("org.khronos.openvx.minmaxloc", vec![1, 2, 3, 4, 5, 6]),  // [input, min_val, max_val, min_loc, max_loc, min_count, max_count]
+                ("org.khronos.openvx.minmaxloc", vec![1, 2, 3, 4, 5, 6]), // [input, min_val, max_val, min_loc, max_loc, min_count, max_count]
                 // 7-param kernels
-                ("org.khronos.openvx.multiply", vec![5]),  // [in1, in2, scale, overflow, rounding, output]
-                ("org.khronos.openvx.harris_corners", vec![6, 7]),  // [input, strength_thresh, min_distance, sensitivity, gs, bs, corners, num_corners]
-                ("org.khronos.openvx.optical_flow_pyr_lk", vec![4]),  // [old_pyr, new_pyr, old_pts, new_pts_est, new_pts, term, eps]
-            ].iter().cloned().collect();
+                ("org.khronos.openvx.multiply", vec![5]), // [in1, in2, scale, overflow, rounding, output]
+                ("org.khronos.openvx.harris_corners", vec![6, 7]), // [input, strength_thresh, min_distance, sensitivity, gs, bs, corners, num_corners]
+                ("org.khronos.openvx.optical_flow_pyr_lk", vec![4]), // [old_pyr, new_pyr, old_pts, new_pts_est, new_pts, term, eps]
+            ]
+            .iter()
+            .cloned()
+            .collect();
 
             for (node_id, params) in &node_params {
-                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                let kernel_name = node_kernel_names
+                    .get(node_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 let output_indices = kernel_output_indices.get(kernel_name);
 
                 for (idx, param_opt) in params.iter().enumerate() {
@@ -1061,8 +1084,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                         if is_data_reference(*param_ref) {
                             // Determine if this parameter is an output based on kernel signature
                             let is_output = output_indices.map_or_else(
-                                || idx > 0,  // fallback: assume first is input, rest output
-                                |indices| indices.contains(&idx)
+                                || idx > 0, // fallback: assume first is input, rest output
+                                |indices| indices.contains(&idx),
                             );
 
                             if is_output {
@@ -1076,7 +1099,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                 param_to_producer.insert(*param_ref, *node_id);
                             } else {
                                 // This is an input - record that this node consumes this data
-                                param_to_consumers.entry(*param_ref)
+                                param_to_consumers
+                                    .entry(*param_ref)
                                     .or_insert_with(Vec::new)
                                     .push(*node_id);
                             }
@@ -1086,18 +1110,20 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             }
 
             // Build node-to-outputs map for forward traversal (cycle detection)
-            let mut node_to_outputs: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+            let mut node_to_outputs: std::collections::HashMap<u64, Vec<u64>> =
+                std::collections::HashMap::new();
             for (node_id, params) in &node_params {
-                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                let kernel_name = node_kernel_names
+                    .get(node_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 let output_indices = kernel_output_indices.get(kernel_name);
                 let mut outputs = Vec::new();
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         if is_data_reference(*param_ref) {
-                            let is_output = output_indices.map_or_else(
-                                || idx > 0,
-                                |indices| indices.contains(&idx)
-                            );
+                            let is_output = output_indices
+                                .map_or_else(|| idx > 0, |indices| indices.contains(&idx));
                             if is_output {
                                 outputs.push(*param_ref);
                             }
@@ -1110,19 +1136,22 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             }
 
             // Build data -> consuming nodes map
-            let mut image_to_consumers: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+            let mut image_to_consumers: std::collections::HashMap<u64, Vec<u64>> =
+                std::collections::HashMap::new();
             for (node_id, params) in &node_params {
-                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                let kernel_name = node_kernel_names
+                    .get(node_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 let output_indices = kernel_output_indices.get(kernel_name);
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         if is_data_reference(*param_ref) {
-                            let is_output = output_indices.map_or_else(
-                                || idx > 0,
-                                |indices| indices.contains(&idx)
-                            );
+                            let is_output = output_indices
+                                .map_or_else(|| idx > 0, |indices| indices.contains(&idx));
                             if !is_output {
-                                image_to_consumers.entry(*param_ref)
+                                image_to_consumers
+                                    .entry(*param_ref)
                                     .or_insert_with(Vec::new)
                                     .push(*node_id);
                             }
@@ -1139,7 +1168,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             // Collect parent-child ROI relationships and add additional dependencies.
             {
                 // First, find all ROI images and their parent images
-                let mut roi_to_parent: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+                let mut roi_to_parent: std::collections::HashMap<u64, u64> =
+                    std::collections::HashMap::new();
                 for (_node_id, params) in &node_params {
                     for param_opt in params.iter() {
                         if let Some(param_ref) = param_opt {
@@ -1169,7 +1199,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                         // The node that produces the ROI also produces the parent
                         param_to_producer.insert(*parent_ref, producer_node);
                         // Also add parent to node_to_outputs so Kahn's algorithm can traverse it
-                        node_to_outputs.entry(producer_node)
+                        node_to_outputs
+                            .entry(producer_node)
                             .or_insert_with(Vec::new)
                             .push(*parent_ref);
                     }
@@ -1178,7 +1209,9 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 // For each ROI input, add that the node also consumes the parent
                 for (roi_ref, parent_ref) in &roi_to_parent {
                     if let Some(consumers) = param_to_consumers.get(roi_ref).cloned() {
-                        let entry = param_to_consumers.entry(*parent_ref).or_insert_with(Vec::new);
+                        let entry = param_to_consumers
+                            .entry(*parent_ref)
+                            .or_insert_with(Vec::new);
                         for consumer in consumers {
                             if !entry.contains(&consumer) {
                                 entry.push(consumer);
@@ -1187,7 +1220,9 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     }
                     // Also add to image_to_consumers so Kahn's algorithm can traverse it
                     if let Some(consumers) = image_to_consumers.get(roi_ref).cloned() {
-                        let entry = image_to_consumers.entry(*parent_ref).or_insert_with(Vec::new);
+                        let entry = image_to_consumers
+                            .entry(*parent_ref)
+                            .or_insert_with(Vec::new);
                         for consumer in consumers {
                             if !entry.contains(&consumer) {
                                 entry.push(consumer);
@@ -1201,7 +1236,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             // writes to all level images within that pyramid. When a node reads a pyramid level,
             // it depends on the node that wrote to the pyramid.
             {
-                let mut level_to_pyramid: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+                let mut level_to_pyramid: std::collections::HashMap<u64, u64> =
+                    std::collections::HashMap::new();
                 for (_node_id, params) in &node_params {
                     for param_opt in params.iter() {
                         if let Some(param_ref) = param_opt {
@@ -1214,7 +1250,9 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     };
                                     if ref_type == VX_TYPE_IMAGE {
                                         if let Ok(pyramid_levels) = PYRAMID_LEVEL_IMAGES.lock() {
-                                            if let Some(&(pyr_ref, _level)) = pyramid_levels.get(&(*param_ref as usize)) {
+                                            if let Some(&(pyr_ref, _level)) =
+                                                pyramid_levels.get(&(*param_ref as usize))
+                                            {
                                                 level_to_pyramid.insert(*param_ref, pyr_ref as u64);
                                             }
                                         }
@@ -1231,7 +1269,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                         // The node that produces the pyramid also produces the level
                         param_to_producer.insert(*level_ref, producer_node);
                         // Also add level to node_to_outputs so Kahn's algorithm can traverse it
-                        node_to_outputs.entry(producer_node)
+                        node_to_outputs
+                            .entry(producer_node)
                             .or_insert_with(Vec::new)
                             .push(*level_ref);
                     }
@@ -1289,7 +1328,14 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                 if *consumer_id == node_id {
                                     continue;
                                 }
-                                if has_cycle(*consumer_id, node_to_outputs, image_to_consumers, image_to_producer, visited, rec_stack) {
+                                if has_cycle(
+                                    *consumer_id,
+                                    node_to_outputs,
+                                    image_to_consumers,
+                                    image_to_producer,
+                                    visited,
+                                    rec_stack,
+                                ) {
                                     return true;
                                 }
                             }
@@ -1306,7 +1352,14 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 
             for (node_id, _) in &node_params {
                 if !visited.contains(node_id) {
-                    if has_cycle(*node_id, &node_to_outputs, &image_to_consumers, &param_to_producer, &mut visited, &mut rec_stack) {
+                    if has_cycle(
+                        *node_id,
+                        &node_to_outputs,
+                        &image_to_consumers,
+                        &param_to_producer,
+                        &mut visited,
+                        &mut rec_stack,
+                    ) {
                         return VX_ERROR_INVALID_GRAPH;
                     }
                 }
@@ -1314,10 +1367,11 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
 
             // Topological sort of nodes for correct execution order (Kahn's algorithm)
             // Nodes must execute in data-flow order: if A produces an image that B consumes, A runs first
-            
+
             {
                 // Count in-degree for each node (how many nodes feed into it)
-                let mut in_degree: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+                let mut in_degree: std::collections::HashMap<u64, usize> =
+                    std::collections::HashMap::new();
                 for (node_id, _) in &node_params {
                     in_degree.insert(*node_id, 0);
                 }
@@ -1344,7 +1398,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     let img = &*(*param_ref as *const VxCImage);
                                     if img.parent.is_some() && !img.roi_offsets.is_empty() {
                                         let parent_ref = img.parent.unwrap() as u64;
-                                        if let Some(&producer) = param_to_producer.get(&parent_ref) {
+                                        if let Some(&producer) = param_to_producer.get(&parent_ref)
+                                        {
                                             if producer != *node_id {
                                                 // Parent has a producer, this node depends on it
                                                 if let Some(deg) = in_degree.get_mut(node_id) {
@@ -1355,9 +1410,13 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                                     }
                                     // Also check if this image is a pyramid level and its pyramid has a producer
                                     if let Ok(pyramid_levels) = PYRAMID_LEVEL_IMAGES.lock() {
-                                        if let Some(&(pyr_ref, _level)) = pyramid_levels.get(&(*param_ref as usize)) {
+                                        if let Some(&(pyr_ref, _level)) =
+                                            pyramid_levels.get(&(*param_ref as usize))
+                                        {
                                             let pyr_ref_u64 = pyr_ref as u64;
-                                            if let Some(&producer) = param_to_producer.get(&pyr_ref_u64) {
+                                            if let Some(&producer) =
+                                                param_to_producer.get(&pyr_ref_u64)
+                                            {
                                                 if producer != *node_id {
                                                     if let Some(deg) = in_degree.get_mut(node_id) {
                                                         *deg += 1;
@@ -1375,18 +1434,16 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 // Kahn's algorithm: repeatedly take nodes with in-degree 0
                 let mut queue: Vec<u64> = Vec::new();
                 for (node_id, deg) in &in_degree {
-                    
                     if *deg == 0 {
                         queue.push(*node_id);
                     }
                 }
-                
 
                 let mut topo_order: Vec<u64> = Vec::with_capacity(node_params.len());
-                
-while !queue.is_empty() {
+
+                while !queue.is_empty() {
                     let node_id = queue.pop().unwrap();
-                    
+
                     topo_order.push(node_id);
 
                     // For each node that this node feeds, decrement in-degree
@@ -1415,14 +1472,14 @@ while !queue.is_empty() {
 
                 // Update the graph's node list
                 if topo_order.len() == node_params.len() {
-                    
                     if let Ok(mut nodes_list) = g.nodes.write() {
                         *nodes_list = topo_order;
                     }
                 } else {
                     // Topological sort didn't include all nodes - this means there's a cycle
                     // or disconnected nodes. Include all nodes by appending missing ones.
-                    let topo_set: std::collections::HashSet<u64> = topo_order.iter().copied().collect();
+                    let topo_set: std::collections::HashSet<u64> =
+                        topo_order.iter().copied().collect();
                     for (node_id, _) in &node_params {
                         if !topo_set.contains(node_id) {
                             topo_order.push(*node_id);
@@ -1442,14 +1499,27 @@ while !queue.is_empty() {
                             // Skip if already allocated (dimensions and format set)
                             unsafe {
                                 let img = &*(*param_ref as *const VxCImage);
-                                if img.width > 0 && img.height > 0 && img.format != 0 && img.format != VX_DF_IMAGE_VIRT {
+                                if img.width > 0
+                                    && img.height > 0
+                                    && img.format != 0
+                                    && img.format != VX_DF_IMAGE_VIRT
+                                {
                                     continue; // already allocated
                                 }
                             }
                             // Virtual image - determine dimensions from connected nodes
-                            let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                            let kernel_name = node_kernel_names
+                                .get(node_id)
+                                .map(|s| s.as_str())
+                                .unwrap_or("");
                             let (width, height, format) = if let Some(dim) =
-                                infer_virtual_image_dimensions(*param_ref, *node_id, &node_params, &param_to_producer, kernel_name) {
+                                infer_virtual_image_dimensions(
+                                    *param_ref,
+                                    *node_id,
+                                    &node_params,
+                                    &param_to_producer,
+                                    kernel_name,
+                                ) {
                                 dim
                             } else {
                                 // Cannot determine dimensions
@@ -1457,7 +1527,9 @@ while !queue.is_empty() {
                             };
 
                             // Allocate backing storage
-                            if let Err(_) = allocate_virtual_image_storage(*param_ref, width, height, format) {
+                            if let Err(_) =
+                                allocate_virtual_image_storage(*param_ref, width, height, format)
+                            {
                                 return VX_ERROR_NO_MEMORY;
                             }
                         }
@@ -1467,12 +1539,18 @@ while !queue.is_empty() {
 
             // Resolve virtual pyramid dimensions
             for (node_id, params) in &node_params {
-                let kernel_name = node_kernel_names.get(node_id).map(|s| s.as_str()).unwrap_or("");
+                let _kernel_name = node_kernel_names
+                    .get(node_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 for param_opt in params.iter() {
                     if let Some(param_ref) = param_opt {
                         // Check if this is a pyramid reference
                         let is_pyramid = if let Ok(types) = REFERENCE_TYPES.lock() {
-                            types.get(&(*param_ref as usize)).map(|t| *t == VX_TYPE_PYRAMID).unwrap_or(false)
+                            types
+                                .get(&(*param_ref as usize))
+                                .map(|t| *t == VX_TYPE_PYRAMID)
+                                .unwrap_or(false)
                         } else {
                             false
                         };
@@ -1505,8 +1583,13 @@ while !queue.is_empty() {
                             }
                         }
                         if inferred_width > 0 && inferred_height > 0 {
-                            let actual_format = if pyr.format == VX_DF_IMAGE_VIRT || pyr.format == 0 {
-                                if inferred_format != 0 && inferred_format != VX_DF_IMAGE_VIRT { inferred_format } else { 0x38303055 /* VX_DF_IMAGE_U8 */ }
+                            let actual_format = if pyr.format == VX_DF_IMAGE_VIRT || pyr.format == 0
+                            {
+                                if inferred_format != 0 && inferred_format != VX_DF_IMAGE_VIRT {
+                                    inferred_format
+                                } else {
+                                    0x38303055 /* VX_DF_IMAGE_U8 */
+                                }
                             } else {
                                 pyr.format
                             };
@@ -1522,7 +1605,8 @@ while !queue.is_empty() {
                                     pyr.scale.powi(level_idx as i32)
                                 };
                                 let level_w = ((inferred_width as f32) * level_scale).ceil() as u32;
-                                let level_h = ((inferred_height as f32) * level_scale).ceil() as u32;
+                                let level_h =
+                                    ((inferred_height as f32) * level_scale).ceil() as u32;
                                 let level_w = level_w.max(1);
                                 let level_h = level_h.max(1);
                                 let level_img = unsafe { &mut *(*level_ref as *mut VxCImage) };
@@ -1531,7 +1615,8 @@ while !queue.is_empty() {
                                     level_img.height = level_h;
                                     level_img.format = actual_format;
                                     // Reallocate image data
-                                    let size = VxCImage::calculate_size(level_w, level_h, actual_format);
+                                    let size =
+                                        VxCImage::calculate_size(level_w, level_h, actual_format);
                                     if size > 0 {
                                         let data = vec![0u8; size];
                                         if let Ok(mut img_data) = level_img.data.write() {
@@ -1545,15 +1630,26 @@ while !queue.is_empty() {
                 }
             }
 
-            // Collect user kernel validator info before dropping GRAPHS_DATA lock
-            // to avoid deadlock when callbacks call back into the API
-            let mut user_kernel_validators: Vec<(u64, u64, Vec<vx_reference>, VxKernelValidateF)> = Vec::new();
+            // Collect user kernel callbacks (validate, init, deinit) before
+            // dropping the GRAPHS_DATA lock so the callbacks can re-enter the
+            // API without deadlocking.
+            struct UserKernelHook {
+                node_id: u64,
+                param_refs: Vec<vx_reference>,
+                validate: VxKernelValidateF,
+                init: VxKernelInitializeF,
+                deinit: VxKernelDeinitializeF,
+                auto_local_size: usize,
+            }
+            let mut user_kernel_hooks: Vec<UserKernelHook> = Vec::new();
             for node_id in nodes_vec.iter() {
                 let (kernel_id, param_refs) = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
                     if let Some(node_data) = nodes_data.get(node_id) {
                         let kid = node_data.kernel_id;
                         let prefs: Vec<vx_reference> = if let Ok(p) = node_data.parameters.lock() {
-                            p.iter().map(|opt| opt.unwrap_or(0) as vx_reference).collect()
+                            p.iter()
+                                .map(|opt| opt.unwrap_or(0) as vx_reference)
+                                .collect()
                         } else {
                             Vec::new()
                         };
@@ -1570,10 +1666,20 @@ while !queue.is_empty() {
                 let user_kernel_key = kernel_id as i32;
                 let user_kernel_key_alt = (kernel_id & 0xFFFFFFFF) as i32;
                 if let Ok(user_kernels) = USER_KERNELS.lock() {
-                    if let Some(uk) = user_kernels.get(&user_kernel_key).or_else(|| user_kernels.get(&user_kernel_key_alt)) {
-                        if uk.validate.is_some() {
-                            user_kernel_validators.push((*node_id, kernel_id, param_refs, uk.validate));
-                        }
+                    if let Some(uk) = user_kernels
+                        .get(&user_kernel_key)
+                        .or_else(|| user_kernels.get(&user_kernel_key_alt))
+                    {
+                        user_kernel_hooks.push(UserKernelHook {
+                            node_id: *node_id,
+                            param_refs,
+                            validate: uk.validate,
+                            init: uk.init,
+                            deinit: uk.deinit,
+                            auto_local_size: uk
+                                .local_data_size
+                                .load(Ordering::SeqCst),
+                        });
                     }
                 }
             }
@@ -1581,26 +1687,139 @@ while !queue.is_empty() {
             // Clone Arc to graph data so we can access it after dropping GRAPHS_DATA
             let g_clone = Arc::clone(g);
 
-            // Drop GRAPHS_DATA lock BEFORE calling validator callbacks
-            // Callbacks may call vxQueryReference etc. which need GRAPHS_DATA
+            // Drop GRAPHS_DATA lock BEFORE calling user-kernel callbacks.
+            // Callbacks may call vxQueryReference / vxSetNodeAttribute etc.
+            // which need GRAPHS_DATA themselves.
             drop(graphs);
 
-            // Call user kernel validator callbacks (no GRAPHS_DATA lock held)
-            for (node_id, _kernel_id, param_refs, validate_fn_opt) in &user_kernel_validators {
-                if let Some(validate_fn) = validate_fn_opt {
-                    let num_params = param_refs.len();
-                    let metas: Vec<Box<VxMetaFormat>> = (0..num_params)
-                        .map(|_| Box::new(VxMetaFormat { attributes: Mutex::new(HashMap::new()) }))
+            // Run the user-kernel verify lifecycle:
+            //   1. If a previous `init` ran for this node, call `deinit` first.
+            //   2. Call `validate`.
+            //   3. Auto-allocate the per-node local-data buffer if requested.
+            //   4. Call `init`.
+            // After this loop, each user-kernel node is in the `initialized`
+            // state. `vxProcessGraph` (and the kernel dispatcher) must NOT
+            // call init/deinit again — only the kernel function.
+            for hook in &user_kernel_hooks {
+                let node_ptr = hook.node_id as vx_node;
+                let num_params = hook.param_refs.len() as vx_uint32;
+
+                // 1) Tear down previous init (re-verify path).
+                let was_initialized = if let Ok(nodes) = crate::c_api::NODES.lock() {
+                    nodes
+                        .get(&hook.node_id)
+                        .map(|n| n.user_kernel_initialized.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                if was_initialized {
+                    if let Some(deinit_fn) = hook.deinit {
+                        push_user_kernel_in_init(hook.node_id);
+                        let _ = unsafe {
+                            deinit_fn(node_ptr, hook.param_refs.as_ptr(), num_params)
+                        };
+                        pop_user_kernel_in_init();
+                    }
+                    if let Ok(nodes) = crate::c_api::NODES.lock() {
+                        if let Some(n) = nodes.get(&hook.node_id) {
+                            n.user_kernel_initialized.store(false, Ordering::SeqCst);
+                            // Free the auto-allocated buffer if any. User-managed
+                            // buffers are released by the user kernel itself
+                            // inside `deinit` (see test_usernode.c:524-531).
+                            if n.local_data_auto_alloc.load(Ordering::SeqCst) {
+                                let old_ptr = n.local_data_ptr.load(Ordering::SeqCst);
+                                if !old_ptr.is_null() {
+                                    let old_size = n.local_data_size.load(Ordering::SeqCst);
+                                    if old_size > 0 {
+                                        unsafe {
+                                            let _ = Vec::from_raw_parts(
+                                                old_ptr as *mut u8,
+                                                old_size,
+                                                old_size,
+                                            );
+                                        }
+                                    }
+                                    n.local_data_ptr
+                                        .store(std::ptr::null_mut(), Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2) Validate. The validator may register a per-output
+                // `VX_VALID_RECT_CALLBACK` on the meta-format object; after
+                // validate succeeds we replay that callback to populate the
+                // output image's valid rectangle (the test asserts on this
+                // post-vxProcessGraph, but the rect depends only on input
+                // rects so it is safe to compute it during verify).
+                if let Some(validate_fn) = hook.validate {
+                    let metas: Vec<Box<VxMetaFormat>> = (0..hook.param_refs.len())
+                        .map(|_| {
+                            Box::new(VxMetaFormat {
+                                attributes: Mutex::new(HashMap::new()),
+                            })
+                        })
                         .collect();
-                    let mut meta_ptrs: Vec<vx_meta_format> = metas.iter()
+                    let mut meta_ptrs: Vec<vx_meta_format> = metas
+                        .iter()
                         .map(|m| &**m as *const VxMetaFormat as vx_meta_format)
                         .collect();
-                    let node_ptr = *node_id as vx_node;
                     let status = unsafe {
-                        validate_fn(node_ptr, param_refs.as_ptr(), num_params as vx_uint32, meta_ptrs.as_mut_ptr())
+                        validate_fn(
+                            node_ptr,
+                            hook.param_refs.as_ptr(),
+                            num_params,
+                            meta_ptrs.as_mut_ptr(),
+                        )
                     };
                     if status != VX_SUCCESS {
                         return status;
+                    }
+
+                    // Apply VX_VALID_RECT_CALLBACK for each output image param.
+                    apply_valid_rect_callbacks(
+                        node_ptr,
+                        &hook.param_refs,
+                        &metas,
+                    );
+                }
+
+                // 3) Auto-allocate per-node local data if the kernel requested it.
+                if hook.auto_local_size > 0 {
+                    let buf = vec![0u8; hook.auto_local_size];
+                    let size = buf.len();
+                    let ptr = Box::into_raw(buf.into_boxed_slice()) as *mut u8 as *mut c_void;
+                    if let Ok(nodes) = crate::c_api::NODES.lock() {
+                        if let Some(n) = nodes.get(&hook.node_id) {
+                            n.local_data_size.store(size, Ordering::SeqCst);
+                            n.local_data_ptr.store(ptr, Ordering::SeqCst);
+                            n.local_data_auto_alloc.store(true, Ordering::SeqCst);
+                        }
+                    }
+                } else if let Ok(nodes) = crate::c_api::NODES.lock() {
+                    if let Some(n) = nodes.get(&hook.node_id) {
+                        n.local_data_auto_alloc.store(false, Ordering::SeqCst);
+                    }
+                }
+
+                // 4) Mark "in init" so vxSetNodeAttribute can permit local-data
+                // mutation, then call init.
+                push_user_kernel_in_init(hook.node_id);
+                let init_status = if let Some(init_fn) = hook.init {
+                    unsafe { init_fn(node_ptr, hook.param_refs.as_ptr(), num_params) }
+                } else {
+                    VX_SUCCESS
+                };
+                pop_user_kernel_in_init();
+                if init_status != VX_SUCCESS {
+                    return init_status;
+                }
+
+                if let Ok(nodes) = crate::c_api::NODES.lock() {
+                    if let Some(n) = nodes.get(&hook.node_id) {
+                        n.user_kernel_initialized.store(true, Ordering::SeqCst);
                     }
                 }
             }
@@ -1694,7 +1913,9 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
                         continue;
                     }
                     let new_addr = delay_data.slots[new_phys];
-                    if new_addr == 0 { continue; }
+                    if new_addr == 0 {
+                        continue;
+                    }
 
                     let old_addr = params[param_idx as usize].map(|v| v as usize).unwrap_or(0);
 
@@ -1748,7 +1969,9 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
                 let pyr_level_entries: Vec<(u32, usize, i32, usize)> = {
                     if let Ok(delay_pyr_level) = DELAY_PYRAMID_LEVEL.lock() {
                         let mut entries = Vec::new();
-                        for ((nid, pidx), (delay_addr, logical_idx, level)) in delay_pyr_level.iter() {
+                        for ((nid, pidx), (delay_addr, logical_idx, level)) in
+                            delay_pyr_level.iter()
+                        {
                             if *nid == *node_id {
                                 entries.push((*pidx, *delay_addr, *logical_idx, *level));
                             }
@@ -1797,14 +2020,31 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
                     };
 
                     if new_pyr_addr != 0 && new_pyr_addr != old_pyr_addr {
-                        extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
-                        extern "C" { fn vxGetPyramidLevel(pyramid: vx_pyramid, level: vx_uint32) -> vx_image; }
+                        extern "C" {
+                            fn vxQueryPyramid(
+                                pyramid: vx_pyramid,
+                                attr: i32,
+                                ptr: *mut c_void,
+                                size: usize,
+                            ) -> i32;
+                        }
+                        extern "C" {
+                            fn vxGetPyramidLevel(pyramid: vx_pyramid, level: vx_uint32)
+                                -> vx_image;
+                        }
                         let mut num_levels: vx_size = 0;
                         unsafe {
-                            vxQueryPyramid(new_pyr_addr as vx_pyramid, 0x80900, &mut num_levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                            vxQueryPyramid(
+                                new_pyr_addr as vx_pyramid,
+                                0x80900,
+                                &mut num_levels as *mut _ as *mut c_void,
+                                std::mem::size_of::<vx_size>(),
+                            );
                         }
                         if level < num_levels as usize {
-                            let new_img = unsafe { vxGetPyramidLevel(new_pyr_addr as vx_pyramid, level as u32) };
+                            let new_img = unsafe {
+                                vxGetPyramidLevel(new_pyr_addr as vx_pyramid, level as u32)
+                            };
                             if !new_img.is_null() {
                                 // vxGetPyramidLevel already retained
                                 // Release old
@@ -1819,7 +2059,8 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
                                 params[param_idx as usize] = Some(new_img as u64);
 
                                 // Also update ParameterData.value
-                                if let Ok(unified_params) = crate::unified_c_api::PARAMETERS.lock() {
+                                if let Ok(unified_params) = crate::unified_c_api::PARAMETERS.lock()
+                                {
                                     for (_, pd) in unified_params.iter() {
                                         if let Ok(val) = pd.value.lock() {
                                             if *val == Some(old_addr as u64) {
@@ -1842,10 +2083,10 @@ fn resolve_delay_params_for_graph(graph_id: u64) {
             }
         }
     }
-}/// Process graph - execute nodes in topological order
+}
+/// Process graph - execute nodes in topological order
 #[no_mangle]
 pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
-
     // Null check for graph pointer
     if graph.is_null() {
         error!("vxProcessGraph: graph is NULL");
@@ -1876,7 +2117,10 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
             // Per OpenVX spec: vxProcessGraph should auto-verify if not already verified
             let verify_status = vxVerifyGraph(graph);
             if verify_status != VX_SUCCESS {
-                error!("vxProcessGraph: auto-verify failed with status {}", verify_status);
+                error!(
+                    "vxProcessGraph: auto-verify failed with status {}",
+                    verify_status
+                );
                 return verify_status;
             }
         }
@@ -1948,16 +2192,24 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
     }
 
     // Execute each node in order
-    for (i, node_id) in nodes.iter().enumerate() {
-        let node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
+    for (_i, node_id) in nodes.iter().enumerate() {
+        let _node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
             if let Some(nd) = nodes_map.get(node_id) {
                 if let Ok(kernels) = crate::c_api::KERNELS.lock() {
                     if let Some(k) = kernels.get(&nd.kernel_id) {
                         k.name.clone()
-                    } else { String::new() }
-                } else { String::new() }
-            } else { String::new() }
-        } else { String::new() };
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
         if *node_id == 0 {
             if let Ok(mut state) = g.state.lock() {
                 *state = VxGraphState::VxGraphStateAbandoned;
@@ -1965,22 +2217,31 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
             return VX_ERROR_INVALID_NODE;
         }
 
-        let node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
+        let _node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
             if let Some(nd) = nodes_map.get(node_id) {
                 if let Ok(kernels) = crate::c_api::KERNELS.lock() {
                     if let Some(k) = kernels.get(&nd.kernel_id) {
                         k.name.clone()
-                    } else { String::new() }
-                } else { String::new() }
-            } else { String::new() }
-        } else { String::new() };
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
 
         match execute_node(*node_id) {
             Some(status) => {
                 if status == VX_SUCCESS {
                     if let Ok(nodes_map) = crate::c_api::NODES.lock() {
                         if let Some(node) = nodes_map.get(node_id) {
-                            node.run_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            node.run_count
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         }
                     }
                 }
@@ -2011,7 +2272,8 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
                         0
                     }
                 };
-                if callback_action == 0x1001 { // VX_ACTION_ABANDON
+                if callback_action == 0x1001 {
+                    // VX_ACTION_ABANDON
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
@@ -2033,7 +2295,8 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
     }
 
     // Increment graph run count
-    g.run_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    g.run_count
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     // Auto-age any registered delays
     auto_age_delays(graph_id);
@@ -2089,7 +2352,7 @@ fn resolve_graph_parameter(graph_id: u64, graph_param_index: usize) -> Option<u6
 
     // Try c_api::PARAMETERS
     if let Ok(params) = crate::c_api::PARAMETERS.lock() {
-        if let Some(param_data) = params.get(&param_handle) {
+        if let Some(_param_data) = params.get(&param_handle) {
             // For c_api parameters, we need to check if there's a stored value
             // The value might be in the parameter's value field
             // Return None for now since c_api::ParameterData doesn't store value directly
@@ -2111,24 +2374,20 @@ fn resolve_graph_parameter(graph_id: u64, graph_param_index: usize) -> Option<u6
 
 /// Execute a single node by looking up its kernel and parameters
 fn execute_node(node_id: u64) -> Option<vx_status> {
-
     // Get node data including border mode
     let (kernel_id, param_ids, node_border) = {
         if let Ok(nodes) = crate::c_api::NODES.lock() {
             if let Some(node_data) = nodes.get(&node_id) {
                 let params = node_data.parameters.lock().ok()?;
                 let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
-                for (i, p) in param_refs.iter().enumerate() {
-                    if let Some(v) = p {
-
+                for (_i, p) in param_refs.iter().enumerate() {
+                    if let Some(_v) = p {
                     } else {
-
                     }
                 }
                 let border = node_data.border_mode.lock().ok()?;
                 (node_data.kernel_id, param_refs, *border)
             } else {
-
                 return Some(VX_ERROR_INVALID_NODE);
             }
         } else {
@@ -2138,7 +2397,6 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
 
     // Validate kernel_id
     if kernel_id == 0 {
-
         return Some(VX_ERROR_INVALID_KERNEL);
     }
 
@@ -2159,7 +2417,10 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                         let user_kernel_key = kernel_id as i32;
                         let user_kernel_key_alt = (kernel_id & 0xFFFFFFFF) as i32;
                         if let Ok(user_kernels) = USER_KERNELS.lock() {
-                            if let Some(uk) = user_kernels.get(&user_kernel_key).or_else(|| user_kernels.get(&user_kernel_key_alt)) {
+                            if let Some(uk) = user_kernels
+                                .get(&user_kernel_key)
+                                .or_else(|| user_kernels.get(&user_kernel_key_alt))
+                            {
                                 uk.name.clone()
                             } else {
                                 return Some(VX_ERROR_INVALID_KERNEL);
@@ -2190,7 +2451,6 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     // For ChannelCombine, all plane params can be null except the output
     let is_channel_combine = kernel_name.contains("channel_combine");
     if param_ids.is_empty() || (param_ids[0].is_none() && !is_channel_combine) {
-
         return Some(VX_ERROR_INVALID_PARAMETERS);
     }
 
@@ -2198,7 +2458,6 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
         if let Some(param_id) = param_id_opt {
             // Validate parameter is not null pointer (unless it's an optional param for ChannelCombine)
             if *param_id == 0 && !is_channel_combine {
-
                 return Some(VX_ERROR_INVALID_PARAMETERS);
             }
             params.push(*param_id as vx_reference);
@@ -2217,7 +2476,9 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                 // This parameter is bound to a graph parameter
                 // Get the graph parameter's actual value
                 if let Ok(graph_id) = get_node_graph_id(node_id) {
-                    if let Some(resolved_value) = resolve_graph_parameter(graph_id, graph_param_index) {
+                    if let Some(resolved_value) =
+                        resolve_graph_parameter(graph_id, graph_param_index)
+                    {
                         params.push(resolved_value as vx_reference);
                     } else {
                         return Some(VX_ERROR_INVALID_PARAMETERS);
@@ -2226,9 +2487,32 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
                     return Some(VX_ERROR_INVALID_PARAMETERS);
                 }
             } else {
-
                 params.push(std::ptr::null_mut());
             }
+        }
+    }
+
+    // If this node was registered as a replicated node via vxReplicateNode,
+    // run the kernel once per pyramid level / object-array item, replacing
+    // the parameters whose replicate flag is set with the corresponding
+    // sub-object on each iteration.
+    if let Some(flags) = lookup_node_replication_flags(node_id) {
+        if let Some(replicas) = build_node_replicas(&params, &flags) {
+            let mut last_status = VX_SUCCESS;
+            for replica in replicas {
+                let status = dispatch_kernel_with_border_ex(
+                    &kernel_name,
+                    &replica,
+                    Some(node_border),
+                    node_id,
+                );
+                if status != VX_SUCCESS {
+                    last_status = status;
+                    break;
+                }
+                last_status = status;
+            }
+            return Some(last_status);
         }
     }
 
@@ -2237,15 +2521,148 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     Some(result)
 }
 
+/// Look up the replication flags for `node_id` if `vxReplicateNode` was
+/// previously called for it. Returns `None` for non-replicated nodes.
+fn lookup_node_replication_flags(node_id: u64) -> Option<Vec<vx_bool>> {
+    let graph_id = get_node_graph_id(node_id).ok()?;
+    if let Ok(graphs) = GRAPHS_DATA.lock() {
+        let g = graphs.get(&graph_id)?;
+        let map = g.replicated_nodes.lock().ok()?;
+        return map.get(&node_id).cloned();
+    }
+    None
+}
+
+/// Compute the per-iteration parameter lists for a replicated node.
+///
+/// For each parameter whose replicate flag is `true`, look up the parent
+/// container (pyramid level → its pyramid, object-array item → its array)
+/// and capture the per-iteration substitution. The replication count is the
+/// minimum over all replicated parameters; non-replicated parameters are
+/// passed through unchanged.
+fn build_node_replicas(
+    params: &[vx_reference],
+    flags: &[vx_bool],
+) -> Option<Vec<Vec<vx_reference>>> {
+    let mut count: Option<usize> = None;
+    // (param_index, parent_kind, parent_addr)
+    let mut replicas: Vec<(usize, ReplicaKind, usize)> = Vec::new();
+
+    for (i, &p) in params.iter().enumerate() {
+        if i >= flags.len() || flags[i] == 0 || p.is_null() {
+            continue;
+        }
+        let addr = p as usize;
+
+        // Look up object-array parent. The recorded parent address may be
+        // stale (the array could have been released since the item was
+        // captured), so we validate that the address is still registered
+        // as a VX_TYPE_OBJECT_ARRAY before dereferencing it.
+        let arr_parent: Option<usize> = if let Ok(parents) = OBJECT_ARRAY_ITEM_PARENTS.lock() {
+            parents.get(&addr).map(|&(a, _)| a)
+        } else {
+            None
+        };
+        if let Some(arr_addr) = arr_parent {
+            let alive = is_reference_type(arr_addr, VX_TYPE_OBJECT_ARRAY);
+            if alive {
+                let arr = unsafe { &*(arr_addr as *const VxCObjectArray) };
+                let item_count = arr.count;
+                if item_count == 0 {
+                    return None;
+                }
+                count = Some(count.map_or(item_count, |c| c.min(item_count)));
+                replicas.push((i, ReplicaKind::ObjectArray, arr_addr));
+                continue;
+            }
+        }
+
+        // Look up pyramid parent.
+        let pyr_parent: Option<usize> = if let Ok(level_imgs) = PYRAMID_LEVEL_IMAGES.lock() {
+            level_imgs.get(&addr).map(|&(a, _)| a)
+        } else {
+            None
+        };
+        if let Some(pyr_addr) = pyr_parent {
+            let alive = is_reference_type(pyr_addr, VX_TYPE_PYRAMID);
+            if alive {
+                let pyr = unsafe { &*(pyr_addr as *const VxCPyramid) };
+                let levels = pyr.num_levels;
+                if levels == 0 {
+                    return None;
+                }
+                count = Some(count.map_or(levels, |c| c.min(levels)));
+                replicas.push((i, ReplicaKind::Pyramid, pyr_addr));
+                continue;
+            }
+        }
+
+        // Replicated parameter without a (live) recognised parent container.
+        // Fall back to non-replicated dispatch.
+        return None;
+    }
+
+    let count = count?;
+    if replicas.is_empty() || count == 0 {
+        return None;
+    }
+
+    let mut iterations: Vec<Vec<vx_reference>> = Vec::with_capacity(count);
+    for idx in 0..count {
+        let mut iter_params = params.to_vec();
+        for (param_idx, kind, parent_addr) in &replicas {
+            let item: vx_reference = match kind {
+                ReplicaKind::Pyramid => {
+                    let pyr = unsafe { &*(*parent_addr as *const VxCPyramid) };
+                    *pyr.levels.get(idx)? as vx_reference
+                }
+                ReplicaKind::ObjectArray => {
+                    let arr = unsafe { &*(*parent_addr as *const VxCObjectArray) };
+                    let items = arr.items.read().ok()?;
+                    *items.get(idx)? as vx_reference
+                }
+            };
+            iter_params[*param_idx] = item;
+        }
+        iterations.push(iter_params);
+    }
+
+    Some(iterations)
+}
+
+#[derive(Clone, Copy)]
+enum ReplicaKind {
+    Pyramid,
+    ObjectArray,
+}
+
+/// Returns true if `addr` is currently registered as a live reference of the
+/// given OpenVX type. Used by the replication code to ignore stale entries
+/// in `OBJECT_ARRAY_ITEM_PARENTS` / `PYRAMID_LEVEL_IMAGES` whose recorded
+/// parent address may have been freed (and possibly reallocated to a
+/// different object) since the entry was inserted.
+fn is_reference_type(addr: usize, expected_type: vx_enum) -> bool {
+    if addr == 0 {
+        return false;
+    }
+    if let Ok(types) = REFERENCE_TYPES.lock() {
+        if let Some(&t) = types.get(&addr) {
+            return t == expected_type;
+        }
+    }
+    false
+}
+
 /// Convert vx_border_t to BorderMode for use in image processing
 pub fn border_from_vx(border: &Option<vx_border_t>) -> crate::vxu_impl::BorderMode {
     match border {
         Some(b) => match b.mode {
             0x0000C000 => crate::vxu_impl::BorderMode::Undefined, // VX_BORDER_UNDEFINED
-            0x0000C001 => { // VX_BORDER_CONSTANT
+            0x0000C001 => {
+                // VX_BORDER_CONSTANT
                 let val = unsafe { b.constant_value.U8 };
                 crate::vxu_impl::BorderMode::Constant(val)
-            },
+            }
             0x0000C002 => crate::vxu_impl::BorderMode::Replicate, // VX_BORDER_REPLICATE
             _ => crate::vxu_impl::BorderMode::Undefined,
         },
@@ -2253,15 +2670,29 @@ pub fn border_from_vx(border: &Option<vx_border_t>) -> crate::vxu_impl::BorderMo
     }
 }
 
-fn dispatch_kernel_with_border_ex(kernel_name: &str, params: &[vx_reference], border: Option<vx_border_t>, node_id: u64) -> vx_status {
+fn dispatch_kernel_with_border_ex(
+    kernel_name: &str,
+    params: &[vx_reference],
+    border: Option<vx_border_t>,
+    node_id: u64,
+) -> vx_status {
     dispatch_kernel_with_border_impl(kernel_name, params, border, node_id)
 }
 
-fn dispatch_kernel_with_border(kernel_name: &str, params: &[vx_reference], border: Option<vx_border_t>) -> vx_status {
+fn dispatch_kernel_with_border(
+    kernel_name: &str,
+    params: &[vx_reference],
+    border: Option<vx_border_t>,
+) -> vx_status {
     dispatch_kernel_with_border_impl(kernel_name, params, border, 0)
 }
 
-fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], border: Option<vx_border_t>, node_id: u64) -> vx_status {
+fn dispatch_kernel_with_border_impl(
+    kernel_name: &str,
+    params: &[vx_reference],
+    border: Option<vx_border_t>,
+    node_id: u64,
+) -> vx_status {
     match kernel_name {
         // Box filter
         "org.khronos.openvx.box_3x3" => {
@@ -2269,18 +2700,21 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let input = params[0] as vx_image;
                 let output = params[1] as vx_image;
                 let vstatus = validate_image(input);
-                if vstatus != VX_SUCCESS { return vstatus; }
+                if vstatus != VX_SUCCESS {
+                    return vstatus;
+                }
                 let vstatus = validate_image(output);
-                if vstatus != VX_SUCCESS { return vstatus; }
+                if vstatus != VX_SUCCESS {
+                    return vstatus;
+                }
 
                 let result = crate::vxu_impl::vxu_box3x3_impl_with_border(
                     unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                     input,
                     output,
-                    border
+                    border,
                 );
-                if result != VX_SUCCESS {
-                }
+                if result != VX_SUCCESS {}
                 result
             } else {
                 VX_ERROR_INVALID_PARAMETERS
@@ -2293,16 +2727,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let output = params[1] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_median3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        border
+                        border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2318,16 +2756,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let output = params[1] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_gaussian3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        border
+                        border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2343,16 +2785,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let output = params[1] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_gaussian5x5_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        border
+                        border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2368,16 +2814,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let output = params[1] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_dilate3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        border
+                        border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2393,16 +2843,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let output = params[1] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_erode3x3_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        border
+                        border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2418,15 +2872,19 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let output = params[1] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_color_convert_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2450,16 +2908,24 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == 0 { val } else { 0x4001 } // VX_INTERPOLATION_BILINEAR
+                    if status == 0 {
+                        val
+                    } else {
+                        0x4001
+                    } // VX_INTERPOLATION_BILINEAR
                 } else {
                     0x4001 // VX_INTERPOLATION_BILINEAR
                 };
                 let output = params[3] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !matrix.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_warp_perspective_impl(
@@ -2468,7 +2934,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         matrix,
                         interp_type,
                         output,
-                        Some(border_from_vx(&border))
+                        Some(border_from_vx(&border)),
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2485,16 +2951,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let output = params[2] as vx_image;
                 // Validate images before processing
                 let status = validate_image(input);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
                 let status = validate_image(output);
-                if status != VX_SUCCESS { return status; }
+                if status != VX_SUCCESS {
+                    return status;
+                }
 
                 if !input.is_null() && !thresh.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_threshold_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         thresh,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2512,7 +2982,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                     crate::vxu_impl::vxu_integral_image_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2535,7 +3005,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         in1,
                         in2,
                         policy,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2558,7 +3028,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         in1,
                         in2,
                         policy,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2585,7 +3055,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         scale,
                         overflow_policy,
                         rounding_policy,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2605,7 +3075,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2625,7 +3095,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(grad_x as vx_reference) },
                         grad_x,
                         grad_y,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2645,7 +3115,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(grad_x as vx_reference) },
                         grad_x,
                         grad_y,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2668,7 +3138,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         input,
                         output,
                         interpolation,
-                        Some(border_mode)
+                        Some(border_mode),
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2688,7 +3158,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output_x,
-                        output_y
+                        output_y,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2712,7 +3182,11 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == 0 { val } else { 0x4001 } // VX_INTERPOLATION_BILINEAR
+                    if status == 0 {
+                        val
+                    } else {
+                        0x4001
+                    } // VX_INTERPOLATION_BILINEAR
                 } else {
                     0x4001 // VX_INTERPOLATION_BILINEAR
                 };
@@ -2725,7 +3199,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         matrix,
                         interp_type,
                         output,
-                        Some(border_mode)
+                        Some(border_mode),
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2746,11 +3220,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         let status = crate::c_api_data::vxCopyScalarData(
                             interp_scalar,
                             &mut val as *mut i32 as *mut c_void,
-                            0x11001, 0x0,
+                            0x11001,
+                            0x0,
                         );
-                        if status == 0 { val } else { 0x4001 }
-                    } else { 0x4001 }
-                } else { 0x4001 };
+                        if status == 0 {
+                            val
+                        } else {
+                            0x4001
+                        }
+                    } else {
+                        0x4001
+                    }
+                } else {
+                    0x4001
+                };
                 let output = params[3] as vx_image;
                 let border_mode = border_from_vx(&border);
                 if !input.is_null() && !table.is_null() && !output.is_null() {
@@ -2760,7 +3243,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         table,
                         interp_type,
                         output,
-                        Some(border_mode)
+                        Some(border_mode),
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2780,7 +3263,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2800,7 +3283,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2820,7 +3303,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2838,7 +3321,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                     crate::vxu_impl::vxu_not_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2860,7 +3343,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         in1,
                         alpha,
                         in2,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2882,7 +3365,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         channel,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2907,7 +3390,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         plane1,
                         plane2,
                         plane3,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2925,7 +3408,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         plane1,
                         plane2,
                         std::ptr::null_mut(),
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2964,7 +3447,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                     crate::vxu_impl::vxu_histogram_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
-                        distribution
+                        distribution,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -2982,9 +3465,21 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let input = params[0] as vx_image;
 
                 // Read scalar parameters
-                let strength_thresh = if params.len() > 1 && !params[1].is_null() { params[1] as vx_scalar } else { std::ptr::null_mut() };
-                let min_distance = if params.len() > 2 && !params[2].is_null() { params[2] as vx_scalar } else { std::ptr::null_mut() };
-                let sensitivity = if params.len() > 3 && !params[3].is_null() { params[3] as vx_scalar } else { std::ptr::null_mut() };
+                let strength_thresh = if params.len() > 1 && !params[1].is_null() {
+                    params[1] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
+                let min_distance = if params.len() > 2 && !params[2].is_null() {
+                    params[2] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
+                let sensitivity = if params.len() > 3 && !params[3].is_null() {
+                    params[3] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
 
                 // gradient_size and block_size are enum values (vx_enum)
                 // In the graph, they are stored as scalars of type VX_TYPE_ENUM
@@ -2993,22 +3488,44 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                     let status = crate::c_api_data::vxCopyScalarData(
                         params[4] as vx_scalar,
                         &mut val as *mut i32 as *mut c_void,
-                        0x11001, 0x0
+                        0x11001,
+                        0x0,
                     );
-                    if status == VX_SUCCESS { val } else { 3 }
-                } else { 3 };
+                    if status == VX_SUCCESS {
+                        val
+                    } else {
+                        3
+                    }
+                } else {
+                    3
+                };
                 let block_size: vx_enum = if params.len() > 5 && !params[5].is_null() {
                     let mut val: i32 = 0;
                     let status = crate::c_api_data::vxCopyScalarData(
                         params[5] as vx_scalar,
                         &mut val as *mut i32 as *mut c_void,
-                        0x11001, 0x0
+                        0x11001,
+                        0x0,
                     );
-                    if status == VX_SUCCESS { val } else { 3 }
-                } else { 3 };
+                    if status == VX_SUCCESS {
+                        val
+                    } else {
+                        3
+                    }
+                } else {
+                    3
+                };
 
-                let corners = if params.len() > 6 && !params[6].is_null() { params[6] as vx_array } else { std::ptr::null_mut() };
-                let num_corners = if params.len() > 7 && !params[7].is_null() { params[7] as vx_scalar } else { std::ptr::null_mut() };
+                let corners = if params.len() > 6 && !params[6].is_null() {
+                    params[6] as vx_array
+                } else {
+                    std::ptr::null_mut()
+                };
+                let num_corners = if params.len() > 7 && !params[7].is_null() {
+                    params[7] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
 
                 let result = crate::vxu_impl::vxu_harris_corners_impl(
                     unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -3019,7 +3536,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                     gradient_size,
                     block_size,
                     corners,
-                    num_corners
+                    num_corners,
                 );
                 result
             } else {
@@ -3030,18 +3547,33 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
         "org.khronos.openvx.fast_corners" => {
             if params.len() >= 5 {
                 let input = params[0] as vx_image;
-                let strength_thresh_scalar = if !params[1].is_null() { params[1] as vx_scalar } else { std::ptr::null_mut() };
+                let strength_thresh_scalar = if !params[1].is_null() {
+                    params[1] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
                 let nonmax_suppression: i32 = if params.len() > 2 && !params[2].is_null() {
                     let mut val: i32 = 0;
                     let status = crate::c_api_data::vxCopyScalarData(
                         params[2] as vx_scalar,
                         &mut val as *mut i32 as *mut c_void,
-                        0x11001, 0x0
+                        0x11001,
+                        0x0,
                     );
-                    if status == VX_SUCCESS { val } else { 1 }
-                } else { 1 };
+                    if status == VX_SUCCESS {
+                        val
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                };
                 let corners = params[3] as vx_array;
-                let num_corners = if params.len() > 4 && !params[4].is_null() { params[4] as vx_scalar } else { std::ptr::null_mut() };
+                let num_corners = if params.len() > 4 && !params[4].is_null() {
+                    params[4] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
                 if !input.is_null() && !corners.is_null() {
                     crate::vxu_impl::vxu_fast_corners_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -3049,7 +3581,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         strength_thresh_scalar,
                         nonmax_suppression,
                         corners,
-                        num_corners
+                        num_corners,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3064,7 +3596,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                 let input = params[0] as vx_image;
                 let hyst_threshold = params[1] as vx_threshold;
                 let output = params[4] as vx_image;
-                
+
                 // Read gradient_size from scalar param[2]
                 let gradient_size: vx_enum = if params.len() > 2 && !params[2].is_null() {
                     let mut val: i32 = 0;
@@ -3074,11 +3606,15 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == VX_SUCCESS { val } else { 3 }
+                    if status == VX_SUCCESS {
+                        val
+                    } else {
+                        3
+                    }
                 } else {
                     3
                 };
-                
+
                 // Read norm_type from scalar param[3]
                 let norm_type: vx_enum = if params.len() > 3 && !params[3].is_null() {
                     let mut val: i32 = 0;
@@ -3088,11 +3624,15 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == VX_SUCCESS { val } else { 0x10000 }
+                    if status == VX_SUCCESS {
+                        val
+                    } else {
+                        0x10000
+                    }
                 } else {
                     0x10000 // VX_NORM_L1
                 };
-                
+
                 if !input.is_null() && !hyst_threshold.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_canny_edge_detector_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
@@ -3100,7 +3640,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         hyst_threshold,
                         gradient_size,
                         norm_type,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3139,7 +3679,11 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == VX_SUCCESS { val } else { 0xA001i32 }
+                    if status == VX_SUCCESS {
+                        val
+                    } else {
+                        0xA001i32
+                    }
                 } else {
                     0xA001i32 // VX_CONVERT_POLICY_SATURATE default
                 };
@@ -3152,7 +3696,11 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == VX_SUCCESS { val } else { 0 }
+                    if status == VX_SUCCESS {
+                        val
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 };
@@ -3162,7 +3710,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         input,
                         output,
                         policy,
-                        shift
+                        shift,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3200,7 +3748,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         mean,
-                        stddev
+                        stddev,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3246,7 +3794,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                     crate::vxu_impl::vxu_gaussian_pyramid_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
-                        output
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3269,7 +3817,11 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         0x11001, // VX_READ_ONLY
                         0x0,     // VX_MEMORY_TYPE_HOST
                     );
-                    if status == VX_SUCCESS { val as vx_size } else { 5 }
+                    if status == VX_SUCCESS {
+                        val as vx_size
+                    } else {
+                        5
+                    }
                 } else {
                     5 // default
                 };
@@ -3278,7 +3830,7 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
                         output,
-                        kernel_size
+                        kernel_size,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3320,45 +3872,102 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
             }
         }
         // Optical Flow Pyr LK
+        // Graph parameters (matching `vxOpticalFlowPyrLKNode` ordering):
+        //   0: old_pyramid, 1: new_pyramid,
+        //   2: old_points, 3: new_points_estimates, 4: new_points,
+        //   5: termination (scalar enum), 6: epsilon (scalar f32),
+        //   7: num_iterations (scalar u32), 8: use_initial_estimate (scalar bool),
+        //   9: window_dimension (scalar size).
         "org.khronos.openvx.optical_flow_pyr_lk" => {
-            if params.len() >= 7 {
-                let old_images = params[0] as vx_pyramid;
-                let new_images = params[1] as vx_pyramid;
-                let old_points = params[2] as vx_array;
-                let _new_points_estimates = params[3] as vx_array;
-                let new_points = params[4] as vx_array;
-                if !old_images.is_null() && !new_images.is_null() &&
-                   !old_points.is_null() && !new_points.is_null() {
-                    // Minimal implementation: copy old_points to new_points
-                    // This allows downstream nodes to have data to work with
-                    extern "C" {
-                        fn vxQueryArray(arr: vx_array, attr: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
-                        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
-                        fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
-                        fn vxMapArrayRange(arr: vx_array, start: vx_size, end: vx_size, map_id: *mut vx_map_id, stride: *mut vx_size, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: vx_uint32) -> vx_status;
-                        fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_status;
-                    }
-                    const VX_ARRAY_NUMITEMS_ATTR: vx_enum = 0x80E01;
-                    let mut num_items: vx_size = 0;
-                    let query_status = unsafe { vxQueryArray(old_points, VX_ARRAY_NUMITEMS_ATTR, &mut num_items as *mut vx_size as *mut c_void, std::mem::size_of::<vx_size>()) };
-                    if query_status == VX_SUCCESS && num_items > 0 {
-                        let mut map_id: vx_map_id = 0;
-                        let mut stride: vx_size = 0;
-                        let mut data_ptr: *mut c_void = std::ptr::null_mut();
-                        let map_status = unsafe { vxMapArrayRange(old_points, 0, num_items, &mut map_id, &mut stride, &mut data_ptr, 0x11001, 0xE001, 0) };
-                        if map_status == VX_SUCCESS && !data_ptr.is_null() {
-                            let trunc_status = unsafe { vxTruncateArray(new_points, 0) };
-                            let add_status = unsafe { vxAddArrayItems(new_points, num_items, data_ptr, stride) };
-                            unsafe { vxUnmapArrayRange(old_points, map_id) };
-                        }
-                    }
-                    VX_SUCCESS
-                } else {
-                    VX_ERROR_INVALID_PARAMETERS
-                }
-            } else {
-                VX_ERROR_INVALID_PARAMETERS
+            if params.len() < 5 {
+                return VX_ERROR_INVALID_PARAMETERS;
             }
+            let old_images = params[0] as vx_pyramid;
+            let new_images = params[1] as vx_pyramid;
+            let old_points = params[2] as vx_array;
+            let new_points_estimates = if params.len() > 3 {
+                params[3] as vx_array
+            } else {
+                std::ptr::null_mut()
+            };
+            let new_points = params[4] as vx_array;
+            if old_images.is_null()
+                || new_images.is_null()
+                || old_points.is_null()
+                || new_points.is_null()
+            {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+
+            // Pull the scalar parameters; fall back to sensible defaults when missing.
+            let epsilon = if params.len() > 6 && !params[6].is_null() {
+                let mut val: vx_float32 = 0.001;
+                unsafe {
+                    vxCopyScalar(
+                        params[6] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val
+            } else {
+                0.001
+            };
+            let num_iter = if params.len() > 7 && !params[7].is_null() {
+                let mut val: vx_uint32 = 10;
+                unsafe {
+                    vxCopyScalar(
+                        params[7] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val as usize
+            } else {
+                10
+            };
+            let use_initial = if params.len() > 8 && !params[8].is_null() {
+                let mut val: vx_bool = 0;
+                unsafe {
+                    vxCopyScalar(
+                        params[8] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val != 0
+            } else {
+                false
+            };
+            let window_dim: usize = if params.len() > 9 && !params[9].is_null() {
+                let mut val: vx_size = 9;
+                unsafe {
+                    vxCopyScalar(
+                        params[9] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val
+            } else {
+                9
+            };
+
+            crate::vxu_impl::optical_flow_pyr_lk_run(
+                old_images,
+                new_images,
+                old_points,
+                new_points_estimates,
+                new_points,
+                epsilon,
+                num_iter,
+                use_initial,
+                window_dim,
+            )
         }
         // Non Linear Filter
         "org.khronos.openvx.non_linear_filter" => {
@@ -3394,7 +4003,8 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
 
                     let context = unsafe { crate::c_api::vxGetContext(input as vx_reference) };
                     crate::vxu_impl::vxu_non_linear_filter_impl(
-                        context, input, function, &mask_data, mask_cols, mask_rows, origin_x, origin_y, output, border
+                        context, input, function, &mask_data, mask_cols, mask_rows, origin_x,
+                        origin_y, output, border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -3421,24 +4031,20 @@ fn dispatch_kernel_with_border_impl(kernel_name: &str, params: &[vx_reference], 
             };
             // USER_KERNELS lock is dropped here
 
-            if let Some((init_fn, kernel_fn, deinit_fn)) = uk_callbacks {
+            if let Some((_init_fn, kernel_fn, _deinit_fn)) = uk_callbacks {
                 let node_ptr = node_id as vx_node;
                 let params_ptr = params.as_ptr();
                 let num_params = params.len() as vx_uint32;
-                // Call init callback if present
-                if let Some(init_fn) = init_fn {
-                    unsafe { init_fn(node_ptr, params_ptr, num_params) };
-                }
-                // Call the user kernel function
-                let mut result = VX_SUCCESS;
+                // Per OpenVX 1.3, user-kernel `init` and `deinit` are run once
+                // each by `vxVerifyGraph`, NOT per execution. `vxProcessGraph`
+                // only invokes the kernel function. (See test_usernode.c
+                // ImmediateProcessing assertions: after vxProcessGraph,
+                // is_initialize_called == is_deinitialize_called == false.)
                 if let Some(kernel_fn) = kernel_fn {
-                    result = unsafe { kernel_fn(node_ptr, params_ptr, num_params) };
+                    unsafe { kernel_fn(node_ptr, params_ptr, num_params) }
+                } else {
+                    VX_SUCCESS
                 }
-                // Call deinit callback if present
-                if let Some(deinit_fn) = deinit_fn {
-                    unsafe { deinit_fn(node_ptr, params_ptr, num_params) };
-                }
-                result
             } else {
                 // Unregistered kernel - return error
                 VX_ERROR_INVALID_KERNEL
@@ -3589,7 +4195,7 @@ pub extern "C" fn vxWaitGraph(graph: vx_graph) -> vx_status {
             VxGraphState::VxGraphStateCompleted => return VX_SUCCESS,
             VxGraphState::VxGraphStateAbandoned => return VX_ERROR_GRAPH_ABANDONED,
             VxGraphState::VxGraphStateRunning => {} // proceed to poll loop
-            _ => return VX_ERROR_INVALID_GRAPH, // not running, don't spin
+            _ => return VX_ERROR_INVALID_GRAPH,     // not running, don't spin
         }
     }
 
@@ -3734,14 +4340,14 @@ pub extern "C" fn vxReplicateNode(
 
 // Context attribute constants (calculated using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_CONTEXT) + offset)
 // VX_ATTRIBUTE_BASE(0x000, 0x801) = 0x00080100
-pub const VX_CONTEXT_ATTRIBUTE_VENDOR_ID: vx_enum = 0x00080100;        // +0x0
-pub const VX_CONTEXT_ATTRIBUTE_VERSION: vx_enum = 0x00080101;          // +0x1
-pub const VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS: vx_enum = 0x00080102;  // +0x2
-pub const VX_CONTEXT_ATTRIBUTE_MODULES: vx_enum = 0x00080103;        // +0x3
-pub const VX_CONTEXT_ATTRIBUTE_REFERENCES: vx_enum = 0x00080104;       // +0x4
+pub const VX_CONTEXT_ATTRIBUTE_VENDOR_ID: vx_enum = 0x00080100; // +0x0
+pub const VX_CONTEXT_ATTRIBUTE_VERSION: vx_enum = 0x00080101; // +0x1
+pub const VX_CONTEXT_ATTRIBUTE_UNIQUE_KERNELS: vx_enum = 0x00080102; // +0x2
+pub const VX_CONTEXT_ATTRIBUTE_MODULES: vx_enum = 0x00080103; // +0x3
+pub const VX_CONTEXT_ATTRIBUTE_REFERENCES: vx_enum = 0x00080104; // +0x4
 pub const VX_CONTEXT_ATTRIBUTE_IMPLEMENTATION: vx_enum = 0x00080105; // +0x5
 pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS_SIZE: vx_enum = 0x00080106; // +0x6
-pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS: vx_enum = 0x00080107;       // +0x7
+pub const VX_CONTEXT_ATTRIBUTE_EXTENSIONS: vx_enum = 0x00080107; // +0x7
 pub const VX_CONTEXT_ATTRIBUTE_CONVOLUTION_MAX_DIMENSION: vx_enum = 0x00080108; // +0x8
 pub const VX_CONTEXT_ATTRIBUTE_OPTICAL_FLOW_MAX_WINDOW: vx_enum = 0x00080109; // +0x9
 pub const VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER: vx_enum = 0x0008010A; // +0xA
@@ -3752,8 +4358,8 @@ pub const VX_CONTEXT_ATTRIBUTE_MAX_TENSOR_DIMS: vx_enum = 0x0008010E; // +0xE
 
 // Context version (OpenVX 1.3.1 = 1.3)
 // Packed as (major << 8) | minor, with patch in upper bits for 1.3.x
-pub const VX_VERSION_1_3_1: vx_uint32 = 0x00130100;  // VX_VERSION(1, 3.1)
-pub const VX_VERSION_1_3: vx_uint32 = 0x00130000;    // VX_VERSION(1, 3)
+pub const VX_VERSION_1_3_1: vx_uint32 = 0x00130100; // VX_VERSION(1, 3.1)
+pub const VX_VERSION_1_3: vx_uint32 = 0x00130000; // VX_VERSION(1, 3)
 
 // Vendor ID - using Khronos as the vendor
 pub const VX_ID_KHRONOS: vx_uint32 = 0x00000000;
@@ -3802,13 +4408,19 @@ pub extern "C" fn vxQueryContext(
                     let mut count = 0u32;
                     let unified_count = if let Ok(kernels) = KERNELS.lock() {
                         kernels.len() as u32
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     let c_api_count = if let Ok(c_api_kernels) = crate::c_api::KERNELS.lock() {
                         c_api_kernels.len() as u32
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     let user_count = if let Ok(user_kernels) = USER_KERNELS.lock() {
                         user_kernels.len() as u32
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     count = unified_count + c_api_count + user_count;
                     *(ptr as *mut vx_uint32) = count;
                     VX_SUCCESS
@@ -3822,7 +4434,10 @@ pub extern "C" fn vxQueryContext(
                     // Return number of loaded modules for this context
                     let context_id = context as u64;
                     let module_count = if let Ok(modules) = MODULES.lock() {
-                        modules.get(&context_id).map(|m| m.len() as u32).unwrap_or(0)
+                        modules
+                            .get(&context_id)
+                            .map(|m| m.len() as u32)
+                            .unwrap_or(0)
                     } else {
                         0
                     };
@@ -3858,7 +4473,7 @@ pub extern "C" fn vxQueryContext(
                     std::ptr::copy_nonoverlapping(
                         impl_name.as_ptr() as *const u8,
                         ptr as *mut u8,
-                        len
+                        len,
                     );
                     VX_SUCCESS
                 } else {
@@ -3915,14 +4530,23 @@ pub extern "C" fn vxQueryContext(
                 if let Ok(contexts) = CONTEXTS.lock() {
                     if let Some(ctx) = contexts.get(&(context as usize)) {
                         if let Ok(border_lock) = ctx.border_mode.read() {
-                            unsafe { std::ptr::write(ptr as *mut vx_border_t, *border_lock); }
+                            unsafe {
+                                std::ptr::write(ptr as *mut vx_border_t, *border_lock);
+                            }
                             return VX_SUCCESS;
                         }
                     }
                 }
                 // If context not found or no border set, return default
-                let default_border = vx_border_t { mode: 0x1600 /* VX_BORDER_UNDEFINED */, constant_value: vx_pixel_value_t { reserved: [0u8; 16] } };
-                unsafe { std::ptr::write(ptr as *mut vx_border_t, default_border); }
+                let default_border = vx_border_t {
+                    mode: 0x1600, /* VX_BORDER_UNDEFINED */
+                    constant_value: vx_pixel_value_t {
+                        reserved: [0u8; 16],
+                    },
+                };
+                unsafe {
+                    std::ptr::write(ptr as *mut vx_border_t, default_border);
+                }
                 VX_SUCCESS
             }
             VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER_POLICY => {
@@ -3933,12 +4557,16 @@ pub extern "C" fn vxQueryContext(
                 if let Ok(contexts) = CONTEXTS.lock() {
                     if let Some(ctx) = contexts.get(&(context as usize)) {
                         let policy = ctx.border_policy.load(Ordering::SeqCst) as vx_enum;
-                        unsafe { std::ptr::write(ptr as *mut vx_enum, policy); }
+                        unsafe {
+                            std::ptr::write(ptr as *mut vx_enum, policy);
+                        }
                         return VX_SUCCESS;
                     }
                 }
                 // Default
-                unsafe { std::ptr::write(ptr as *mut vx_enum, VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED); }
+                unsafe {
+                    std::ptr::write(ptr as *mut vx_enum, VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED);
+                }
                 VX_SUCCESS
             }
             _ => VX_ERROR_NOT_IMPLEMENTED,
@@ -4007,9 +4635,9 @@ pub extern "C" fn vxSetContextAttribute(
 // ============================================================================
 
 // Reference attribute constants
-pub const VX_REFERENCE_ATTRIBUTE_TYPE: vx_enum = 0x00080001;  // VX_REFERENCE_TYPE
-pub const VX_REFERENCE_ATTRIBUTE_COUNT: vx_enum = 0x00080000;  // VX_REFERENCE_COUNT
-pub const VX_REFERENCE_ATTRIBUTE_NAME: vx_enum = 0x00080002;    // VX_REFERENCE_NAME
+pub const VX_REFERENCE_ATTRIBUTE_TYPE: vx_enum = 0x00080001; // VX_REFERENCE_TYPE
+pub const VX_REFERENCE_ATTRIBUTE_COUNT: vx_enum = 0x00080000; // VX_REFERENCE_COUNT
+pub const VX_REFERENCE_ATTRIBUTE_NAME: vx_enum = 0x00080002; // VX_REFERENCE_NAME
 
 /// Reference type values (from vx_types.h)
 pub const VX_TYPE_REFERENCE: vx_enum = 0x800;
@@ -4039,7 +4667,7 @@ pub const VX_TYPE_TARGET: vx_enum = 0x816;
 // VX_ENUM_BASE(vendor, id) = ((vendor << 20) | (id << 12))
 // VX_ID_KHRONOS = 0x000, VX_ENUM_BORDER = 0x0C
 pub const VX_BORDER_UNDEFINED: vx_enum = 0x0000C000; // VX_ENUM_BASE(0, VX_ENUM_BORDER) + 0
-pub const VX_BORDER_CONSTANT: vx_enum = 0x0000C001;  // VX_ENUM_BASE(0, VX_ENUM_BORDER) + 1
+pub const VX_BORDER_CONSTANT: vx_enum = 0x0000C001; // VX_ENUM_BASE(0, VX_ENUM_BORDER) + 1
 pub const VX_BORDER_REPLICATE: vx_enum = 0x0000C002; // VX_ENUM_BASE(0, VX_ENUM_BORDER) + 2
 
 /// Border policy constants (VX_ENUM_BORDER_POLICY)
@@ -4047,26 +4675,28 @@ pub const VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED: vx_enum = 0x14000;
 pub const VX_BORDER_POLICY_RETURN_ERROR: vx_enum = 0x14001;
 
 /// Context registry - public for cross-module registration
-pub static CONTEXTS: Lazy<Mutex<HashMap<usize, Arc<VxCContext>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static CONTEXTS: Lazy<Mutex<HashMap<usize, Arc<VxCContext>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a context in the unified registry
 pub fn register_context(id: u64, ptr: *mut VxContext) {
     if let Ok(mut contexts) = CONTEXTS.lock() {
-        contexts.insert(ptr as usize, Arc::new(VxCContext {
-            id,
-            ref_count: AtomicUsize::new(1),
-            border_mode: RwLock::new(vx_border_t {
-                mode: VX_BORDER_UNDEFINED,
-                constant_value: vx_pixel_value_t { U32: 0 },
+        contexts.insert(
+            ptr as usize,
+            Arc::new(VxCContext {
+                id,
+                ref_count: AtomicUsize::new(1),
+                border_mode: RwLock::new(vx_border_t {
+                    mode: VX_BORDER_UNDEFINED,
+                    constant_value: vx_pixel_value_t { U32: 0 },
+                }),
+                border_policy: AtomicU32::new(VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED as u32),
+                log_callback: Mutex::new(None),
+                log_reentrant: AtomicBool::new(false),
+                logging_enabled: AtomicBool::new(false),
+                performance_enabled: AtomicBool::new(false),
             }),
-            border_policy: AtomicU32::new(VX_BORDER_POLICY_DEFAULT_TO_UNDEFINED as u32),
-            log_callback: Mutex::new(None),
-            log_reentrant: AtomicBool::new(false),
-            logging_enabled: AtomicBool::new(false),
-            performance_enabled: AtomicBool::new(false),
-        }));
+        );
     }
 }
 
@@ -4122,14 +4752,14 @@ pub fn create_or_update_parameter(
     param_id: u64,
     index: vx_uint32,
     value: u64,
-    context_id: u32,
-    kernel_id: u64,
+    _context_id: u32,
+    _kernel_id: u64,
 ) {
     if let Ok(params) = PARAMETERS.lock() {
         if params.contains_key(&param_id) {
             // Update existing parameter
             drop(params);
-            if let Ok(mut params_mut) = PARAMETERS.lock() {
+            if let Ok(params_mut) = PARAMETERS.lock() {
                 if let Some(param_data) = params_mut.get(&param_id) {
                     if let Ok(mut val) = param_data.value.lock() {
                         *val = Some(value);
@@ -4161,9 +4791,7 @@ pub fn create_or_update_parameter(
 
 // Image registry - public for use by openvx-image crate
 // Stores image addresses for type lookup (vxQueryReference)
-pub static IMAGES: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| {
-    Mutex::new(HashSet::new())
-});
+pub static IMAGES: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 /// Register an image address in the unified registry
 /// Register an image address in the unified registry
@@ -4183,35 +4811,28 @@ pub extern "C" fn unregister_image(addr: usize) {
 }
 
 // Array registry
-static ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCArray>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCArray>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Scalar registry
-pub static SCALARS: Lazy<Mutex<HashMap<usize, Arc<VxCScalar>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static SCALARS: Lazy<Mutex<HashMap<usize, Arc<VxCScalar>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Matrix registry
-static MATRICES: Lazy<Mutex<HashMap<usize, Arc<VxCMatrix>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static MATRICES: Lazy<Mutex<HashMap<usize, Arc<VxCMatrix>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Convolution registry
-static CONVOLUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCConvolution>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static CONVOLUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCConvolution>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // LUT registry
 // Distribution registry
-static DISTRIBUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCDistribution>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static DISTRIBUTIONS: Lazy<Mutex<HashMap<usize, Arc<VxCDistribution>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Threshold registry
-pub static THRESHOLDS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| {
-    Mutex::new(HashSet::new())
-});
+pub static THRESHOLDS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 /// Register a threshold address in the unified registry
 #[no_mangle]
@@ -4230,110 +4851,103 @@ pub extern "C" fn unregister_threshold(addr: usize) {
 }
 
 // Pyramid registry
-static PYRAMIDS: Lazy<Mutex<HashMap<usize, Arc<VxCPyramid>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static PYRAMIDS: Lazy<Mutex<HashMap<usize, Arc<VxCPyramid>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Remap registry
-static REMAPS: Lazy<Mutex<HashMap<usize, Arc<VxCRemap>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static REMAPS: Lazy<Mutex<HashMap<usize, Arc<VxCRemap>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Object array registry
-static OBJECT_ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCObjectArray>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static OBJECT_ARRAYS: Lazy<Mutex<HashMap<usize, Arc<VxCObjectArray>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Delay registry
-static DELAYS: Lazy<Mutex<HashMap<usize, Arc<VxCDelay>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static DELAYS: Lazy<Mutex<HashMap<usize, Arc<VxCDelay>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Maps: slot_object_addr -> (delay_addr, physical_slot_index)
 // Used to re-resolve delay slot references in node parameters after aging
-pub static DELAY_SLOT_OBJECTS: Lazy<Mutex<HashMap<usize, (usize, usize)>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static DELAY_SLOT_OBJECTS: Lazy<Mutex<HashMap<usize, (usize, usize)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Maps: reference_addr -> (delay_addr, logical_idx)
 // Used to track which references came from which delay slot
-pub static DELAY_SLOT_LOGICAL: Lazy<Mutex<HashMap<usize, (usize, i32)>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static DELAY_SLOT_LOGICAL: Lazy<Mutex<HashMap<usize, (usize, i32)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Maps: (node_addr, param_idx) -> (delay_addr, logical_idx)
 // Used to resolve delay parameters after aging.
-pub static DELAY_NODE_PARAMS: Lazy<Mutex<HashMap<(u64, u32), (usize, i32)>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static DELAY_NODE_PARAMS: Lazy<Mutex<HashMap<(u64, u32), (usize, i32)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Maps: (node_addr, param_idx) -> (delay_addr, logical_idx, level_index)
 // Used for pyramid level images that are delay slot references
-pub static DELAY_PYRAMID_LEVEL: Lazy<Mutex<HashMap<(u64, u32), (usize, i32, usize)>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static DELAY_PYRAMID_LEVEL: Lazy<Mutex<HashMap<(u64, u32), (usize, i32, usize)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Maps: level_image_addr -> (pyramid_addr, level_index)
 // Used to re-resolve pyramid level images when delay slots change
-pub static PYRAMID_LEVEL_IMAGES: Lazy<Mutex<HashMap<usize, (usize, usize)>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static PYRAMID_LEVEL_IMAGES: Lazy<Mutex<HashMap<usize, (usize, usize)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Maps: item_ref_addr -> (object_array_addr, item_index)
+// Populated by `vxGetObjectArrayItem` so that `vxReplicateNode` can walk back
+// from a node parameter to the parent object array and iterate every item.
+pub static OBJECT_ARRAY_ITEM_PARENTS: Lazy<Mutex<HashMap<usize, (usize, u32)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a pyramid level image for delay parameter resolution
 #[no_mangle]
-pub extern "C" fn vxRegisterPyramidLevelImage(image: vx_image, pyramid: vx_pyramid, level: vx_uint32) {
-    if image.is_null() || pyramid.is_null() { return; }
+pub extern "C" fn vxRegisterPyramidLevelImage(
+    image: vx_image,
+    pyramid: vx_pyramid,
+    level: vx_uint32,
+) {
+    if image.is_null() || pyramid.is_null() {
+        return;
+    }
     if let Ok(mut li) = PYRAMID_LEVEL_IMAGES.lock() {
         li.insert(image as usize, (pyramid as usize, level as usize));
     }
 }
 
 // Tensor registry
-static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Meta format registry
-static META_FORMATS: Lazy<Mutex<HashMap<usize, Arc<VxCMetaFormat>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static META_FORMATS: Lazy<Mutex<HashMap<usize, Arc<VxCMetaFormat>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Import registry
-static IMPORTS: Lazy<Mutex<HashMap<usize, Arc<VxCImport>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static IMPORTS: Lazy<Mutex<HashMap<usize, Arc<VxCImport>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Module registry - tracks loaded kernel modules per context
 // Key is context_id, Value is set of loaded module names
-pub static MODULES: Lazy<Mutex<HashMap<u64, std::collections::HashSet<String>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static MODULES: Lazy<Mutex<HashMap<u64, std::collections::HashSet<String>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Kernel registry
-pub static KERNELS: Lazy<Mutex<HashMap<u64, Arc<VxCKernel>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static KERNELS: Lazy<Mutex<HashMap<u64, Arc<VxCKernel>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Target registry
-static TARGETS: Lazy<Mutex<HashMap<u64, Arc<VxCTarget>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static TARGETS: Lazy<Mutex<HashMap<u64, Arc<VxCTarget>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Reference name storage - use CString to ensure null-terminated strings with stable pointers
-pub static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, CString>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static REFERENCE_NAMES: Lazy<Mutex<HashMap<usize, CString>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Reference counting storage - maps address to reference count (using AtomicUsize for thread-safe operations)
-pub static REFERENCE_COUNTS: Lazy<Mutex<HashMap<usize, AtomicUsize>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
-
+pub static REFERENCE_COUNTS: Lazy<Mutex<HashMap<usize, AtomicUsize>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Reference type storage - maps address to type enum
-pub static REFERENCE_TYPES: Lazy<Mutex<HashMap<usize, vx_enum>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static REFERENCE_TYPES: Lazy<Mutex<HashMap<usize, vx_enum>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Query reference attributes
 #[no_mangle]
@@ -4588,7 +5202,10 @@ pub extern "C" fn vxQueryReference(
                 // Get actual reference count from REFERENCE_COUNTS registry
                 let addr = ref_ as usize;
                 let count = if let Ok(counts) = REFERENCE_COUNTS.lock() {
-                    counts.get(&addr).map(|c| c.load(Ordering::SeqCst)).unwrap_or(1) as vx_uint32
+                    counts
+                        .get(&addr)
+                        .map(|c| c.load(Ordering::SeqCst))
+                        .unwrap_or(1) as vx_uint32
                 } else {
                     1
                 };
@@ -4684,9 +5301,13 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
 
                 match ref_type {
                     Some(t) if t == VX_TYPE_PYRAMID => {
-                        extern "C" { fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status; }
+                        extern "C" {
+                            fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status;
+                        }
                         let mut pyr = addr as vx_pyramid;
-                        unsafe { vxReleasePyramid(&mut pyr); }
+                        unsafe {
+                            vxReleasePyramid(&mut pyr);
+                        }
                         found_and_released = true;
                     }
                     Some(t) if t == VX_TYPE_OBJECT_ARRAY => {
@@ -4700,9 +5321,13 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
                         found_and_released = true;
                     }
                     Some(t) if t == VX_TYPE_IMAGE => {
-                        extern "C" { fn vxReleaseImage(image: *mut vx_image) -> vx_status; }
+                        extern "C" {
+                            fn vxReleaseImage(image: *mut vx_image) -> vx_status;
+                        }
                         let mut img = addr as vx_image;
-                        unsafe { vxReleaseImage(&mut img); }
+                        unsafe {
+                            vxReleaseImage(&mut img);
+                        }
                         found_and_released = true;
                     }
                     Some(t) if t == VX_TYPE_SCALAR => {
@@ -4766,10 +5391,7 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
 
 /// Set reference name for debugging
 #[no_mangle]
-pub extern "C" fn vxSetReferenceName(
-    ref_: vx_reference,
-    name: *const vx_char,
-) -> vx_status {
+pub extern "C" fn vxSetReferenceName(ref_: vx_reference, name: *const vx_char) -> vx_status {
     if ref_.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -4784,41 +5406,55 @@ pub extern "C" fn vxSetReferenceName(
 
     // Check unified contexts
     if let Ok(contexts) = CONTEXTS.lock() {
-        if contexts.contains_key(&addr) { found = true; }
+        if contexts.contains_key(&addr) {
+            found = true;
+        }
     }
 
     // Check all registries to validate reference exists
     if !found {
         if let Ok(graphs) = GRAPHS_DATA.lock() {
-            if graphs.contains_key(&addr_u64) { found = true; }
+            if graphs.contains_key(&addr_u64) {
+                found = true;
+            }
         }
     }
     // Also check c_api GRAPHS registry
     if !found {
         if let Ok(graphs) = crate::c_api::GRAPHS.lock() {
-            if graphs.contains_key(&addr_u64) { found = true; }
+            if graphs.contains_key(&addr_u64) {
+                found = true;
+            }
         }
     }
     if !found {
         if let Ok(images) = IMAGES.lock() {
-            if images.contains(&addr) { found = true; }
+            if images.contains(&addr) {
+                found = true;
+            }
         }
     }
     if !found {
         if let Ok(arrays) = ARRAYS.lock() {
-            if arrays.contains_key(&addr) { found = true; }
+            if arrays.contains_key(&addr) {
+                found = true;
+            }
         }
     }
     if !found {
         if let Ok(scalars) = SCALARS.lock() {
-            if scalars.contains_key(&addr) { found = true; }
+            if scalars.contains_key(&addr) {
+                found = true;
+            }
         }
     }
 
     // Also check c_api context list
     if !found {
         if let Ok(c_api_contexts) = crate::c_api::CONTEXTS.lock() {
-            if c_api_contexts.contains(&addr_u64) { found = true; }
+            if c_api_contexts.contains(&addr_u64) {
+                found = true;
+            }
         }
     }
 
@@ -4949,10 +5585,15 @@ pub extern "C" fn vxFormatImagePatchAddress2d(
 // ============================================================================
 
 // Callback types
-pub type VxKernelValidateF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32, *mut vx_meta_format) -> vx_status>;
-pub type VxKernelInitializeF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
-pub type VxKernelDeinitializeF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
-pub type VxKernelExecuteF = Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
+pub type VxKernelValidateF = Option<
+    extern "C" fn(vx_node, *const vx_reference, vx_uint32, *mut vx_meta_format) -> vx_status,
+>;
+pub type VxKernelInitializeF =
+    Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
+pub type VxKernelDeinitializeF =
+    Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
+pub type VxKernelExecuteF =
+    Option<extern "C" fn(vx_node, *const vx_reference, vx_uint32) -> vx_status>;
 
 /// User kernel data
 pub struct VxCUserKernel {
@@ -4964,11 +5605,272 @@ pub struct VxCUserKernel {
     pub deinit: VxKernelDeinitializeF,
     pub num_params: vx_uint32,
     pub context_id: u64,
+    /// Auto-allocate size for VX_NODE_LOCAL_DATA. If > 0, the framework
+    /// allocates a buffer for the node before calling `init` and the user
+    /// kernel cannot resize/replace it from inside `init`/`deinit`. If 0,
+    /// the user kernel manages its own local data via `vxSetNodeAttribute`
+    /// during `init`. Set via `vxSetKernelAttribute(VX_KERNEL_LOCAL_DATA_SIZE)`.
+    pub local_data_size: AtomicUsize,
 }
 
-pub static USER_KERNELS: Lazy<Mutex<HashMap<vx_enum, Arc<VxCUserKernel>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static USER_KERNELS: Lazy<Mutex<HashMap<vx_enum, Arc<VxCUserKernel>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+thread_local! {
+    /// Per-thread stack of node ids that are currently executing a user-kernel
+    /// `init` or `deinit` callback. Inside such a callback,
+    /// `vxSetNodeAttribute(VX_NODE_LOCAL_DATA_*)` is allowed (when the kernel
+    /// is not in auto-allocate mode) and `vxQueryNode` returns the current
+    /// values; outside callbacks, attempts to mutate these attributes must
+    /// fail per the OpenVX 1.3 spec.
+    static USER_KERNEL_INIT_STACK: std::cell::RefCell<Vec<u64>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Push a node onto the user-kernel init/deinit stack for the current thread.
+pub(crate) fn push_user_kernel_in_init(node_id: u64) {
+    USER_KERNEL_INIT_STACK.with(|s| s.borrow_mut().push(node_id));
+}
+
+/// Pop the topmost entry from the user-kernel init/deinit stack.
+pub(crate) fn pop_user_kernel_in_init() {
+    USER_KERNEL_INIT_STACK.with(|s| {
+        s.borrow_mut().pop();
+    });
+}
+
+/// Returns true if the current thread is currently inside a user-kernel
+/// `init` or `deinit` callback for the given node.
+pub(crate) fn is_user_kernel_in_init(node_id: u64) -> bool {
+    USER_KERNEL_INIT_STACK.with(|s| s.borrow().last().copied() == Some(node_id))
+}
+
+/// If `node_id` refers to a user-kernel node that was previously initialised
+/// by `vxVerifyGraph`, invoke its `deinit` callback and free the auto-
+/// allocated local-data buffer (if any). Idempotent: a no-op if the node
+/// isn't a user-kernel node, isn't initialised, or doesn't exist.
+pub(crate) fn deinit_user_kernel_node(node_id: u64) {
+    // Snapshot the node fields we need under the NODES lock.
+    let (kernel_id, was_initialized, params_snapshot, auto_alloc, local_size, local_ptr) =
+        if let Ok(nodes) = crate::c_api::NODES.lock() {
+            if let Some(n) = nodes.get(&node_id) {
+                let was_init = n.user_kernel_initialized.load(Ordering::SeqCst);
+                if !was_init {
+                    return;
+                }
+                let kid = n.kernel_id;
+                let params: Vec<vx_reference> = if let Ok(p) = n.parameters.lock() {
+                    p.iter().map(|opt| opt.unwrap_or(0) as vx_reference).collect()
+                } else {
+                    Vec::new()
+                };
+                (
+                    kid,
+                    true,
+                    params,
+                    n.local_data_auto_alloc.load(Ordering::SeqCst),
+                    n.local_data_size.load(Ordering::SeqCst),
+                    n.local_data_ptr.load(Ordering::SeqCst),
+                )
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+    if !was_initialized || kernel_id < 0xFFE00000 {
+        return;
+    }
+    // Look up the user-kernel `deinit` callback (drop the lock before calling).
+    let user_kernel_key = kernel_id as i32;
+    let user_kernel_key_alt = (kernel_id & 0xFFFFFFFF) as i32;
+    let deinit_fn = if let Ok(user_kernels) = USER_KERNELS.lock() {
+        user_kernels
+            .get(&user_kernel_key)
+            .or_else(|| user_kernels.get(&user_kernel_key_alt))
+            .and_then(|uk| uk.deinit)
+    } else {
+        None
+    };
+
+    if let Some(deinit_fn) = deinit_fn {
+        push_user_kernel_in_init(node_id);
+        let _ = unsafe {
+            deinit_fn(
+                node_id as vx_node,
+                params_snapshot.as_ptr(),
+                params_snapshot.len() as vx_uint32,
+            )
+        };
+        pop_user_kernel_in_init();
+    }
+
+    // Free the auto-allocated local data buffer.
+    if auto_alloc && !local_ptr.is_null() && local_size > 0 {
+        unsafe {
+            let _ = Vec::from_raw_parts(local_ptr as *mut u8, local_size, local_size);
+        }
+    }
+
+    if let Ok(nodes) = crate::c_api::NODES.lock() {
+        if let Some(n) = nodes.get(&node_id) {
+            n.user_kernel_initialized.store(false, Ordering::SeqCst);
+            n.local_data_ptr
+                .store(std::ptr::null_mut(), Ordering::SeqCst);
+        }
+    }
+}
+
+/// Per-output `VX_VALID_RECT_CALLBACK` signature, matching
+/// `vx_kernel_image_valid_rectangle_f` from the OpenVX spec.
+pub type VxKernelImageValidRectangleF = extern "C" fn(
+    node: vx_node,
+    index: vx_uint32,
+    input_valid: *const *const vx_rectangle_t,
+    output_valid: *const *mut vx_rectangle_t,
+) -> vx_status;
+
+/// VX_VALID_RECT_CALLBACK = VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_META_FORMAT) + 0x1
+const VX_VALID_RECT_CALLBACK: i32 = (VX_TYPE_META_FORMAT << 8) + 0x1;
+
+/// After a user kernel's validator has run, scan each output IMAGE parameter's
+/// meta-format for a registered `VX_VALID_RECT_CALLBACK`. If present, gather
+/// the input image valid rectangles, invoke the callback, and write the
+/// resulting rectangle onto the output image. This mirrors the post-validate
+/// behaviour required by `test_usernode.c`.
+pub(crate) fn apply_valid_rect_callbacks(
+    node: vx_node,
+    param_refs: &[vx_reference],
+    metas: &[Box<VxMetaFormat>],
+) {
+    let num_params = param_refs.len();
+    if num_params == 0 || metas.len() != num_params {
+        return;
+    }
+
+    // Pre-collect each input image's current valid rectangle so we can pass
+    // an array of pointers to the callback.
+    let mut input_rects: Vec<vx_rectangle_t> = Vec::with_capacity(num_params);
+    for (i, &p) in param_refs.iter().enumerate() {
+        let rect = if !p.is_null() && is_image_ref(p) {
+            read_image_valid_rect(p as vx_image)
+        } else {
+            vx_rectangle_t {
+                start_x: 0,
+                start_y: 0,
+                end_x: 0,
+                end_y: 0,
+            }
+        };
+        input_rects.push(rect);
+        let _ = i;
+    }
+    let input_ptrs: Vec<*const vx_rectangle_t> =
+        input_rects.iter().map(|r| r as *const _).collect();
+
+    for (idx, meta) in metas.iter().enumerate() {
+        let p = param_refs[idx];
+        if p.is_null() || !is_image_ref(p) {
+            continue;
+        }
+        let cb_ptr = if let Ok(attrs) = meta.attributes.lock() {
+            attrs.get(&VX_VALID_RECT_CALLBACK).cloned()
+        } else {
+            None
+        };
+        let cb_bytes = match cb_ptr {
+            Some(b) if b.len() >= std::mem::size_of::<*const ()>() => b,
+            _ => continue,
+        };
+        let mut cb_addr: usize = 0;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                cb_bytes.as_ptr(),
+                &mut cb_addr as *mut usize as *mut u8,
+                std::mem::size_of::<usize>(),
+            );
+        }
+        if cb_addr == 0 {
+            continue;
+        }
+        let callback: VxKernelImageValidRectangleF = unsafe { std::mem::transmute(cb_addr) };
+
+        // Invoke with a single output rect (one output sub-rect per image).
+        let mut out_rect = vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: 0,
+            end_y: 0,
+        };
+        let out_rect_ptr: *mut vx_rectangle_t = &mut out_rect as *mut _;
+        let out_ptr_array: [*mut vx_rectangle_t; 1] = [out_rect_ptr];
+
+        let status = callback(
+            node,
+            idx as vx_uint32,
+            input_ptrs.as_ptr(),
+            out_ptr_array.as_ptr(),
+        );
+        if status != VX_SUCCESS {
+            continue;
+        }
+        write_image_valid_rect(p as vx_image, &out_rect);
+    }
+}
+
+fn is_image_ref(r: vx_reference) -> bool {
+    if r.is_null() {
+        return false;
+    }
+    if let Ok(images) = IMAGES.lock() {
+        if images.contains(&(r as usize)) {
+            return true;
+        }
+    }
+    if let Ok(types) = REFERENCE_TYPES.lock() {
+        if let Some(&t) = types.get(&(r as usize)) {
+            return t == VX_TYPE_IMAGE;
+        }
+    }
+    false
+}
+
+fn read_image_valid_rect(image: vx_image) -> vx_rectangle_t {
+    if image.is_null() {
+        return vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: 0,
+            end_y: 0,
+        };
+    }
+    let img = unsafe { &*(image as *const VxCImage) };
+    if let Ok(r) = img.valid_rect.read() {
+        let mut out = *r;
+        // If the valid rect was never set, default to the full image extent.
+        if out.end_x == 0 && out.end_y == 0 && out.start_x == 0 && out.start_y == 0 {
+            out.end_x = img.width;
+            out.end_y = img.height;
+        }
+        return out;
+    }
+    vx_rectangle_t {
+        start_x: 0,
+        start_y: 0,
+        end_x: 0,
+        end_y: 0,
+    }
+}
+
+fn write_image_valid_rect(image: vx_image, rect: &vx_rectangle_t) {
+    if image.is_null() {
+        return;
+    }
+    let img = unsafe { &*(image as *const VxCImage) };
+    if let Ok(mut r) = img.valid_rect.write() {
+        *r = *rect;
+    }
+}
 
 static NEXT_KERNEL_ENUM: Lazy<AtomicUsize> = Lazy::new(|| {
     // VX_KERNEL_BASE(VX_ID_USER, 0) where VX_ID_USER = 0xFFE
@@ -4976,9 +5878,7 @@ static NEXT_KERNEL_ENUM: Lazy<AtomicUsize> = Lazy::new(|| {
     AtomicUsize::new(0xFFE00000)
 });
 
-static NEXT_LIBRARY_ID: Lazy<AtomicUsize> = Lazy::new(|| {
-    AtomicUsize::new(1)
-});
+static NEXT_LIBRARY_ID: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(1));
 
 /// User kernel parameter info
 #[derive(Clone)]
@@ -4988,9 +5888,8 @@ pub struct UserKernelParam {
     pub state: i32,
 }
 
-pub static USER_KERNEL_PARAMS: Lazy<Mutex<HashMap<vx_enum, Vec<UserKernelParam>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static USER_KERNEL_PARAMS: Lazy<Mutex<HashMap<vx_enum, Vec<UserKernelParam>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Add user-defined kernel
 #[no_mangle]
@@ -5023,6 +5922,7 @@ pub extern "C" fn vxAddUserKernel(
             deinit,
             num_params,
             context_id: context as usize as u64,
+            local_data_size: AtomicUsize::new(0),
         });
 
         if let Ok(mut kernels) = USER_KERNELS.lock() {
@@ -5080,7 +5980,10 @@ pub extern "C" fn vxAllocateUserKernelId(context: vx_context, id: *mut vx_enum) 
 
 /// Allocate unique library ID
 #[no_mangle]
-pub extern "C" fn vxAllocateUserKernelLibraryId(context: vx_context, id: *mut vx_enum) -> vx_status {
+pub extern "C" fn vxAllocateUserKernelLibraryId(
+    context: vx_context,
+    id: *mut vx_enum,
+) -> vx_status {
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -5101,20 +6004,16 @@ pub extern "C" fn vxAllocateUserKernelLibraryId(context: vx_context, id: *mut vx
 // ============================================================================
 
 // Log callback type
-pub type VxLogCallbackF = Option<extern "C" fn(vx_context, vx_reference, vx_status, *const vx_char)>;
+pub type VxLogCallbackF =
+    Option<extern "C" fn(vx_context, vx_reference, vx_status, *const vx_char)>;
 
-static LOG_CALLBACK: Lazy<Mutex<VxLogCallbackF>> = Lazy::new(|| {
-    Mutex::new(None)
-});
+static LOG_CALLBACK: Lazy<Mutex<VxLogCallbackF>> = Lazy::new(|| Mutex::new(None));
 
-static LOG_REENTRANT: Lazy<Mutex<vx_bool>> = Lazy::new(|| {
-    Mutex::new(0)
-});
+static LOG_REENTRANT: Lazy<Mutex<vx_bool>> = Lazy::new(|| Mutex::new(0));
 
 // Track per-reference logging disabled state
-static LOGGING_DISABLED_REFS: Lazy<Mutex<HashMap<usize, bool>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static LOGGING_DISABLED_REFS: Lazy<Mutex<HashMap<usize, bool>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register log callback function
 #[no_mangle]
@@ -5157,7 +6056,7 @@ pub unsafe extern "C" fn vxAddLogEntry(
         }
     }
 
-    let msg = CStr::from_ptr(message).to_string_lossy();
+    let _msg = CStr::from_ptr(message).to_string_lossy();
 
     // Call registered callback if any
     if let Ok(cb) = LOG_CALLBACK.lock() {
@@ -5176,10 +6075,10 @@ pub unsafe extern "C" fn vxAddLogEntry(
 // Directive constants (from vx_types.h)
 // VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_DIRECTIVE) where VX_ENUM_DIRECTIVE=0x03
 // = (0x000 << 20) | (0x03 << 12) = 0x00003000
-pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x00003000;      // +0x0
-pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x00003001;       // +0x1
-pub const VX_DIRECTIVE_DISABLE_PERFORMANCE: vx_enum = 0x00003002;  // +0x2
-pub const VX_DIRECTIVE_ENABLE_PERFORMANCE: vx_enum = 0x00003003;   // +0x3
+pub const VX_DIRECTIVE_DISABLE_LOGGING: vx_enum = 0x00003000; // +0x0
+pub const VX_DIRECTIVE_ENABLE_LOGGING: vx_enum = 0x00003001; // +0x1
+pub const VX_DIRECTIVE_DISABLE_PERFORMANCE: vx_enum = 0x00003002; // +0x2
+pub const VX_DIRECTIVE_ENABLE_PERFORMANCE: vx_enum = 0x00003003; // +0x3
 
 /// Set directive on reference
 #[no_mangle]
@@ -5222,9 +6121,8 @@ pub extern "C" fn vxDirective(ref_: vx_reference, directive: vx_enum) -> vx_stat
 // ============================================================================
 
 // User struct registry
-pub static USER_STRUCTS: Lazy<Mutex<HashMap<vx_enum, (String, vx_size)>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+pub static USER_STRUCTS: Lazy<Mutex<HashMap<vx_enum, (String, vx_size)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 static NEXT_USER_STRUCT_ENUM: Lazy<AtomicUsize> = Lazy::new(|| {
     AtomicUsize::new(0x100) // Start at VX_TYPE_USER_STRUCT_START (0x100) per OpenVX spec
@@ -5371,7 +6269,12 @@ pub extern "C" fn vxSetNodeTarget(
 
     // Validate target
     match target_enum {
-        VX_TARGET_ANY | VX_TARGET_STRING | VX_TARGET_CPU | VX_TARGET_GPU | VX_TARGET_DSP | VX_TARGET_ACCELERATOR => {
+        VX_TARGET_ANY
+        | VX_TARGET_STRING
+        | VX_TARGET_CPU
+        | VX_TARGET_GPU
+        | VX_TARGET_DSP
+        | VX_TARGET_ACCELERATOR => {
             // Store target preference (implementation would use this)
             VX_SUCCESS
         }
@@ -5413,7 +6316,8 @@ pub struct VxMetaFormat {
 }
 pub type vx_meta_format = *mut VxMetaFormat;
 
-pub static META_FORMAT_STORE: Lazy<Mutex<Vec<Box<VxMetaFormat>>>> = Lazy::new(|| Mutex::new(Vec::new()));
+pub static META_FORMAT_STORE: Lazy<Mutex<Vec<Box<VxMetaFormat>>>> =
+    Lazy::new(|| Mutex::new(Vec::new()));
 
 /// Target opaque type
 pub enum VxTarget {}
@@ -5469,17 +6373,17 @@ pub struct vx_coordinates2d_t {
 // vx_pixel_value_t already imported at top of file, no need to re-export
 
 // Channel constants - VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_CHANNEL) = (0x000 << 20) | (0x09 << 12) = 0x00009000
-pub const VX_CHANNEL_0: vx_enum = 0x00009000;  // VX_ENUM_BASE + 0x0
-pub const VX_CHANNEL_1: vx_enum = 0x00009001;  // VX_ENUM_BASE + 0x1
-pub const VX_CHANNEL_2: vx_enum = 0x00009002;  // VX_ENUM_BASE + 0x2
-pub const VX_CHANNEL_3: vx_enum = 0x00009003;  // VX_ENUM_BASE + 0x3
-pub const VX_CHANNEL_R: vx_enum = 0x00009010;  // VX_ENUM_BASE + 0x10
-pub const VX_CHANNEL_G: vx_enum = 0x00009011;  // VX_ENUM_BASE + 0x11
-pub const VX_CHANNEL_B: vx_enum = 0x00009012;  // VX_ENUM_BASE + 0x12
-pub const VX_CHANNEL_A: vx_enum = 0x00009013;  // VX_ENUM_BASE + 0x13
-pub const VX_CHANNEL_Y: vx_enum = 0x00009014;  // VX_ENUM_BASE + 0x14
-pub const VX_CHANNEL_U: vx_enum = 0x00009015;  // VX_ENUM_BASE + 0x15
-pub const VX_CHANNEL_V: vx_enum = 0x00009016;  // VX_ENUM_BASE + 0x16
+pub const VX_CHANNEL_0: vx_enum = 0x00009000; // VX_ENUM_BASE + 0x0
+pub const VX_CHANNEL_1: vx_enum = 0x00009001; // VX_ENUM_BASE + 0x1
+pub const VX_CHANNEL_2: vx_enum = 0x00009002; // VX_ENUM_BASE + 0x2
+pub const VX_CHANNEL_3: vx_enum = 0x00009003; // VX_ENUM_BASE + 0x3
+pub const VX_CHANNEL_R: vx_enum = 0x00009010; // VX_ENUM_BASE + 0x10
+pub const VX_CHANNEL_G: vx_enum = 0x00009011; // VX_ENUM_BASE + 0x11
+pub const VX_CHANNEL_B: vx_enum = 0x00009012; // VX_ENUM_BASE + 0x12
+pub const VX_CHANNEL_A: vx_enum = 0x00009013; // VX_ENUM_BASE + 0x13
+pub const VX_CHANNEL_Y: vx_enum = 0x00009014; // VX_ENUM_BASE + 0x14
+pub const VX_CHANNEL_U: vx_enum = 0x00009015; // VX_ENUM_BASE + 0x15
+pub const VX_CHANNEL_V: vx_enum = 0x00009016; // VX_ENUM_BASE + 0x16
 
 // Matrix pattern types (from OpenVX spec)
 // VX_PATTERN_BOX = VX_ENUM_BASE(VX_ID_KHRONOS, VX_ENUM_PATTERN) + 0x0 = 94208
@@ -5578,11 +6482,11 @@ pub const VX_PARAMETER_STATE_REQUIRED: vx_enum = 1;
 pub const VX_PARAMETER_STATE_OPTIONAL: vx_enum = 2;
 
 // Parameter attributes using VX_ATTRIBUTE_BASE(VX_ID_KHRONOS(0), VX_TYPE_PARAMETER(0x805))
-pub const VX_PARAMETER_INDEX: vx_enum = 0x80500;   // VX_ATTRIBUTE_BASE + 0x00
+pub const VX_PARAMETER_INDEX: vx_enum = 0x80500; // VX_ATTRIBUTE_BASE + 0x00
 pub const VX_PARAMETER_DIRECTION: vx_enum = 0x80501; // VX_ATTRIBUTE_BASE + 0x01
-pub const VX_PARAMETER_TYPE: vx_enum = 0x80502;     // VX_ATTRIBUTE_BASE + 0x02
-pub const VX_PARAMETER_STATE: vx_enum = 0x80503;      // VX_ATTRIBUTE_BASE + 0x03
-pub const VX_PARAMETER_REF: vx_enum = 0x80504;      // VX_ATTRIBUTE_BASE + 0x04
+pub const VX_PARAMETER_TYPE: vx_enum = 0x80502; // VX_ATTRIBUTE_BASE + 0x02
+pub const VX_PARAMETER_STATE: vx_enum = 0x80503; // VX_ATTRIBUTE_BASE + 0x03
+pub const VX_PARAMETER_REF: vx_enum = 0x80504; // VX_ATTRIBUTE_BASE + 0x04
 
 // Kernel attributes
 pub const VX_KERNEL_LOCAL_DATA_SIZE: vx_enum = 0x03;
@@ -5659,20 +6563,20 @@ extern "C" {
 // VX_DF_IMAGE format constants (OpenVX spec FourCC values)
 // Format: VX_DF_IMAGE(a,b,c,d) = ((vx_uint32)(vx_uint8)(a) | ((vx_uint32)(vx_uint8)(b) << 8U) |
 //                                 ((vx_uint32)(vx_uint8)(c) << 16U) | ((vx_uint32)(vx_uint8)(d) << 24U))
-pub const VX_DF_IMAGE_U8: vx_enum = 0x38303055i32;  // 'U008'
-pub const VX_DF_IMAGE_U16: vx_enum = 0x36313055i32;  // 'U016'
-pub const VX_DF_IMAGE_S16: vx_enum = 0x36313053i32;  // 'S016'
-pub const VX_DF_IMAGE_U32: vx_enum = 0x32333055i32;  // 'U032'
-pub const VX_DF_IMAGE_S32: vx_enum = 0x32333053i32;  // 'S032'
-pub const VX_DF_IMAGE_RGB: vx_enum = 0x32424752i32;  // 'RGB2'
-pub const VX_DF_IMAGE_RGBA: vx_enum = 0x41424752i32;  // 'RGBA'
-pub const VX_DF_IMAGE_RGBX: vx_enum = 0x41424752i32;  // 'RGBA' (same as RGBA per spec)
-pub const VX_DF_IMAGE_NV12: vx_enum = 0x3231564Ei32;  // 'NV12'
-pub const VX_DF_IMAGE_NV21: vx_enum = 0x3132564Ei32;  // 'NV21'
-pub const VX_DF_IMAGE_IYUV: vx_enum = 0x56555949i32;  // 'IYUV'
-pub const VX_DF_IMAGE_YUV4: vx_enum = 0x34565559i32;  // 'YUV4'
-pub const VX_DF_IMAGE_UYVY: vx_enum = 0x59565955i32;  // 'UYVY'
-pub const VX_DF_IMAGE_YUYV: vx_enum = 0x56595559i32;  // 'YUYV'
+pub const VX_DF_IMAGE_U8: vx_enum = 0x38303055i32; // 'U008'
+pub const VX_DF_IMAGE_U16: vx_enum = 0x36313055i32; // 'U016'
+pub const VX_DF_IMAGE_S16: vx_enum = 0x36313053i32; // 'S016'
+pub const VX_DF_IMAGE_U32: vx_enum = 0x32333055i32; // 'U032'
+pub const VX_DF_IMAGE_S32: vx_enum = 0x32333053i32; // 'S032'
+pub const VX_DF_IMAGE_RGB: vx_enum = 0x32424752i32; // 'RGB2'
+pub const VX_DF_IMAGE_RGBA: vx_enum = 0x41424752i32; // 'RGBA'
+pub const VX_DF_IMAGE_RGBX: vx_enum = 0x41424752i32; // 'RGBA' (same as RGBA per spec)
+pub const VX_DF_IMAGE_NV12: vx_enum = 0x3231564Ei32; // 'NV12'
+pub const VX_DF_IMAGE_NV21: vx_enum = 0x3132564Ei32; // 'NV21'
+pub const VX_DF_IMAGE_IYUV: vx_enum = 0x56555949i32; // 'IYUV'
+pub const VX_DF_IMAGE_YUV4: vx_enum = 0x34565559i32; // 'YUV4'
+pub const VX_DF_IMAGE_UYVY: vx_enum = 0x59565955i32; // 'UYVY'
+pub const VX_DF_IMAGE_YUYV: vx_enum = 0x56595559i32; // 'YUYV'
 
 // Note: vxCreateImageFromChannel is implemented in openvx-image crate
 // Per OpenVX spec, it takes (image, channel) - context is extracted from image
@@ -5694,12 +6598,12 @@ pub extern "C" fn vxCopyPyramid(
 #[no_mangle]
 pub extern "C" fn vxMapPyramidLevel(
     pyr: vx_pyramid,
-    index: u32,
+    _index: u32,
     map_id: *mut usize,
     addr: *mut vx_imagepatch_addressing_t,
     ptr: *mut *mut c_void,
-    usage: i32,
-    mem_type: i32,
+    _usage: i32,
+    _mem_type: i32,
     _flags: u32,
 ) -> i32 {
     if pyr.is_null() || map_id.is_null() || addr.is_null() || ptr.is_null() {
@@ -5709,11 +6613,7 @@ pub extern "C" fn vxMapPyramidLevel(
 }
 
 #[no_mangle]
-pub extern "C" fn vxUnmapPyramidLevel(
-    pyr: vx_pyramid,
-    index: u32,
-    map_id: usize,
-) -> i32 {
+pub extern "C" fn vxUnmapPyramidLevel(pyr: vx_pyramid, _index: u32, _map_id: usize) -> i32 {
     if pyr.is_null() {
         return -1;
     }
@@ -5724,8 +6624,8 @@ pub extern "C" fn vxUnmapPyramidLevel(
 pub extern "C" fn vxCopyArray(
     arr: vx_array,
     user_ptr: *mut c_void,
-    usage: i32,
-    user_mem_type: i32,
+    _usage: i32,
+    _user_mem_type: i32,
 ) -> i32 {
     if arr.is_null() || user_ptr.is_null() {
         return -2;
@@ -5736,11 +6636,11 @@ pub extern "C" fn vxCopyArray(
 #[no_mangle]
 pub extern "C" fn vxMoveArrayRange(
     arr: vx_array,
-    start: usize,
-    end: usize,
-    stride: usize,
+    _start: usize,
+    _end: usize,
+    _stride: usize,
     user_ptr: *mut c_void,
-    user_mem_type: i32,
+    _user_mem_type: i32,
 ) -> i32 {
     if arr.is_null() || user_ptr.is_null() {
         return -2;
@@ -5767,7 +6667,9 @@ pub extern "C" fn vxQueryMatrix(
             if size < std::mem::size_of::<vx_enum>() {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            unsafe { *(ptr as *mut vx_enum) = m.data_type; }
+            unsafe {
+                *(ptr as *mut vx_enum) = m.data_type;
+            }
             VX_SUCCESS
         }
         // VX_MATRIX_ROWS = 0x80b01
@@ -5775,7 +6677,9 @@ pub extern "C" fn vxQueryMatrix(
             if size < std::mem::size_of::<vx_size>() {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            unsafe { *(ptr as *mut vx_size) = m.rows; }
+            unsafe {
+                *(ptr as *mut vx_size) = m.rows;
+            }
             VX_SUCCESS
         }
         // VX_MATRIX_COLUMNS = 0x80b02
@@ -5783,7 +6687,9 @@ pub extern "C" fn vxQueryMatrix(
             if size < std::mem::size_of::<vx_size>() {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            unsafe { *(ptr as *mut vx_size) = m.columns; }
+            unsafe {
+                *(ptr as *mut vx_size) = m.columns;
+            }
             VX_SUCCESS
         }
         // VX_MATRIX_SIZE = 0x80b03
@@ -5792,7 +6698,9 @@ pub extern "C" fn vxQueryMatrix(
                 return VX_ERROR_INVALID_PARAMETERS;
             }
             let elem_size = crate::c_api_data::VxCMatrixData::element_size(m.data_type);
-            unsafe { *(ptr as *mut vx_size) = m.columns * m.rows * elem_size; }
+            unsafe {
+                *(ptr as *mut vx_size) = m.columns * m.rows * elem_size;
+            }
             VX_SUCCESS
         }
         // VX_MATRIX_PATTERN = 0x80b05
@@ -5800,7 +6708,9 @@ pub extern "C" fn vxQueryMatrix(
             if size < std::mem::size_of::<vx_enum>() {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            unsafe { *(ptr as *mut vx_enum) = m.pattern; }
+            unsafe {
+                *(ptr as *mut vx_enum) = m.pattern;
+            }
             VX_SUCCESS
         }
         // VX_MATRIX_ORIGIN = 0x80b04
@@ -5820,10 +6730,13 @@ pub extern "C" fn vxQueryMatrix(
             if size < std::mem::size_of::<vx_size>() {
                 return VX_ERROR_INVALID_PARAMETERS;
             }
-            unsafe { *(ptr as *mut vx_size) = crate::c_api_data::VxCMatrixData::element_size(m.data_type); }
+            unsafe {
+                *(ptr as *mut vx_size) =
+                    crate::c_api_data::VxCMatrixData::element_size(m.data_type);
+            }
             VX_SUCCESS
         }
-        _ => VX_ERROR_NOT_SUPPORTED
+        _ => VX_ERROR_NOT_SUPPORTED,
     }
 }
 
@@ -5853,7 +6766,7 @@ pub extern "C" fn vxSetMatrixAttribute(
             }
             VX_SUCCESS
         }
-        _ => VX_ERROR_NOT_SUPPORTED
+        _ => VX_ERROR_NOT_SUPPORTED,
     }
 }
 
@@ -5903,7 +6816,7 @@ pub extern "C" fn vxQueryConvolution(
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
-            _ => VX_ERROR_NOT_SUPPORTED
+            _ => VX_ERROR_NOT_SUPPORTED,
         }
     }
 }
@@ -5929,7 +6842,7 @@ pub extern "C" fn vxSetConvolutionAttribute(
                     VX_ERROR_INVALID_PARAMETERS
                 }
             }
-            _ => VX_ERROR_NOT_SUPPORTED
+            _ => VX_ERROR_NOT_SUPPORTED,
         }
     }
 }
@@ -5965,14 +6878,17 @@ pub extern "C" fn vxCreateDistribution(
             types.insert(dist_ptr as usize, VX_TYPE_DISTRIBUTION);
         }
         if let Ok(mut distributions) = DISTRIBUTIONS.lock() {
-            distributions.insert(dist_ptr as usize, Arc::new(VxCDistribution {
-                bins,
-                offset,
-                range,
-                data: RwLock::new(vec![0i32; bins]),
-                ref_count: AtomicUsize::new(1),
-                mapped_distributions: Arc::new(RwLock::new(Vec::new())),
-            }));
+            distributions.insert(
+                dist_ptr as usize,
+                Arc::new(VxCDistribution {
+                    bins,
+                    offset,
+                    range,
+                    data: RwLock::new(vec![0i32; bins]),
+                    ref_count: AtomicUsize::new(1),
+                    mapped_distributions: Arc::new(RwLock::new(Vec::new())),
+                }),
+            );
         }
     }
 
@@ -6044,7 +6960,7 @@ pub extern "C" fn vxCopyDistribution(
     distribution: vx_distribution,
     user_ptr: *mut c_void,
     usage: i32,
-    user_mem_type: i32,
+    _user_mem_type: i32,
 ) -> i32 {
     if distribution.is_null() || user_ptr.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -6116,7 +7032,7 @@ pub extern "C" fn vxMapDistribution(
         };
 
         // Create a copy of the data for the mapped distribution
-        let mut mapped_data = data_guard.clone();
+        let mapped_data = data_guard.clone();
 
         // Store the mapped data
         let map_id_val = if let Ok(mut mappings) = dist.mapped_distributions.write() {
@@ -6283,8 +7199,8 @@ pub extern "C" fn vxQueryRemap(
 pub extern "C" fn vxCopyRemap(
     remap: vx_remap,
     user_ptr: *mut c_void,
-    usage: i32,
-    user_mem_type: i32,
+    _usage: i32,
+    _user_mem_type: i32,
 ) -> i32 {
     if remap.is_null() || user_ptr.is_null() {
         return -2;
@@ -6293,8 +7209,9 @@ pub extern "C" fn vxCopyRemap(
 }
 
 /// Mapped remap buffers: map_id -> Vec<u8> holding the coordinate data
-static MAPPED_REMAP_BUFFERS: once_cell::sync::Lazy<parking_lot::Mutex<std::collections::HashMap<usize, Vec<u8>>>> =
-    once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+static MAPPED_REMAP_BUFFERS: once_cell::sync::Lazy<
+    parking_lot::Mutex<std::collections::HashMap<usize, Vec<u8>>>,
+> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 static NEXT_REMAP_MAP_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 #[no_mangle]
@@ -6304,11 +7221,12 @@ pub extern "C" fn vxMapRemapPatch(
     map_id: *mut usize,
     stride_y: *mut vx_size,
     ptr: *mut *mut c_void,
-    coordinate_type: vx_enum,
-    usage: vx_enum,
+    _coordinate_type: vx_enum,
+    _usage: vx_enum,
     mem_type: vx_enum,
 ) -> vx_status {
-    if remap.is_null() || rect.is_null() || map_id.is_null() || stride_y.is_null() || ptr.is_null() {
+    if remap.is_null() || rect.is_null() || map_id.is_null() || stride_y.is_null() || ptr.is_null()
+    {
         return VX_ERROR_INVALID_PARAMETERS;
     }
     if mem_type != VX_MEMORY_TYPE_HOST {
@@ -6367,10 +7285,7 @@ pub extern "C" fn vxMapRemapPatch(
 }
 
 #[no_mangle]
-pub extern "C" fn vxUnmapRemapPatch(
-    remap: vx_remap,
-    map_id_val: usize,
-) -> vx_status {
+pub extern "C" fn vxUnmapRemapPatch(remap: vx_remap, map_id_val: usize) -> vx_status {
     if remap.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -6403,24 +7318,55 @@ pub extern "C" fn vxReleaseRemap(remap: *mut vx_remap) -> i32 {
 
 #[no_mangle]
 /// Create a new object matching the exemplar's type and metadata
-fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exemplar_type: vx_enum) -> vx_reference {
+fn create_object_like_exemplar(
+    context: vx_context,
+    exemplar: vx_reference,
+    exemplar_type: vx_enum,
+) -> vx_reference {
     extern "C" {
-        fn vxQueryImage(image: vx_image, attr: vx_enum, ptr: *mut c_void, size: usize) -> vx_status;
-        fn vxCreateImage(ctx: vx_context, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_image;
+        fn vxQueryImage(image: vx_image, attr: vx_enum, ptr: *mut c_void, size: usize)
+            -> vx_status;
+        fn vxCreateImage(ctx: vx_context, w: vx_uint32, h: vx_uint32, fmt: vx_df_image)
+            -> vx_image;
         fn vxQueryArray(arr: vx_array, attr: vx_enum, ptr: *mut c_void, size: usize) -> vx_status;
         fn vxCreateArray(ctx: vx_context, item_type: vx_enum, capacity: vx_size) -> vx_array;
-        fn vxCreateVirtualArray(graph: vx_graph, item_type: vx_enum, capacity: vx_size) -> vx_array;
+        fn vxCreateVirtualArray(graph: vx_graph, item_type: vx_enum, capacity: vx_size)
+            -> vx_array;
         fn vxQueryPyramid(pyr: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32;
-        fn vxCreatePyramid(ctx: vx_context, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid;
-        fn vxCreateVirtualPyramid(graph: vx_graph, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid;
+        fn vxCreatePyramid(
+            ctx: vx_context,
+            levels: vx_size,
+            scale: vx_float32,
+            w: vx_uint32,
+            h: vx_uint32,
+            fmt: vx_df_image,
+        ) -> vx_pyramid;
+        fn vxCreateVirtualPyramid(
+            graph: vx_graph,
+            levels: vx_size,
+            scale: vx_float32,
+            w: vx_uint32,
+            h: vx_uint32,
+            fmt: vx_df_image,
+        ) -> vx_pyramid;
         fn vxQueryMatrix(mat: vx_matrix, attr: i32, ptr: *mut c_void, size: usize) -> i32;
         fn vxCreateMatrix(ctx: vx_context, data_type: vx_enum, rows: u32, cols: u32) -> vx_matrix;
         fn vxQueryRemap(remap: vx_remap, attr: i32, ptr: *mut c_void, size: usize) -> i32;
-        fn vxCreateRemap(ctx: vx_context, sw: vx_uint32, sh: vx_uint32, dw: vx_uint32, dh: vx_uint32) -> vx_remap;
+        fn vxCreateRemap(
+            ctx: vx_context,
+            sw: vx_uint32,
+            sh: vx_uint32,
+            dw: vx_uint32,
+            dh: vx_uint32,
+        ) -> vx_remap;
         fn vxQueryLUT(lut: vx_lut, attr: i32, ptr: *mut c_void, size: usize) -> i32;
         fn vxCreateLUT(ctx: vx_context, data_type: vx_enum, count: vx_size) -> vx_lut;
         fn vxQueryThreshold(thresh: vx_threshold, attr: i32, ptr: *mut c_void, size: usize) -> i32;
-        fn vxCreateThreshold(ctx: vx_context, thresh_type: vx_enum, data_type: vx_enum) -> vx_threshold;
+        fn vxCreateThreshold(
+            ctx: vx_context,
+            thresh_type: vx_enum,
+            data_type: vx_enum,
+        ) -> vx_threshold;
     }
     unsafe {
         match exemplar_type {
@@ -6428,16 +7374,41 @@ fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exem
                 let mut width: vx_uint32 = 0;
                 let mut height: vx_uint32 = 0;
                 let mut format: vx_df_image = 0;
-                vxQueryImage(exemplar as vx_image, VX_IMAGE_WIDTH as vx_enum, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryImage(exemplar as vx_image, VX_IMAGE_HEIGHT as vx_enum, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryImage(exemplar as vx_image, VX_IMAGE_FORMAT as vx_enum, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                vxQueryImage(
+                    exemplar as vx_image,
+                    VX_IMAGE_WIDTH as vx_enum,
+                    &mut width as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                vxQueryImage(
+                    exemplar as vx_image,
+                    VX_IMAGE_HEIGHT as vx_enum,
+                    &mut height as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                vxQueryImage(
+                    exemplar as vx_image,
+                    VX_IMAGE_FORMAT as vx_enum,
+                    &mut format as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_df_image>(),
+                );
                 vxCreateImage(context, width, height, format) as vx_reference
             }
             VX_TYPE_ARRAY => {
                 let mut item_type: vx_enum = 0;
                 let mut capacity: vx_size = 0;
-                vxQueryArray(exemplar as vx_array, VX_ARRAY_ITEMTYPE, &mut item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                vxQueryArray(exemplar as vx_array, VX_ARRAY_CAPACITY, &mut capacity as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                vxQueryArray(
+                    exemplar as vx_array,
+                    VX_ARRAY_ITEMTYPE,
+                    &mut item_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                vxQueryArray(
+                    exemplar as vx_array,
+                    VX_ARRAY_CAPACITY,
+                    &mut capacity as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
                 vxCreateArray(context, item_type, capacity) as vx_reference
             }
             VX_TYPE_PYRAMID => {
@@ -6447,36 +7418,108 @@ fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exem
                 let mut format: vx_df_image = 0;
                 let scale: vx_float32 = 0.5;
                 // Use FFI symbols directly
-                extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
-                extern "C" { fn vxCreatePyramid(ctx: vx_context, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid; }
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80900, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80902, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80903, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80904, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                extern "C" {
+                    fn vxQueryPyramid(
+                        pyramid: vx_pyramid,
+                        attr: i32,
+                        ptr: *mut c_void,
+                        size: usize,
+                    ) -> i32;
+                }
+                extern "C" {
+                    fn vxCreatePyramid(
+                        ctx: vx_context,
+                        levels: vx_size,
+                        scale: vx_float32,
+                        w: vx_uint32,
+                        h: vx_uint32,
+                        fmt: vx_df_image,
+                    ) -> vx_pyramid;
+                }
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80900,
+                    &mut levels as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80902,
+                    &mut width as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80903,
+                    &mut height as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80904,
+                    &mut format as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_df_image>(),
+                );
                 vxCreatePyramid(context, levels, scale, width, height, format) as vx_reference
             }
             VX_TYPE_SCALAR => {
                 let mut data_type: vx_enum = 0;
-                vxQueryScalar(exemplar as vx_scalar, VX_SCALAR_TYPE, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                crate::c_api_data::vxCreateScalar(context, data_type, std::ptr::null()) as vx_reference
+                vxQueryScalar(
+                    exemplar as vx_scalar,
+                    VX_SCALAR_TYPE,
+                    &mut data_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                crate::c_api_data::vxCreateScalar(context, data_type, std::ptr::null())
+                    as vx_reference
             }
             VX_TYPE_MATRIX => {
                 let mut data_type: vx_enum = 0;
                 let mut rows: vx_size = 0;
                 let mut cols: vx_size = 0;
                 // VX_MATRIX_TYPE=0x80B00, ROWS=0x80B01, COLS=0x80B02
-                vxQueryMatrix(exemplar as vx_matrix, 0x80B00, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                vxQueryMatrix(exemplar as vx_matrix, 0x80B01, &mut rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
-                vxQueryMatrix(exemplar as vx_matrix, 0x80B02, &mut cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                vxQueryMatrix(
+                    exemplar as vx_matrix,
+                    0x80B00,
+                    &mut data_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                vxQueryMatrix(
+                    exemplar as vx_matrix,
+                    0x80B01,
+                    &mut rows as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
+                vxQueryMatrix(
+                    exemplar as vx_matrix,
+                    0x80B02,
+                    &mut cols as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
                 crate::c_api_data::vxCreateMatrix(context, data_type, cols, rows) as vx_reference
             }
             VX_TYPE_DISTRIBUTION => {
                 let mut bins: vx_size = 0;
                 let mut offset: vx_int32 = 0;
                 let mut range: vx_uint32 = 0;
-                vxQueryDistribution(exemplar as vx_distribution, VX_DISTRIBUTION_BINS, &mut bins as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
-                vxQueryDistribution(exemplar as vx_distribution, VX_DISTRIBUTION_OFFSET, &mut offset as *mut _ as *mut c_void, std::mem::size_of::<vx_int32>());
-                vxQueryDistribution(exemplar as vx_distribution, VX_DISTRIBUTION_RANGE, &mut range as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                vxQueryDistribution(
+                    exemplar as vx_distribution,
+                    VX_DISTRIBUTION_BINS,
+                    &mut bins as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
+                vxQueryDistribution(
+                    exemplar as vx_distribution,
+                    VX_DISTRIBUTION_OFFSET,
+                    &mut offset as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_int32>(),
+                );
+                vxQueryDistribution(
+                    exemplar as vx_distribution,
+                    VX_DISTRIBUTION_RANGE,
+                    &mut range as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
                 vxCreateDistribution(context, bins, offset as u32, range) as vx_reference
             }
             VX_TYPE_REMAP => {
@@ -6485,29 +7528,74 @@ fn create_object_like_exemplar(context: vx_context, exemplar: vx_reference, exem
                 let mut dst_width: vx_uint32 = 0;
                 let mut dst_height: vx_uint32 = 0;
                 // VX_REMAP_SOURCE_WIDTH=0x81000, etc.
-                vxQueryRemap(exemplar as vx_remap, 0x81000, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryRemap(exemplar as vx_remap, 0x81001, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryRemap(exemplar as vx_remap, 0x81002, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryRemap(exemplar as vx_remap, 0x81003, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                vxQueryRemap(
+                    exemplar as vx_remap,
+                    0x81000,
+                    &mut src_width as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                vxQueryRemap(
+                    exemplar as vx_remap,
+                    0x81001,
+                    &mut src_height as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                vxQueryRemap(
+                    exemplar as vx_remap,
+                    0x81002,
+                    &mut dst_width as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                vxQueryRemap(
+                    exemplar as vx_remap,
+                    0x81003,
+                    &mut dst_height as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
                 vxCreateRemap(context, src_width, src_height, dst_width, dst_height) as vx_reference
             }
             VX_TYPE_LUT => {
                 let mut data_type: vx_enum = 0;
                 let mut count: vx_size = 0;
-                vxQueryLUT(exemplar as vx_lut, 0x80700, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                vxQueryLUT(exemplar as vx_lut, 0x80701, &mut count as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                vxQueryLUT(
+                    exemplar as vx_lut,
+                    0x80700,
+                    &mut data_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                vxQueryLUT(
+                    exemplar as vx_lut,
+                    0x80701,
+                    &mut count as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
                 vxCreateLUT(context, data_type, count) as vx_reference
             }
             VX_TYPE_THRESHOLD => {
                 let mut thresh_type: vx_enum = 0;
-                vxQueryThreshold(exemplar as vx_threshold, 0x80A00, &mut thresh_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                vxQueryThreshold(
+                    exemplar as vx_threshold,
+                    0x80A00,
+                    &mut thresh_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
                 vxCreateThreshold(context, thresh_type, VX_TYPE_INT8) as vx_reference
             }
             VX_TYPE_OBJECT_ARRAY => {
                 let mut item_type: vx_enum = 0;
                 let mut num_items: vx_size = 0;
-                vxQueryObjectArray(exemplar as vx_object_array, VX_OBJECT_ARRAY_ITEMTYPE, &mut item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                vxQueryObjectArray(exemplar as vx_object_array, VX_OBJECT_ARRAY_NUMITEMS, &mut num_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                vxQueryObjectArray(
+                    exemplar as vx_object_array,
+                    VX_OBJECT_ARRAY_ITEMTYPE,
+                    &mut item_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                vxQueryObjectArray(
+                    exemplar as vx_object_array,
+                    VX_OBJECT_ARRAY_NUMITEMS,
+                    &mut num_items as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
                 let item0 = vxGetObjectArrayItem(exemplar as vx_object_array, 0);
                 let new_array = vxCreateObjectArray(context, item0, num_items);
                 let mut item_ref = item0 as vx_reference;
@@ -6532,9 +7620,13 @@ pub extern "C" fn vxCreateObjectArray(
     // Determine the type of the exemplar
     let exemplar_type = unsafe {
         let mut ref_type: vx_enum = 0;
-        if vxQueryReference(exemplar, VX_REFERENCE_ATTRIBUTE_TYPE,
+        if vxQueryReference(
+            exemplar,
+            VX_REFERENCE_ATTRIBUTE_TYPE,
             &mut ref_type as *mut _ as *mut c_void,
-            std::mem::size_of::<vx_enum>()) != VX_SUCCESS {
+            std::mem::size_of::<vx_enum>(),
+        ) != VX_SUCCESS
+        {
             return std::ptr::null_mut();
         }
         ref_type
@@ -6573,7 +7665,7 @@ pub extern "C" fn vxCreateObjectArray(
         if let Ok(mut types) = REFERENCE_TYPES.lock() {
             types.insert(obj_array_ptr as usize, VX_TYPE_OBJECT_ARRAY);
         }
-        if let Ok(mut object_arrays) = OBJECT_ARRAYS.lock() {
+        if let Ok(_object_arrays) = OBJECT_ARRAYS.lock() {
             // Need to reconstruct since we moved items into the Box
             // But we can't easily - instead store a placeholder
             // Actually the Arc<VxCObjectArray> in OBJECT_ARRAYS is separate from the Box
@@ -6603,9 +7695,13 @@ pub extern "C" fn vxCreateVirtualObjectArray(
     // Determine the type of the exemplar
     let exemplar_type = unsafe {
         let mut ref_type: vx_enum = 0;
-        if vxQueryReference(exemplar, VX_REFERENCE_ATTRIBUTE_TYPE,
+        if vxQueryReference(
+            exemplar,
+            VX_REFERENCE_ATTRIBUTE_TYPE,
             &mut ref_type as *mut _ as *mut c_void,
-            std::mem::size_of::<vx_enum>()) != VX_SUCCESS {
+            std::mem::size_of::<vx_enum>(),
+        ) != VX_SUCCESS
+        {
             return std::ptr::null_mut();
         }
         ref_type
@@ -6648,14 +7744,33 @@ pub extern "C" fn vxCreateVirtualObjectArray(
 }
 
 /// Create a virtual object matching the exemplar's type
-fn create_virtual_object_like_exemplar(context: vx_context, graph: vx_graph, exemplar: vx_reference, exemplar_type: vx_enum) -> vx_reference {
+fn create_virtual_object_like_exemplar(
+    context: vx_context,
+    graph: vx_graph,
+    exemplar: vx_reference,
+    exemplar_type: vx_enum,
+) -> vx_reference {
     extern "C" {
-        fn vxQueryImage(image: vx_image, attr: vx_enum, ptr: *mut c_void, size: usize) -> vx_status;
-        fn vxCreateVirtualImage(graph: vx_graph, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_image;
+        fn vxQueryImage(image: vx_image, attr: vx_enum, ptr: *mut c_void, size: usize)
+            -> vx_status;
+        fn vxCreateVirtualImage(
+            graph: vx_graph,
+            w: vx_uint32,
+            h: vx_uint32,
+            fmt: vx_df_image,
+        ) -> vx_image;
         fn vxQueryArray(arr: vx_array, attr: vx_enum, ptr: *mut c_void, size: usize) -> vx_status;
-        fn vxCreateVirtualArray(graph: vx_graph, item_type: vx_enum, capacity: vx_size) -> vx_array;
+        fn vxCreateVirtualArray(graph: vx_graph, item_type: vx_enum, capacity: vx_size)
+            -> vx_array;
         fn vxQueryPyramid(pyr: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32;
-        fn vxCreateVirtualPyramid(graph: vx_graph, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid;
+        fn vxCreateVirtualPyramid(
+            graph: vx_graph,
+            levels: vx_size,
+            scale: vx_float32,
+            w: vx_uint32,
+            h: vx_uint32,
+            fmt: vx_df_image,
+        ) -> vx_pyramid;
     }
     unsafe {
         match exemplar_type {
@@ -6663,16 +7778,41 @@ fn create_virtual_object_like_exemplar(context: vx_context, graph: vx_graph, exe
                 let mut width: vx_uint32 = 0;
                 let mut height: vx_uint32 = 0;
                 let mut format: vx_df_image = 0;
-                vxQueryImage(exemplar as vx_image, VX_IMAGE_WIDTH as vx_enum, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryImage(exemplar as vx_image, VX_IMAGE_HEIGHT as vx_enum, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                vxQueryImage(exemplar as vx_image, VX_IMAGE_FORMAT as vx_enum, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                vxQueryImage(
+                    exemplar as vx_image,
+                    VX_IMAGE_WIDTH as vx_enum,
+                    &mut width as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                vxQueryImage(
+                    exemplar as vx_image,
+                    VX_IMAGE_HEIGHT as vx_enum,
+                    &mut height as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                vxQueryImage(
+                    exemplar as vx_image,
+                    VX_IMAGE_FORMAT as vx_enum,
+                    &mut format as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_df_image>(),
+                );
                 vxCreateVirtualImage(graph, width, height, format) as vx_reference
             }
             VX_TYPE_ARRAY => {
                 let mut item_type: vx_enum = 0;
                 let mut capacity: vx_size = 0;
-                vxQueryArray(exemplar as vx_array, VX_ARRAY_ITEMTYPE, &mut item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
-                vxQueryArray(exemplar as vx_array, VX_ARRAY_CAPACITY, &mut capacity as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                vxQueryArray(
+                    exemplar as vx_array,
+                    VX_ARRAY_ITEMTYPE,
+                    &mut item_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                vxQueryArray(
+                    exemplar as vx_array,
+                    VX_ARRAY_CAPACITY,
+                    &mut capacity as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
                 vxCreateVirtualArray(graph, item_type, capacity) as vx_reference
             }
             VX_TYPE_PYRAMID => {
@@ -6681,12 +7821,48 @@ fn create_virtual_object_like_exemplar(context: vx_context, graph: vx_graph, exe
                 let mut height: vx_uint32 = 0;
                 let mut format: vx_df_image = 0;
                 let scale: vx_float32 = 0.5;
-                extern "C" { fn vxQueryPyramid(pyramid: vx_pyramid, attr: i32, ptr: *mut c_void, size: usize) -> i32; }
-                extern "C" { fn vxCreateVirtualPyramid(graph: vx_graph, levels: vx_size, scale: vx_float32, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_pyramid; }
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80900, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80902, &mut width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80903, &mut height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
-                let _ = vxQueryPyramid(exemplar as vx_pyramid, 0x80904, &mut format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                extern "C" {
+                    fn vxQueryPyramid(
+                        pyramid: vx_pyramid,
+                        attr: i32,
+                        ptr: *mut c_void,
+                        size: usize,
+                    ) -> i32;
+                }
+                extern "C" {
+                    fn vxCreateVirtualPyramid(
+                        graph: vx_graph,
+                        levels: vx_size,
+                        scale: vx_float32,
+                        w: vx_uint32,
+                        h: vx_uint32,
+                        fmt: vx_df_image,
+                    ) -> vx_pyramid;
+                }
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80900,
+                    &mut levels as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80902,
+                    &mut width as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80903,
+                    &mut height as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_uint32>(),
+                );
+                let _ = vxQueryPyramid(
+                    exemplar as vx_pyramid,
+                    0x80904,
+                    &mut format as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_df_image>(),
+                );
                 vxCreateVirtualPyramid(graph, levels, scale, width, height, format) as vx_reference
             }
             _ => create_object_like_exemplar(context, exemplar, exemplar_type),
@@ -6727,7 +7903,13 @@ pub extern "C" fn vxCreateVirtualTensor(
         return std::ptr::null_mut();
     }
     // Virtual tensors are created like regular ones but associated with graph
-    vxCreateTensor(graph as vx_context, number_of_dims, dims, data_type, fixed_point_position)
+    vxCreateTensor(
+        graph as vx_context,
+        number_of_dims,
+        dims,
+        data_type,
+        fixed_point_position,
+    )
 }
 
 #[no_mangle]
@@ -6764,10 +7946,7 @@ pub extern "C" fn vxQueryObjectArray(
 }
 
 #[no_mangle]
-pub extern "C" fn vxGetObjectArrayItem(
-    obj_arr: vx_object_array,
-    index: u32,
-) -> vx_reference {
+pub extern "C" fn vxGetObjectArrayItem(obj_arr: vx_object_array, index: u32) -> vx_reference {
     if obj_arr.is_null() {
         return std::ptr::null_mut();
     }
@@ -6786,6 +7965,10 @@ pub extern "C" fn vxGetObjectArrayItem(
         if let Some(cnt) = counts.get_mut(&(item as usize)) {
             cnt.fetch_add(1, Ordering::SeqCst);
         }
+    }
+    // Record parent info so vxReplicateNode can walk back to the array.
+    if let Ok(mut parents) = OBJECT_ARRAY_ITEM_PARENTS.lock() {
+        parents.insert(item as usize, (obj_arr as usize, index));
     }
     item
 }
@@ -6808,7 +7991,9 @@ pub extern "C" fn vxSetObjectArrayItem(
     let old = items[index as usize];
     if old != 0 {
         let mut r = old as vx_reference;
-        unsafe { vxReleaseReference(&mut r as *mut vx_reference); }
+        unsafe {
+            vxReleaseReference(&mut r as *mut vx_reference);
+        }
     }
     // Increment ref count on new item
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -6862,8 +8047,8 @@ pub extern "C" fn vxCreateTensor(
     context: vx_context,
     num_dims: usize,
     dims: *const usize,
-    data_type: i32,
-    fixed_point_pos: i8,
+    _data_type: i32,
+    _fixed_point_pos: i8,
 ) -> vx_tensor {
     if context.is_null() || dims.is_null() || num_dims == 0 {
         return std::ptr::null_mut();
@@ -6874,7 +8059,7 @@ pub extern "C" fn vxCreateTensor(
 #[no_mangle]
 pub extern "C" fn vxCreateTensorFromView(
     tensor: vx_tensor,
-    num_dims: usize,
+    _num_dims: usize,
     roi_start: *const usize,
     roi_end: *const usize,
 ) -> vx_tensor {
@@ -6887,9 +8072,9 @@ pub extern "C" fn vxCreateTensorFromView(
 #[no_mangle]
 pub extern "C" fn vxQueryTensor(
     tensor: vx_tensor,
-    attribute: i32,
+    _attribute: i32,
     ptr: *mut c_void,
-    size: usize,
+    _size: usize,
 ) -> i32 {
     if tensor.is_null() || ptr.is_null() {
         return -2;
@@ -6901,8 +8086,8 @@ pub extern "C" fn vxQueryTensor(
 pub extern "C" fn vxCopyTensor(
     tensor: vx_tensor,
     user_ptr: *mut c_void,
-    usage: i32,
-    user_mem_type: i32,
+    _usage: i32,
+    _user_mem_type: i32,
 ) -> i32 {
     if tensor.is_null() || user_ptr.is_null() {
         return -2;
@@ -6913,28 +8098,30 @@ pub extern "C" fn vxCopyTensor(
 #[no_mangle]
 pub extern "C" fn vxMapTensorPatch(
     tensor: vx_tensor,
-    num_dims: usize,
+    _num_dims: usize,
     roi_start: *const usize,
     roi_end: *const usize,
     map_id: *mut usize,
     stride: *mut usize,
     ptr: *mut *mut c_void,
-    usage: i32,
-    mem_type: i32,
+    _usage: i32,
+    _mem_type: i32,
     _flags: u32,
 ) -> i32 {
-    if tensor.is_null() || roi_start.is_null() || roi_end.is_null() ||
-       map_id.is_null() || stride.is_null() || ptr.is_null() {
+    if tensor.is_null()
+        || roi_start.is_null()
+        || roi_end.is_null()
+        || map_id.is_null()
+        || stride.is_null()
+        || ptr.is_null()
+    {
         return -2;
     }
     -30
 }
 
 #[no_mangle]
-pub extern "C" fn vxUnmapTensorPatch(
-    tensor: vx_tensor,
-    _map_id: usize,
-) -> i32 {
+pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
     if tensor.is_null() {
         return -1;
     }
@@ -6965,10 +8152,7 @@ pub extern "C" fn vxReleaseTensor(tensor: *mut vx_tensor) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn vxAddParameterToGraph(
-    graph: vx_graph,
-    parameter: vx_parameter,
-) -> vx_status {
+pub extern "C" fn vxAddParameterToGraph(graph: vx_graph, parameter: vx_parameter) -> vx_status {
     if graph.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -6978,7 +8162,6 @@ pub extern "C" fn vxAddParameterToGraph(
 
     let graph_id = graph as u64;
     let param_id = parameter as u64;
-
 
     // Find the parameter in unified registry to get its node_id and index
     let mut node_id = 0u64;
@@ -7020,7 +8203,7 @@ pub extern "C" fn vxAddParameterToGraph(
     }
 
     // Retain the parameter (increment ref count)
-    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+    if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if let Some(cnt) = counts.get(&(param_id as usize)) {
             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
@@ -7028,7 +8211,10 @@ pub extern "C" fn vxAddParameterToGraph(
 
     // Store binding with the correct graph param index
     if let Ok(mut bindings) = NODE_PARAMETER_BINDINGS.lock() {
-        bindings.insert((node_id, param_index as usize), NodeParamBinding::GraphParam(graph_param_index));
+        bindings.insert(
+            (node_id, param_index as usize),
+            NodeParamBinding::GraphParam(graph_param_index),
+        );
     }
 
     VX_SUCCESS
@@ -7057,9 +8243,9 @@ pub extern "C" fn vxQueryGraphParameterAttribute(
 #[no_mangle]
 pub extern "C" fn vxQueryParameterFull(
     param: vx_parameter,
-    attribute: i32,
+    _attribute: i32,
     ptr: *mut c_void,
-    size: usize,
+    _size: usize,
 ) -> i32 {
     if param.is_null() || ptr.is_null() {
         return -2;
@@ -7088,9 +8274,13 @@ pub extern "C" fn vxCreateDelay(
     // Determine the type of the exemplar
     let ref_type = unsafe {
         let mut ref_type: vx_enum = 0;
-        if vxQueryReference(exemplar, VX_REFERENCE_ATTRIBUTE_TYPE,
+        if vxQueryReference(
+            exemplar,
+            VX_REFERENCE_ATTRIBUTE_TYPE,
             &mut ref_type as *mut _ as *mut c_void,
-            std::mem::size_of::<vx_enum>()) != VX_SUCCESS {
+            std::mem::size_of::<vx_enum>(),
+        ) != VX_SUCCESS
+        {
             return std::ptr::null_mut();
         }
         ref_type
@@ -7100,7 +8290,7 @@ pub extern "C" fn vxCreateDelay(
     // Per OpenVX spec, each slot is a NEW data object of the same type as the exemplar.
     // The exemplar is only used as a template, not as a slot object directly.
     let mut slot_refs: Vec<usize> = Vec::with_capacity(count);
-    for i in 0..count {
+    for _i in 0..count {
         // ALL slots get a NEW copy, including slot 0
         let copy = create_object_like_exemplar(context, exemplar, ref_type);
         if copy.is_null() {
@@ -7128,7 +8318,9 @@ pub extern "C" fn vxCreateDelay(
     let delay_ref = delay_ptr as vx_delay;
 
     if let Ok(mut delays) = DELAYS.lock() {
-        delays.insert(delay_ptr, unsafe { Arc::new((*(delay_ptr as *mut VxCDelay)).clone()) });
+        delays.insert(delay_ptr, unsafe {
+            Arc::new((*(delay_ptr as *mut VxCDelay)).clone())
+        });
     }
 
     // Register in REFERENCE_COUNTS and REFERENCE_TYPES
@@ -7197,10 +8389,7 @@ pub extern "C" fn vxQueryDelay(
 /// Get a reference from a delay slot by index
 /// Index 0 is the current slot, -1 is the previous slot, etc.
 #[no_mangle]
-pub extern "C" fn vxGetReferenceFromDelay(
-    delay: vx_delay,
-    index: vx_int32,
-) -> vx_reference {
+pub extern "C" fn vxGetReferenceFromDelay(delay: vx_delay, index: vx_int32) -> vx_reference {
     if delay.is_null() {
         return std::ptr::null_mut();
     }
@@ -7233,10 +8422,7 @@ pub extern "C" fn vxGetReferenceFromDelay(
 
 /// Access a delay element (deprecated, use vxGetReferenceFromDelay)
 #[no_mangle]
-pub extern "C" fn vxAccessDelayElement(
-    delay: vx_delay,
-    index: vx_int32,
-) -> vx_reference {
+pub extern "C" fn vxAccessDelayElement(delay: vx_delay, index: vx_int32) -> vx_reference {
     // vxAccessDelayElement is deprecated in favor of vxGetReferenceFromDelay
     vxGetReferenceFromDelay(delay, index)
 }
@@ -7348,17 +8534,13 @@ pub extern "C" fn vxReleaseDelay(delay: *mut vx_delay) -> vx_status {
 // ============================================================================
 
 /// Registry of delays registered for auto-aging with each graph
-static GRAPH_AUTO_AGE_DELAYS: Lazy<Mutex<HashMap<u64, Vec<usize>>>> = Lazy::new(|| {
-    Mutex::new(HashMap::new())
-});
+static GRAPH_AUTO_AGE_DELAYS: Lazy<Mutex<HashMap<u64, Vec<usize>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a delay for auto-aging with a graph
 /// After each graph execution, the delay will be automatically aged
 #[no_mangle]
-pub extern "C" fn vxRegisterAutoAging(
-    graph: vx_graph,
-    delay: vx_delay,
-) -> vx_status {
+pub extern "C" fn vxRegisterAutoAging(graph: vx_graph, delay: vx_delay) -> vx_status {
     if graph.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -7398,9 +8580,9 @@ fn auto_age_delays(graph_id: u64) {
 #[no_mangle]
 pub extern "C" fn vxExportObjectsToMemory(
     context: vx_context,
-    num_refs: usize,
+    _num_refs: usize,
     refs: *const vx_reference,
-    uses: *const usize,
+    _uses: *const usize,
     ptr: *mut *mut u8,
     length: *mut usize,
 ) -> i32 {
@@ -7438,9 +8620,9 @@ pub extern "C" fn vxReleaseImport(import: *mut vx_import) -> i32 {
 #[no_mangle]
 pub extern "C" fn vxQueryImport(
     import: vx_import,
-    attribute: i32,
+    _attribute: i32,
     ptr: *mut c_void,
-    size: usize,
+    _size: usize,
 ) -> i32 {
     if import.is_null() || ptr.is_null() {
         return -2;
@@ -7521,7 +8703,9 @@ pub extern "C" fn vxAddParameterToKernel(
     // VX_TYPE_DELAY is not allowed as output parameter type
     let vx_output: i32 = 1; // VX_OUTPUT
     let vx_bidirectional: i32 = 2; // VX_BIDIRECTIONAL
-    if data_type == VX_TYPE_DELAY as i32 && (direction == vx_output || direction == vx_bidirectional) {
+    if data_type == VX_TYPE_DELAY as i32
+        && (direction == vx_output || direction == vx_bidirectional)
+    {
         return VX_ERROR_INVALID_PARAMETERS;
     }
     // Store parameter info for the kernel
@@ -7530,9 +8714,17 @@ pub extern "C" fn vxAddParameterToKernel(
         let param_list = params.entry(kernel_enum).or_insert_with(Vec::new);
         // Ensure vector is large enough
         while param_list.len() <= index as usize {
-            param_list.push(UserKernelParam { direction: 0, data_type: 0, state: 0 });
+            param_list.push(UserKernelParam {
+                direction: 0,
+                data_type: 0,
+                state: 0,
+            });
         }
-        param_list[index as usize] = UserKernelParam { direction, data_type, state };
+        param_list[index as usize] = UserKernelParam {
+            direction,
+            data_type,
+            state,
+        };
     }
     VX_SUCCESS
 }
@@ -7540,14 +8732,42 @@ pub extern "C" fn vxAddParameterToKernel(
 #[no_mangle]
 pub extern "C" fn vxSetKernelAttribute(
     kernel: vx_kernel,
-    _attribute: i32,
-    _ptr: *const c_void,
-    _size: usize,
+    attribute: i32,
+    ptr: *const c_void,
+    size: usize,
 ) -> i32 {
     if kernel.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // Accept all kernel attribute settings (VX_KERNEL_LOCAL_DATA_SIZE, etc.)
+
+    // VX_KERNEL_LOCAL_DATA_SIZE controls auto-allocation of a per-node local
+    // data buffer for user kernels. We persist it on the user-kernel record
+    // so node creation / vxVerifyGraph can allocate the buffer before calling
+    // the user's `init` callback.
+    //
+    // The full OpenVX-spec value is `VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_KERNEL) + 0x3`,
+    // which expands to `0x80403`. The legacy short value `0x03` is also accepted
+    // for compatibility with code that uses the offset directly.
+    const VX_KERNEL_LOCAL_DATA_SIZE_FULL: i32 = 0x80403;
+    if attribute == VX_KERNEL_LOCAL_DATA_SIZE_FULL
+        || attribute == VX_KERNEL_LOCAL_DATA_SIZE
+    {
+        if ptr.is_null() || size < std::mem::size_of::<vx_size>() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let value: vx_size = unsafe { *(ptr as *const vx_size) };
+        let kernel_enum_id = kernel as usize as vx_enum;
+        if let Ok(kernels) = USER_KERNELS.lock() {
+            if let Some(uk) = kernels.get(&kernel_enum_id) {
+                uk.local_data_size.store(value, Ordering::SeqCst);
+                return VX_SUCCESS;
+            }
+        }
+        // Built-in kernels accept this attribute but ignore it.
+        return VX_SUCCESS;
+    }
+
+    // Accept other kernel attribute settings as no-ops for now.
     VX_SUCCESS
 }
 
@@ -7589,7 +8809,7 @@ pub extern "C" fn vxEnumerateTargets(
 #[no_mangle]
 pub extern "C" fn vxCreateConvolutionFromPattern(
     context: vx_context,
-    pattern: i32,
+    _pattern: i32,
     columns: usize,
     rows: usize,
 ) -> vx_convolution {
@@ -7683,11 +8903,7 @@ fn get_kernel_by_name(context: vx_context, name: &str) -> vx_kernel {
 }
 
 /// Helper to create a node and set its parameters
-fn create_node_with_params(
-    graph: vx_graph,
-    kernel_name: &str,
-    params: &[vx_reference],
-) -> vx_node {
+fn create_node_with_params(graph: vx_graph, kernel_name: &str, params: &[vx_reference]) -> vx_node {
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
@@ -7759,7 +8975,11 @@ pub extern "C" fn vxChannelExtractNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.channel_extract",
-        &[input as vx_reference, scalar as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalar (node has reference now)
@@ -7791,19 +9011,11 @@ pub extern "C" fn vxChannelCombineNode(
         output as vx_reference,
     ];
 
-    create_node_with_params(
-        graph,
-        "org.khronos.openvx.channel_combine",
-        &params,
-    )
+    create_node_with_params(graph, "org.khronos.openvx.channel_combine", &params)
 }
 
 #[no_mangle]
-pub extern "C" fn vxGaussian3x3Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxGaussian3x3Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -7816,11 +9028,7 @@ pub extern "C" fn vxGaussian3x3Node(
 }
 
 #[no_mangle]
-pub extern "C" fn vxGaussian5x5Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxGaussian5x5Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -7846,16 +9054,16 @@ pub extern "C" fn vxConvolveNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.convolve",
-        &[input as vx_reference, conv as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            conv as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
 #[no_mangle]
-pub extern "C" fn vxBox3x3Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxBox3x3Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -7868,11 +9076,7 @@ pub extern "C" fn vxBox3x3Node(
 }
 
 #[no_mangle]
-pub extern "C" fn vxMedian3x3Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxMedian3x3Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -8008,7 +9212,11 @@ pub extern "C" fn vxMagnitudeNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.magnitude",
-        &[grad_x as vx_reference, grad_y as vx_reference, output as vx_reference],
+        &[
+            grad_x as vx_reference,
+            grad_y as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
@@ -8026,16 +9234,16 @@ pub extern "C" fn vxPhaseNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.phase",
-        &[grad_x as vx_reference, grad_y as vx_reference, output as vx_reference],
+        &[
+            grad_x as vx_reference,
+            grad_y as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
 #[no_mangle]
-pub extern "C" fn vxDilate3x3Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxDilate3x3Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -8048,11 +9256,7 @@ pub extern "C" fn vxDilate3x3Node(
 }
 
 #[no_mangle]
-pub extern "C" fn vxErode3x3Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxErode3x3Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -8065,11 +9269,7 @@ pub extern "C" fn vxErode3x3Node(
 }
 
 #[no_mangle]
-pub extern "C" fn vxDilate5x5Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxDilate5x5Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -8082,11 +9282,7 @@ pub extern "C" fn vxDilate5x5Node(
 }
 
 #[no_mangle]
-pub extern "C" fn vxErode5x5Node(
-    graph: vx_graph,
-    input: vx_image,
-    output: vx_image,
-) -> vx_node {
+pub extern "C" fn vxErode5x5Node(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -8122,7 +9318,8 @@ pub extern "C" fn vxAddNode(
     }
 
     // Create scalar for policy
-    let mut policy_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_policy as *const _ as *const c_void);
+    let mut policy_scalar =
+        vxCreateScalar(context, VX_TYPE_ENUM, &_policy as *const _ as *const c_void);
     if policy_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -8130,7 +9327,12 @@ pub extern "C" fn vxAddNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.add",
-        &[in1 as vx_reference, in2 as vx_reference, policy_scalar as vx_reference, output as vx_reference],
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            policy_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Don't release - node needs scalar at execution time
@@ -8158,7 +9360,8 @@ pub extern "C" fn vxSubtractNode(
     }
 
     // Create scalar for policy
-    let mut policy_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_policy as *const _ as *const c_void);
+    let mut policy_scalar =
+        vxCreateScalar(context, VX_TYPE_ENUM, &_policy as *const _ as *const c_void);
     if policy_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -8166,7 +9369,12 @@ pub extern "C" fn vxSubtractNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.subtract",
-        &[in1 as vx_reference, in2 as vx_reference, policy_scalar as vx_reference, output as vx_reference],
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            policy_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Don't release - node needs scalar at execution time
@@ -8196,8 +9404,16 @@ pub extern "C" fn vxMultiplyNode(
     }
 
     // Create scalars for policies
-    let mut overflow_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_overflow_policy as *const _ as *const c_void);
-    let mut rounding_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_rounding_policy as *const _ as *const c_void);
+    let mut overflow_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_overflow_policy as *const _ as *const c_void,
+    );
+    let mut rounding_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_rounding_policy as *const _ as *const c_void,
+    );
 
     if overflow_scalar.is_null() || rounding_scalar.is_null() {
         vxReleaseScalar(&mut overflow_scalar);
@@ -8208,8 +9424,14 @@ pub extern "C" fn vxMultiplyNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.multiply",
-        &[in1 as vx_reference, in2 as vx_reference, scale as vx_reference,
-          overflow_scalar as vx_reference, rounding_scalar as vx_reference, output as vx_reference],
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            scale as vx_reference,
+            overflow_scalar as vx_reference,
+            rounding_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Don't release the scalars - the node needs them at execution time
@@ -8400,7 +9622,11 @@ pub extern "C" fn vxScaleImageNode(
     }
 
     // Create scalar for interpolation
-    let mut interp_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_interpolation as *const _ as *const c_void);
+    let mut interp_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_interpolation as *const _ as *const c_void,
+    );
     if interp_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -8408,7 +9634,11 @@ pub extern "C" fn vxScaleImageNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.scale_image",
-        &[input as vx_reference, interp_scalar as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            interp_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalar (node has reference now)
@@ -8436,7 +9666,11 @@ pub extern "C" fn vxWarpAffineNode(
     }
 
     // Create scalar for interpolation
-    let mut interp_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_interpolation as *const _ as *const c_void);
+    let mut interp_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_interpolation as *const _ as *const c_void,
+    );
     if interp_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -8444,7 +9678,12 @@ pub extern "C" fn vxWarpAffineNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.warp_affine",
-        &[input as vx_reference, matrix as vx_reference, interp_scalar as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            matrix as vx_reference,
+            interp_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalar (node has reference now)
@@ -8472,7 +9711,11 @@ pub extern "C" fn vxWarpPerspectiveNode(
     }
 
     // Create scalar for interpolation
-    let mut interp_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_interpolation as *const _ as *const c_void);
+    let mut interp_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_interpolation as *const _ as *const c_void,
+    );
     if interp_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -8480,7 +9723,12 @@ pub extern "C" fn vxWarpPerspectiveNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.warp_perspective",
-        &[input as vx_reference, matrix as vx_reference, interp_scalar as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            matrix as vx_reference,
+            interp_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalar (node has reference now)
@@ -8508,7 +9756,8 @@ pub extern "C" fn vxRemapNode(
     }
 
     // Create scalar for policy
-    let mut policy_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_policy as *const _ as *const c_void);
+    let mut policy_scalar =
+        vxCreateScalar(context, VX_TYPE_ENUM, &_policy as *const _ as *const c_void);
     if policy_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -8516,7 +9765,12 @@ pub extern "C" fn vxRemapNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.remap",
-        &[input as vx_reference, table as vx_reference, policy_scalar as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            table as vx_reference,
+            policy_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalar (node has reference now)
@@ -8537,10 +9791,14 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
     _epsilon: vx_scalar,
     _num_iterations: vx_scalar,
     _use_initial_estimate: vx_scalar,
-    _window_dimension: vx_scalar,
+    _window_dimension: vx_size,
 ) -> vx_node {
-    if graph.is_null() || old_images.is_null() || new_images.is_null() ||
-       old_points.is_null() || new_points.is_null() {
+    if graph.is_null()
+        || old_images.is_null()
+        || new_images.is_null()
+        || old_points.is_null()
+        || new_points.is_null()
+    {
         return std::ptr::null_mut();
     }
 
@@ -8562,7 +9820,11 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
     }
 
     // Create scalar for termination (required param 6)
-    let mut termination_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_termination as *const _ as *const c_void);
+    let mut termination_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_termination as *const _ as *const c_void,
+    );
     if termination_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -8574,7 +9836,11 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
     } else {
         // epsilon is required, create default
         let default_epsilon: vx_float32 = 0.001;
-        let eps_scalar = vxCreateScalar(context, VX_TYPE_FLOAT32, &default_epsilon as *const _ as *const c_void);
+        let eps_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_FLOAT32,
+            &default_epsilon as *const _ as *const c_void,
+        );
         params.push(eps_scalar as vx_reference);
     }
 
@@ -8583,7 +9849,11 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
         params.push(_num_iterations as vx_reference);
     } else {
         let default_iters: vx_uint32 = 10;
-        let iters_scalar = vxCreateScalar(context, VX_TYPE_UINT32, &default_iters as *const _ as *const c_void);
+        let iters_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_UINT32,
+            &default_iters as *const _ as *const c_void,
+        );
         params.push(iters_scalar as vx_reference);
     }
 
@@ -8592,27 +9862,36 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
         params.push(_use_initial_estimate as vx_reference);
     } else {
         let default_use_init: vx_bool = 0; // vx_false_e
-        let use_init_scalar = vxCreateScalar(context, VX_TYPE_BOOL, &default_use_init as *const _ as *const c_void);
+        let use_init_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_BOOL,
+            &default_use_init as *const _ as *const c_void,
+        );
         params.push(use_init_scalar as vx_reference);
     }
 
-    // Add window_dimension as param 10 (required)
-    if !_window_dimension.is_null() {
-        params.push(_window_dimension as vx_reference);
+    // Add window_dimension as param 10 (required). Per the OpenVX spec this
+    // parameter is `vx_size` (an integer), not `vx_scalar`. Wrap the integer
+    // in a scalar so the graph parameter list stays homogeneous and the
+    // dispatcher can read it via `vxCopyScalar`.
+    let window_value: vx_size = if _window_dimension == 0 {
+        9
     } else {
-        let default_window: vx_size = 9;
-        let window_scalar = vxCreateScalar(context, VX_TYPE_SIZE, &default_window as *const _ as *const c_void);
-        params.push(window_scalar as vx_reference);
-    }
-
-    let node = create_node_with_params(
-        graph,
-        "org.khronos.openvx.optical_flow_pyr_lk",
-        &params,
+        _window_dimension
+    };
+    let mut window_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_SIZE,
+        &window_value as *const _ as *const c_void,
     );
+    params.push(window_scalar as vx_reference);
 
-    // Release the termination scalar (node has reference now)
+    let node = create_node_with_params(graph, "org.khronos.openvx.optical_flow_pyr_lk", &params);
+
+    // Release the scalars we created locally; the node now holds its own
+    // references to them via the graph parameter list.
     vxReleaseScalar(&mut termination_scalar);
+    vxReleaseScalar(&mut window_scalar);
 
     node
 }
@@ -8746,15 +10025,17 @@ pub extern "C" fn vxFASTCornersNode(
     }
 
     // Create scalar for nonmax_suppression
-    let mut nonmax_scalar = vxCreateScalar(context, VX_TYPE_BOOL, &_nonmax_suppression as *const _ as *const c_void);
+    let mut nonmax_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_BOOL,
+        &_nonmax_suppression as *const _ as *const c_void,
+    );
     if nonmax_scalar.is_null() {
         return std::ptr::null_mut();
     }
 
     // Build params list
-    let mut params: Vec<vx_reference> = vec![
-        input as vx_reference,
-    ];
+    let mut params: Vec<vx_reference> = vec![input as vx_reference];
 
     if !strength_thresh.is_null() {
         params.push(strength_thresh as vx_reference);
@@ -8767,11 +10048,7 @@ pub extern "C" fn vxFASTCornersNode(
         params.push(num_corners as vx_reference);
     }
 
-    let node = create_node_with_params(
-        graph,
-        "org.khronos.openvx.fast_corners",
-        &params,
-    );
+    let node = create_node_with_params(graph, "org.khronos.openvx.fast_corners", &params);
 
     // Release the scalar (node has reference now)
     vxReleaseScalar(&mut nonmax_scalar);
@@ -8801,15 +10078,17 @@ pub extern "C" fn vxCornerMinEigenValNode(
     }
 
     // Create scalar for block_size
-    let mut block_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_block_size as *const _ as *const c_void);
+    let mut block_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_block_size as *const _ as *const c_void,
+    );
     if block_scalar.is_null() {
         return std::ptr::null_mut();
     }
 
     // Build params list
-    let mut params: Vec<vx_reference> = vec![
-        input as vx_reference,
-    ];
+    let mut params: Vec<vx_reference> = vec![input as vx_reference];
 
     if !min_distance.is_null() {
         params.push(min_distance as vx_reference);
@@ -8830,11 +10109,7 @@ pub extern "C" fn vxCornerMinEigenValNode(
         params.push(num_corners as vx_reference);
     }
 
-    let node = create_node_with_params(
-        graph,
-        "org.khronos.openvx.corner_min_eigen_val",
-        &params,
-    );
+    let node = create_node_with_params(graph, "org.khronos.openvx.corner_min_eigen_val", &params);
 
     // Release the scalar (node has reference now)
     vxReleaseScalar(&mut block_scalar);
@@ -8862,8 +10137,16 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
     }
 
     // Create scalars for gradient_size and norm_type
-    let mut gradient_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_gradient_size as *const _ as *const c_void);
-    let mut norm_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &_norm_type as *const _ as *const c_void);
+    let mut gradient_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_gradient_size as *const _ as *const c_void,
+    );
+    let mut norm_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_norm_type as *const _ as *const c_void,
+    );
 
     if gradient_scalar.is_null() || norm_scalar.is_null() {
         vxReleaseScalar(&mut gradient_scalar);
@@ -8874,8 +10157,13 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.canny_edge_detector",
-        &[input as vx_reference, hyst_threshold as vx_reference,
-           gradient_scalar as vx_reference, norm_scalar as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            hyst_threshold as vx_reference,
+            gradient_scalar as vx_reference,
+            norm_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalars (node has reference now)
@@ -8904,19 +10192,38 @@ pub extern "C" fn vxHoughLinesPNode(
 
     unsafe {
         // Create scalars for params
-        let mut rho_scalar = vxCreateScalar(context, VX_TYPE_FLOAT32,
-            &(*hough_lines_params).rho as *const _ as *const c_void);
-        let mut theta_scalar = vxCreateScalar(context, VX_TYPE_FLOAT32,
-            &(*hough_lines_params).theta as *const _ as *const c_void);
-        let mut threshold_scalar = vxCreateScalar(context, VX_TYPE_UINT32,
-            &(*hough_lines_params).threshold as *const _ as *const c_void);
-        let mut line_length_scalar = vxCreateScalar(context, VX_TYPE_UINT32,
-            &(*hough_lines_params).line_length as *const _ as *const c_void);
-        let mut line_gap_scalar = vxCreateScalar(context, VX_TYPE_UINT32,
-            &(*hough_lines_params).line_gap as *const _ as *const c_void);
+        let mut rho_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_FLOAT32,
+            &(*hough_lines_params).rho as *const _ as *const c_void,
+        );
+        let mut theta_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_FLOAT32,
+            &(*hough_lines_params).theta as *const _ as *const c_void,
+        );
+        let mut threshold_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_UINT32,
+            &(*hough_lines_params).threshold as *const _ as *const c_void,
+        );
+        let mut line_length_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_UINT32,
+            &(*hough_lines_params).line_length as *const _ as *const c_void,
+        );
+        let mut line_gap_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_UINT32,
+            &(*hough_lines_params).line_gap as *const _ as *const c_void,
+        );
 
-        if rho_scalar.is_null() || theta_scalar.is_null() || threshold_scalar.is_null() ||
-           line_length_scalar.is_null() || line_gap_scalar.is_null() {
+        if rho_scalar.is_null()
+            || theta_scalar.is_null()
+            || threshold_scalar.is_null()
+            || line_length_scalar.is_null()
+            || line_gap_scalar.is_null()
+        {
             vxReleaseScalar(&mut rho_scalar);
             vxReleaseScalar(&mut theta_scalar);
             vxReleaseScalar(&mut threshold_scalar);
@@ -8928,9 +10235,15 @@ pub extern "C" fn vxHoughLinesPNode(
         let node = create_node_with_params(
             graph,
             "org.khronos.openvx.hough_lines_p",
-            &[input as vx_reference, rho_scalar as vx_reference, theta_scalar as vx_reference,
-               threshold_scalar as vx_reference, line_length_scalar as vx_reference,
-               line_gap_scalar as vx_reference, lines_array as vx_reference],
+            &[
+                input as vx_reference,
+                rho_scalar as vx_reference,
+                theta_scalar as vx_reference,
+                threshold_scalar as vx_reference,
+                line_length_scalar as vx_reference,
+                line_gap_scalar as vx_reference,
+                lines_array as vx_reference,
+            ],
         );
 
         // Release the scalars (node has reference now)
@@ -8981,12 +10294,21 @@ pub extern "C" fn vxMeanShiftNode(
     }
 
     // Create scalars for params
-    let mut width_scalar = vxCreateScalar(context, VX_TYPE_SIZE,
-        &_window_width as *const _ as *const c_void);
-    let mut height_scalar = vxCreateScalar(context, VX_TYPE_SIZE,
-        &_window_height as *const _ as *const c_void);
-    let mut criteria_scalar = vxCreateScalar(context, VX_TYPE_ENUM,
-        &_criteria as *const _ as *const c_void);
+    let mut width_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_SIZE,
+        &_window_width as *const _ as *const c_void,
+    );
+    let mut height_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_SIZE,
+        &_window_height as *const _ as *const c_void,
+    );
+    let mut criteria_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &_criteria as *const _ as *const c_void,
+    );
 
     if width_scalar.is_null() || height_scalar.is_null() || criteria_scalar.is_null() {
         vxReleaseScalar(&mut width_scalar);
@@ -8998,8 +10320,13 @@ pub extern "C" fn vxMeanShiftNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.mean_shift",
-        &[input as vx_reference, width_scalar as vx_reference, height_scalar as vx_reference,
-          criteria_scalar as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            width_scalar as vx_reference,
+            height_scalar as vx_reference,
+            criteria_scalar as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalars (node has reference now)
@@ -9011,20 +10338,12 @@ pub extern "C" fn vxMeanShiftNode(
 }
 
 #[no_mangle]
-pub extern "C" fn vxuColorConvert(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuColorConvert(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_color_convert_impl(context, input, output)
 }
 
 #[no_mangle]
-pub extern "C" fn vxuGaussian3x3(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuGaussian3x3(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_gaussian3x3_impl(context, input, output)
 }
 
@@ -9070,42 +10389,34 @@ pub extern "C" fn vxuMultiply(
     _rounding_policy: i32,
     output: vx_image,
 ) -> i32 {
-    crate::vxu_impl::vxu_multiply_impl_direct_scale(context, in1, in2, _scale, _overflow_policy, _rounding_policy, output)
+    crate::vxu_impl::vxu_multiply_impl_direct_scale(
+        context,
+        in1,
+        in2,
+        _scale,
+        _overflow_policy,
+        _rounding_policy,
+        output,
+    )
 }
 
 #[no_mangle]
-pub extern "C" fn vxuBox3x3(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuBox3x3(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_box3x3_impl(context, input, output)
 }
 
 #[no_mangle]
-pub extern "C" fn vxuMedian3x3(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuMedian3x3(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_median3x3_impl(context, input, output)
 }
 
 #[no_mangle]
-pub extern "C" fn vxuDilate3x3(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuDilate3x3(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_dilate3x3_impl(context, input, output)
 }
 
 #[no_mangle]
-pub extern "C" fn vxuErode3x3(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuErode3x3(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_erode3x3_impl(context, input, output)
 }
 
@@ -9173,8 +10484,17 @@ pub extern "C" fn vxuHarrisCorners(
     corners: vx_array,
     _num_corners: vx_scalar,
 ) -> i32 {
-    crate::vxu_impl::vxu_harris_corners_impl(context, input, _strength_thresh, _min_distance,
-        _sensitivity, _gradient_size, _block_size, corners, _num_corners)
+    crate::vxu_impl::vxu_harris_corners_impl(
+        context,
+        input,
+        _strength_thresh,
+        _min_distance,
+        _sensitivity,
+        _gradient_size,
+        _block_size,
+        corners,
+        _num_corners,
+    )
 }
 
 #[no_mangle]
@@ -9186,15 +10506,18 @@ pub extern "C" fn vxuFASTCorners(
     corners: vx_array,
     _num_corners: vx_scalar,
 ) -> i32 {
-    crate::vxu_impl::vxu_fast_corners_impl(context, input, _strength_thresh, _nonmax_suppression, corners, _num_corners)
+    crate::vxu_impl::vxu_fast_corners_impl(
+        context,
+        input,
+        _strength_thresh,
+        _nonmax_suppression,
+        corners,
+        _num_corners,
+    )
 }
 
 #[no_mangle]
-pub extern "C" fn vxuIntegralImage(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuIntegralImage(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_integral_image_impl(context, input, output)
 }
 
@@ -9207,7 +10530,14 @@ pub extern "C" fn vxuCannyEdgeDetector(
     _norm_type: i32,
     output: vx_image,
 ) -> i32 {
-    crate::vxu_impl::vxu_canny_edge_detector_impl(context, input, hyst_threshold, _gradient_size, _norm_type, output)
+    crate::vxu_impl::vxu_canny_edge_detector_impl(
+        context,
+        input,
+        hyst_threshold,
+        _gradient_size,
+        _norm_type,
+        output,
+    )
 }
 
 #[no_mangle]
@@ -9221,29 +10551,17 @@ pub extern "C" fn vxuConvolve(
 }
 
 #[no_mangle]
-pub extern "C" fn vxuGaussian5x5(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuGaussian5x5(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_gaussian5x5_impl(context, input, output)
 }
 
 #[no_mangle]
-pub extern "C" fn vxuDilate5x5(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuDilate5x5(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_dilate5x5_impl(context, input, output)
 }
 
 #[no_mangle]
-pub extern "C" fn vxuErode5x5(
-    context: vx_context,
-    input: vx_image,
-    output: vx_image,
-) -> i32 {
+pub extern "C" fn vxuErode5x5(context: vx_context, input: vx_image, output: vx_image) -> i32 {
     crate::vxu_impl::vxu_erode5x5_impl(context, input, output)
 }
 
@@ -9275,10 +10593,13 @@ pub extern "C" fn vxuMeanStdDev(
         let mut stddev_val: f32 = 0.0;
 
         // Create temporary scalars for the impl function
-        let mut mean_scalar = vxCreateScalar(context, 0x11002, &mut mean_val as *mut f32 as *mut c_void); // VX_TYPE_FLOAT32
-        let mut stddev_scalar = vxCreateScalar(context, 0x11002, &mut stddev_val as *mut f32 as *mut c_void);
+        let mut mean_scalar =
+            vxCreateScalar(context, 0x11002, &mut mean_val as *mut f32 as *mut c_void); // VX_TYPE_FLOAT32
+        let mut stddev_scalar =
+            vxCreateScalar(context, 0x11002, &mut stddev_val as *mut f32 as *mut c_void);
 
-        let result = crate::vxu_impl::vxu_mean_std_dev_impl(context, input, mean_scalar, stddev_scalar);
+        let result =
+            crate::vxu_impl::vxu_mean_std_dev_impl(context, input, mean_scalar, stddev_scalar);
 
         // Read values back from scalars
         if result == VX_SUCCESS {
@@ -9286,14 +10607,16 @@ pub extern "C" fn vxuMeanStdDev(
                 crate::c_api_data::vxCopyScalarData(
                     mean_scalar,
                     mean_ptr as *mut c_void,
-                    0x11001, 0x0 // VX_READ_ONLY
+                    0x11001,
+                    0x0, // VX_READ_ONLY
                 );
             }
             if !stddev_ptr.is_null() {
                 crate::c_api_data::vxCopyScalarData(
                     stddev_scalar,
                     stddev_ptr as *mut c_void,
-                    0x11001, 0x0
+                    0x11001,
+                    0x0,
                 );
             }
         }
@@ -9321,7 +10644,9 @@ pub extern "C" fn vxuMinMaxLoc(
     min_count: vx_scalar,
     max_count: vx_scalar,
 ) -> i32 {
-    crate::vxu_impl::vxu_min_max_loc_impl(context, input, min_val, max_val, min_loc, max_loc, min_count, max_count)
+    crate::vxu_impl::vxu_min_max_loc_impl(
+        context, input, min_val, max_val, min_loc, max_loc, min_count, max_count,
+    )
 }
 
 #[no_mangle]
@@ -9378,21 +10703,37 @@ pub extern "C" fn vxRemoveKernel(kernel: vx_kernel) -> vx_status {
     }
     // Check if this is a user kernel (registered via vxAddUserKernel)
     let kernel_enum = kernel as usize as vx_enum;
-    if let Ok(kernels) = USER_KERNELS.lock() {
-        if kernels.contains_key(&kernel_enum) {
-            // User kernel - can be removed
-            drop(kernels);
-            if let Ok(mut kernels) = USER_KERNELS.lock() {
-                kernels.remove(&kernel_enum);
-            }
-            if let Ok(mut params) = USER_KERNEL_PARAMS.lock() {
-                params.remove(&kernel_enum);
-            }
-            return VX_SUCCESS;
-        }
+    let is_user_kernel = if let Ok(kernels) = USER_KERNELS.lock() {
+        kernels.contains_key(&kernel_enum)
+    } else {
+        false
+    };
+    if !is_user_kernel {
+        // Built-in kernels cannot be removed.
+        return VX_ERROR_INVALID_PARAMETERS;
     }
-    // Built-in kernel - cannot be removed
-    VX_ERROR_INVALID_PARAMETERS
+
+    if let Ok(mut kernels) = USER_KERNELS.lock() {
+        kernels.remove(&kernel_enum);
+    }
+    if let Ok(mut params) = USER_KERNEL_PARAMS.lock() {
+        params.remove(&kernel_enum);
+    }
+    // Clean up reference-tracking metadata so the kernel no longer counts as
+    // a dangling reference in `VX_CONTEXT_REFERENCES`. The pointer itself
+    // remains valid for the caller (as the test comment notes), but the
+    // framework no longer accounts for it.
+    let addr = kernel as usize;
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.remove(&addr);
+    }
+    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+        types.remove(&addr);
+    }
+    if let Ok(mut names) = REFERENCE_NAMES.lock() {
+        names.remove(&addr);
+    }
+    VX_SUCCESS
 }
 
 /// Set meta format from reference - copies type-specific attributes from the reference
@@ -9415,7 +10756,7 @@ pub extern "C" fn vxSetMetaFormatFromReference(
             };
             // Store the reference type
             attrs.insert(0x00000000, ref_type.to_le_bytes().to_vec()); // meta type marker
-            // Just accept it - the validator needs this to succeed
+                                                                       // Just accept it - the validator needs this to succeed
         }
     }
     VX_SUCCESS
@@ -9439,7 +10780,7 @@ pub extern "C" fn vxCopyRemapPatch(
     rect: *const vx_rectangle_t,
     stride_y: vx_size,
     user_ptr: *mut c_void,
-    data_type: vx_enum,
+    _data_type: vx_enum,
     usage: vx_enum,
     user_mem_type: vx_enum,
 ) -> vx_status {
@@ -9468,8 +10809,16 @@ pub extern "C" fn vxCopyRemapPatch(
         // stride_y is the byte stride between rows
         // data_type should be VX_TYPE_COORDINATES2DF (pairs of f32 x,y)
         // Each vx_coordinates2df_t is 8 bytes (2 * f32)
-        let coord_stride = if stride_y > 0 { stride_y / 8 } else { end_x - start_x };
-        let row_stride = if stride_y > 0 { stride_y as usize } else { (end_x - start_x) * 8 };
+        let _coord_stride = if stride_y > 0 {
+            stride_y / 8
+        } else {
+            end_x - start_x
+        };
+        let row_stride = if stride_y > 0 {
+            stride_y as usize
+        } else {
+            (end_x - start_x) * 8
+        };
 
         let mut map_data = match remap_data.map_data.write() {
             Ok(d) => d,
@@ -9565,7 +10914,9 @@ pub extern "C" fn vxSetImagePixelValues(
                 } else {
                     pw as usize * VxCImage::bytes_per_pixel(img.format)
                 };
-                let stride_x = if plane_idx < img.external_stride_x.len() && img.external_stride_x[plane_idx] > 0 {
+                let stride_x = if plane_idx < img.external_stride_x.len()
+                    && img.external_stride_x[plane_idx] > 0
+                {
                     img.external_stride_x[plane_idx] as usize
                 } else if is_planar {
                     1
@@ -9574,7 +10925,7 @@ pub extern "C" fn vxSetImagePixelValues(
                 };
 
                 let fill_val = match img.format {
-                    0x38303055 => val.U8, // U8
+                    0x38303055 => val.U8,                           // U8
                     _ if is_planar && plane_idx == 0 => val.YUV[0], // Y
                     _ if is_planar && plane_idx == 1 => val.YUV[1], // U
                     _ if is_planar && plane_idx == 2 => val.YUV[2], // V
@@ -9597,42 +10948,64 @@ pub extern "C" fn vxSetImagePixelValues(
         unsafe {
             let val = std::ptr::read(value);
             match img.format {
-                0x38303055 => { data.fill(val.U8); } // VX_DF_IMAGE_U8
-                0x36313055 => { // VX_DF_IMAGE_U16
+                0x38303055 => {
+                    data.fill(val.U8);
+                } // VX_DF_IMAGE_U8
+                0x36313055 => {
+                    // VX_DF_IMAGE_U16
                     let v = val.U16.to_le_bytes();
                     for chunk in data.chunks_exact_mut(2) {
-                        chunk[0] = v[0]; chunk[1] = v[1];
+                        chunk[0] = v[0];
+                        chunk[1] = v[1];
                     }
                 }
-                0x36313053 => { // VX_DF_IMAGE_S16
+                0x36313053 => {
+                    // VX_DF_IMAGE_S16
                     let v = val.S16.to_le_bytes();
                     for chunk in data.chunks_exact_mut(2) {
-                        chunk[0] = v[0]; chunk[1] = v[1];
+                        chunk[0] = v[0];
+                        chunk[1] = v[1];
                     }
                 }
-                0x32333055 => { // VX_DF_IMAGE_U32
+                0x32333055 => {
+                    // VX_DF_IMAGE_U32
                     let v = val.U32.to_le_bytes();
                     for chunk in data.chunks_exact_mut(4) {
-                        chunk[0] = v[0]; chunk[1] = v[1]; chunk[2] = v[2]; chunk[3] = v[3];
+                        chunk[0] = v[0];
+                        chunk[1] = v[1];
+                        chunk[2] = v[2];
+                        chunk[3] = v[3];
                     }
                 }
-                0x32333053 => { // VX_DF_IMAGE_S32
+                0x32333053 => {
+                    // VX_DF_IMAGE_S32
                     let v = val.S32.to_le_bytes();
                     for chunk in data.chunks_exact_mut(4) {
-                        chunk[0] = v[0]; chunk[1] = v[1]; chunk[2] = v[2]; chunk[3] = v[3];
+                        chunk[0] = v[0];
+                        chunk[1] = v[1];
+                        chunk[2] = v[2];
+                        chunk[3] = v[3];
                     }
                 }
-                0x32424752 => { // VX_DF_IMAGE_RGB
+                0x32424752 => {
+                    // VX_DF_IMAGE_RGB
                     for chunk in data.chunks_exact_mut(3) {
-                        chunk[0] = val.RGB[0]; chunk[1] = val.RGB[1]; chunk[2] = val.RGB[2];
+                        chunk[0] = val.RGB[0];
+                        chunk[1] = val.RGB[1];
+                        chunk[2] = val.RGB[2];
                     }
                 }
-                0x41424752 => { // VX_DF_IMAGE_RGBA
+                0x41424752 => {
+                    // VX_DF_IMAGE_RGBA
                     for chunk in data.chunks_exact_mut(4) {
-                        chunk[0] = val.RGBA[0]; chunk[1] = val.RGBA[1]; chunk[2] = val.RGBA[2]; chunk[3] = val.RGBA[3];
+                        chunk[0] = val.RGBA[0];
+                        chunk[1] = val.RGBA[1];
+                        chunk[2] = val.RGBA[2];
+                        chunk[3] = val.RGBA[3];
                     }
                 }
-                0x3231564E => { // NV12: Y plane, then interleaved U,V plane
+                0x3231564E => {
+                    // NV12: Y plane, then interleaved U,V plane
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
@@ -9646,7 +11019,8 @@ pub extern "C" fn vxSetImagePixelValues(
                         }
                     }
                 }
-                0x3132564E => { // NV21: Y plane, then interleaved V,U plane
+                0x3132564E => {
+                    // NV21: Y plane, then interleaved V,U plane
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
@@ -9660,7 +11034,8 @@ pub extern "C" fn vxSetImagePixelValues(
                         }
                     }
                 }
-                0x56555949 => { // IYUV: Y plane, U plane, V plane
+                0x56555949 => {
+                    // IYUV: Y plane, U plane, V plane
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
@@ -9668,24 +11043,26 @@ pub extern "C" fn vxSetImagePixelValues(
                     let uv_w = (img.width as usize + 1) / 2;
                     let uv_h = (img.height as usize + 1) / 2;
                     let uv_size = uv_w * uv_h;
-                    if data.len() >= y_size + 2*uv_size {
+                    if data.len() >= y_size + 2 * uv_size {
                         data[..y_size].fill(y_val);
-                        data[y_size..y_size+uv_size].fill(u_val);
-                        data[y_size+uv_size..y_size+2*uv_size].fill(v_val);
+                        data[y_size..y_size + uv_size].fill(u_val);
+                        data[y_size + uv_size..y_size + 2 * uv_size].fill(v_val);
                     }
                 }
-                0x34565559 => { // YUV4: Y, U, V planes all full size
+                0x34565559 => {
+                    // YUV4: Y, U, V planes all full size
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
                     let plane_size = (img.width as usize) * (img.height as usize);
                     if data.len() >= 3 * plane_size {
                         data[..plane_size].fill(y_val);
-                        data[plane_size..2*plane_size].fill(u_val);
-                        data[2*plane_size..3*plane_size].fill(v_val);
+                        data[plane_size..2 * plane_size].fill(u_val);
+                        data[2 * plane_size..3 * plane_size].fill(v_val);
                     }
                 }
-                0x59565955 => { // UYVY: packed U, Y0, V, Y1 per 2 pixels
+                0x59565955 => {
+                    // UYVY: packed U, Y0, V, Y1 per 2 pixels
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
@@ -9696,7 +11073,8 @@ pub extern "C" fn vxSetImagePixelValues(
                         chunk[3] = y_val;
                     }
                 }
-                0x56595559 => { // YUYV: packed Y0, U, Y1, V per 2 pixels
+                0x56595559 => {
+                    // YUYV: packed Y0, U, Y1, V per 2 pixels
                     let y_val = val.YUV[0];
                     let u_val = val.YUV[1];
                     let v_val = val.YUV[2];
@@ -9707,7 +11085,9 @@ pub extern "C" fn vxSetImagePixelValues(
                         chunk[3] = v_val;
                     }
                 }
-                _ => { data.fill(val.U8); }
+                _ => {
+                    data.fill(val.U8);
+                }
             }
         }
     }
@@ -9730,8 +11110,16 @@ pub extern "C" fn vxFormatImagePatchAddress1d(
         let dim_x = if address.dim_x == 0 { 1 } else { address.dim_x };
         let stride_y = address.stride_y as isize;
         let stride_x = address.stride_x as isize;
-        let scale_x = if address.scale_x == 0 { 1024u32 } else { address.scale_x };
-        let scale_y = if address.scale_y == 0 { 1024u32 } else { address.scale_y };
+        let scale_x = if address.scale_x == 0 {
+            1024u32
+        } else {
+            address.scale_x
+        };
+        let scale_y = if address.scale_y == 0 {
+            1024u32
+        } else {
+            address.scale_y
+        };
         let y = index / dim_x;
         let x = index % dim_x;
         let offset = stride_y * ((scale_y as isize * y as isize) / 1024)
@@ -9756,7 +11144,12 @@ pub extern "C" fn vxWeightedAverageNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.weighted_average",
-        &[img1 as vx_reference, alpha as vx_reference, img2 as vx_reference, output as vx_reference],
+        &[
+            img1 as vx_reference,
+            alpha as vx_reference,
+            img2 as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
@@ -9791,7 +11184,11 @@ pub extern "C" fn vxAbsDiffNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.absdiff",
-        &[in1 as vx_reference, in2 as vx_reference, output as vx_reference],
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
@@ -9819,21 +11216,22 @@ pub extern "C" fn vxuAbsDiff(
     let status = vxVerifyGraph(graph);
     if status != VX_SUCCESS {
         let mut g = graph;
-        unsafe { crate::c_api::vxReleaseGraph(&mut g as *mut _ as *mut vx_graph); }
+        unsafe {
+            crate::c_api::vxReleaseGraph(&mut g as *mut _ as *mut vx_graph);
+        }
         return status;
     }
     let status = vxProcessGraph(graph);
     let mut g = graph;
-    unsafe { crate::c_api::vxReleaseGraph(&mut g as *mut _ as *mut vx_graph); }
+    unsafe {
+        crate::c_api::vxReleaseGraph(&mut g as *mut _ as *mut vx_graph);
+    }
     status
 }
 
 /// Register user struct with auto-generated name
 #[no_mangle]
-pub extern "C" fn vxRegisterUserStruct(
-    context: vx_context,
-    size: vx_size,
-) -> vx_enum {
+pub extern "C" fn vxRegisterUserStruct(context: vx_context, size: vx_size) -> vx_enum {
     // Generate a unique name based on the next enum value
     let next_val = NEXT_USER_STRUCT_ENUM.load(Ordering::SeqCst);
     let name = format!("user_struct_{}", next_val);
@@ -9856,7 +11254,11 @@ pub extern "C" fn vxLaplacianPyramidNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.laplacian_pyramid",
-        &[input as vx_reference, laplacian as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            laplacian as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
@@ -9874,7 +11276,11 @@ pub extern "C" fn vxLaplacianReconstructNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.laplacian_reconstruct",
-        &[laplacian as vx_reference, input as vx_reference, output as vx_reference],
+        &[
+            laplacian as vx_reference,
+            input as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
@@ -9982,7 +11388,11 @@ pub extern "C" fn vxNonLinearFilterNode(
         return std::ptr::null_mut();
     }
 
-    let mut function_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &function as *const _ as *const c_void);
+    let mut function_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_ENUM,
+        &function as *const _ as *const c_void,
+    );
     if function_scalar.is_null() {
         return std::ptr::null_mut();
     }
@@ -9990,8 +11400,12 @@ pub extern "C" fn vxNonLinearFilterNode(
     let node = create_node_with_params(
         graph,
         "org.khronos.openvx.non_linear_filter",
-        &[function_scalar as vx_reference, input as vx_reference,
-          matrix as vx_reference, output as vx_reference],
+        &[
+            function_scalar as vx_reference,
+            input as vx_reference,
+            matrix as vx_reference,
+            output as vx_reference,
+        ],
     );
 
     // Release the scalar since create_node_with_params retains it via vxSetParameterByIndex
@@ -10042,7 +11456,10 @@ pub extern "C" fn vxuNonLinearFilter(
     };
 
     // Call the implementation
-    crate::vxu_impl::vxu_non_linear_filter_impl(context, input, function, &mask_data, mask_cols, mask_rows, m.origin_x, m.origin_y, output, border)
+    crate::vxu_impl::vxu_non_linear_filter_impl(
+        context, input, function, &mask_data, mask_cols, mask_rows, m.origin_x, m.origin_y, output,
+        border,
+    )
 }
 
 /// Threshold node
@@ -10061,7 +11478,11 @@ pub extern "C" fn vxThresholdNode(
     create_node_with_params(
         graph,
         "org.khronos.openvx.threshold",
-        &[input as vx_reference, thresh as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            thresh as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
@@ -10117,7 +11538,9 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
 
     // Register in REFERENCE_COUNTS
     if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-        counts.entry(param_id as usize).or_insert(AtomicUsize::new(1));
+        counts
+            .entry(param_id as usize)
+            .or_insert(AtomicUsize::new(1));
     }
 
     // Also create/update an entry in PARAMETERS registry with the actual value
@@ -10144,7 +11567,11 @@ pub extern "C" fn vxGetParameterByIndex(node: vx_node, index: vx_uint32) -> vx_p
 
 /// Set immediate mode target
 #[no_mangle]
-pub extern "C" fn vxSetImmediateModeTarget(context: vx_context, target_enum: vx_enum, target_string: *const vx_char) -> vx_status {
+pub extern "C" fn vxSetImmediateModeTarget(
+    context: vx_context,
+    _target_enum: vx_enum,
+    _target_string: *const vx_char,
+) -> vx_status {
     if context.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -10155,12 +11582,21 @@ pub extern "C" fn vxSetImmediateModeTarget(context: vx_context, target_enum: vx_
 /// Uses VxCScalarData layout (same as vxCreateScalar) so vxQueryReference
 /// can find it in REFERENCE_TYPES and vxCopyScalarWithSize / vxReleaseScalar work.
 #[no_mangle]
-pub extern "C" fn vxCreateScalarWithSize(context: vx_context, data_type: vx_enum, ptr: *const c_void, size: vx_size) -> vx_scalar {
+pub extern "C" fn vxCreateScalarWithSize(
+    context: vx_context,
+    data_type: vx_enum,
+    ptr: *const c_void,
+    size: vx_size,
+) -> vx_scalar {
     if context.is_null() || ptr.is_null() {
         return std::ptr::null_mut();
     }
 
-    let data_size = if size > 0 { size as usize } else { crate::c_api_data::VxCScalarData::type_size(data_type) };
+    let data_size = if size > 0 {
+        size as usize
+    } else {
+        crate::c_api_data::VxCScalarData::type_size(data_type)
+    };
 
     let mut data = vec![0u8; data_size];
     unsafe {
@@ -10191,7 +11627,13 @@ pub extern "C" fn vxCreateScalarWithSize(context: vx_context, data_type: vx_enum
 /// Copy scalar data with explicit size
 /// C API signature: vxCopyScalarWithSize(vx_scalar, vx_size, void*, vx_enum usage, vx_enum user_mem_type)
 #[no_mangle]
-pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, size: vx_size, user_ptr: *mut c_void, usage: vx_enum, user_mem_type: vx_enum) -> vx_status {
+pub extern "C" fn vxCopyScalarWithSize(
+    scalar: vx_scalar,
+    size: vx_size,
+    user_ptr: *mut c_void,
+    usage: vx_enum,
+    user_mem_type: vx_enum,
+) -> vx_status {
     if scalar.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -10204,7 +11646,11 @@ pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, size: vx_size, user_pt
 
     unsafe {
         let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
-        let copy_len = if size > 0 { size as usize } else { s.data.len() };
+        let copy_len = if size > 0 {
+            size as usize
+        } else {
+            s.data.len()
+        };
         // Clamp copy length to actual data size to avoid buffer overread
         let copy_len = copy_len.min(s.data.len());
 
@@ -10216,13 +11662,21 @@ pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, size: vx_size, user_pt
             0x11002 | 0x2 => {
                 // VX_WRITE_ONLY - copy from user memory to scalar
                 let s_mut = &mut *(scalar as *mut crate::c_api_data::VxCScalarData);
-                std::ptr::copy_nonoverlapping(user_ptr as *const u8, s_mut.data.as_mut_ptr(), copy_len);
+                std::ptr::copy_nonoverlapping(
+                    user_ptr as *const u8,
+                    s_mut.data.as_mut_ptr(),
+                    copy_len,
+                );
             }
             0x11003 | 0x3 => {
                 // VX_READ_AND_WRITE - read from scalar, then write back
                 std::ptr::copy_nonoverlapping(s.data.as_ptr(), user_ptr as *mut u8, copy_len);
                 let s_mut = &mut *(scalar as *mut crate::c_api_data::VxCScalarData);
-                std::ptr::copy_nonoverlapping(user_ptr as *const u8, s_mut.data.as_mut_ptr(), copy_len);
+                std::ptr::copy_nonoverlapping(
+                    user_ptr as *const u8,
+                    s_mut.data.as_mut_ptr(),
+                    copy_len,
+                );
             }
             _ => return VX_ERROR_INVALID_PARAMETERS,
         }
@@ -10234,12 +11688,22 @@ pub extern "C" fn vxCopyScalarWithSize(scalar: vx_scalar, size: vx_size, user_pt
 /// Not node
 #[no_mangle]
 pub extern "C" fn vxNotNode(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
-    create_node_with_params(graph, "org.khronos.openvx.not", &[input as vx_reference, output as vx_reference])
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.not",
+        &[input as vx_reference, output as vx_reference],
+    )
 }
 
 /// Convert depth node
 #[no_mangle]
-pub extern "C" fn vxConvertDepthNode(graph: vx_graph, input: vx_image, output: vx_image, policy: vx_enum, shift: vx_scalar) -> vx_node {
+pub extern "C" fn vxConvertDepthNode(
+    graph: vx_graph,
+    input: vx_image,
+    output: vx_image,
+    policy: vx_enum,
+    shift: vx_scalar,
+) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -10268,7 +11732,11 @@ pub extern "C" fn vxConvertDepthNode(graph: vx_graph, input: vx_image, output: v
     }
     // Create policy scalar
     let mut policy_val = policy;
-    let mut policy_scalar = vxCreateScalar(context, 0x0A, &mut policy_val as *mut vx_enum as *mut c_void);
+    let mut policy_scalar = vxCreateScalar(
+        context,
+        0x0A,
+        &mut policy_val as *mut vx_enum as *mut c_void,
+    );
     if policy_scalar.is_null() {
         crate::c_api::vxReleaseNode(&mut node as *mut _);
         return std::ptr::null_mut();
@@ -10316,21 +11784,36 @@ pub extern "C" fn vxuOpticalFlowPyrLK(
     // Extract scalar values
     let epsilon = if !epsilon_scalar.is_null() {
         let mut val: vx_float32 = 0.0;
-        vxCopyScalar(epsilon_scalar, &mut val as *mut _ as *mut c_void, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+        vxCopyScalar(
+            epsilon_scalar,
+            &mut val as *mut _ as *mut c_void,
+            VX_READ_ONLY,
+            VX_MEMORY_TYPE_HOST,
+        );
         val
     } else {
         0.0
     };
     let num_iterations = if !num_iterations_scalar.is_null() {
         let mut val: vx_uint32 = 0;
-        vxCopyScalar(num_iterations_scalar, &mut val as *mut _ as *mut c_void, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+        vxCopyScalar(
+            num_iterations_scalar,
+            &mut val as *mut _ as *mut c_void,
+            VX_READ_ONLY,
+            VX_MEMORY_TYPE_HOST,
+        );
         val
     } else {
         0
     };
     let use_initial_estimate = if !use_initial_estimate_scalar.is_null() {
         let mut val: vx_bool = 0;
-        vxCopyScalar(use_initial_estimate_scalar, &mut val as *mut _ as *mut c_void, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+        vxCopyScalar(
+            use_initial_estimate_scalar,
+            &mut val as *mut _ as *mut c_void,
+            VX_READ_ONLY,
+            VX_MEMORY_TYPE_HOST,
+        );
         val
     } else {
         0
@@ -10361,7 +11844,12 @@ pub extern "C" fn vxuOpticalFlowPyrLK(
 
 /// And node - bitwise AND between two images
 #[no_mangle]
-pub extern "C" fn vxAndNode(graph: vx_graph, in1: vx_image, in2: vx_image, output: vx_image) -> vx_node {
+pub extern "C" fn vxAndNode(
+    graph: vx_graph,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_node {
     if graph.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -10369,13 +11857,22 @@ pub extern "C" fn vxAndNode(graph: vx_graph, in1: vx_image, in2: vx_image, outpu
     create_node_with_params(
         graph,
         "org.khronos.openvx.and",
-        &[in1 as vx_reference, in2 as vx_reference, output as vx_reference],
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
 /// Or node - bitwise OR between two images
 #[no_mangle]
-pub extern "C" fn vxOrNode(graph: vx_graph, in1: vx_image, in2: vx_image, output: vx_image) -> vx_node {
+pub extern "C" fn vxOrNode(
+    graph: vx_graph,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_node {
     if graph.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -10383,13 +11880,22 @@ pub extern "C" fn vxOrNode(graph: vx_graph, in1: vx_image, in2: vx_image, output
     create_node_with_params(
         graph,
         "org.khronos.openvx.or",
-        &[in1 as vx_reference, in2 as vx_reference, output as vx_reference],
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
 /// Xor node - bitwise XOR between two images
 #[no_mangle]
-pub extern "C" fn vxXorNode(graph: vx_graph, in1: vx_image, in2: vx_image, output: vx_image) -> vx_node {
+pub extern "C" fn vxXorNode(
+    graph: vx_graph,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_node {
     if graph.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -10397,27 +11903,46 @@ pub extern "C" fn vxXorNode(graph: vx_graph, in1: vx_image, in2: vx_image, outpu
     create_node_with_params(
         graph,
         "org.khronos.openvx.xor",
-        &[in1 as vx_reference, in2 as vx_reference, output as vx_reference],
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
 /// And immediate mode - bitwise AND between two images
 #[no_mangle]
-pub extern "C" fn vxuAnd(context: vx_context, in1: vx_image, in2: vx_image, output: vx_image) -> vx_status {
+pub extern "C" fn vxuAnd(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
     use crate::vxu_impl::vxu_and_impl;
     vxu_and_impl(context, in1, in2, output)
 }
 
 /// Or immediate mode - bitwise OR between two images
 #[no_mangle]
-pub extern "C" fn vxuOr(context: vx_context, in1: vx_image, in2: vx_image, output: vx_image) -> vx_status {
+pub extern "C" fn vxuOr(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
     use crate::vxu_impl::vxu_or_impl;
     vxu_or_impl(context, in1, in2, output)
 }
 
 /// Xor immediate mode - bitwise XOR between two images
 #[no_mangle]
-pub extern "C" fn vxuXor(context: vx_context, in1: vx_image, in2: vx_image, output: vx_image) -> vx_status {
+pub extern "C" fn vxuXor(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
     use crate::vxu_impl::vxu_xor_impl;
     vxu_xor_impl(context, in1, in2, output)
 }
@@ -10435,7 +11960,12 @@ pub extern "C" fn vxuNot(context: vx_context, input: vx_image, output: vx_image)
 
 /// Table lookup node - apply LUT to image
 #[no_mangle]
-pub extern "C" fn vxTableLookupNode(graph: vx_graph, input: vx_image, lut: vx_lut, output: vx_image) -> vx_node {
+pub extern "C" fn vxTableLookupNode(
+    graph: vx_graph,
+    input: vx_image,
+    lut: vx_lut,
+    output: vx_image,
+) -> vx_node {
     if graph.is_null() || input.is_null() || lut.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -10443,13 +11973,22 @@ pub extern "C" fn vxTableLookupNode(graph: vx_graph, input: vx_image, lut: vx_lu
     create_node_with_params(
         graph,
         "org.khronos.openvx.table_lookup",
-        &[input as vx_reference, lut as vx_reference, output as vx_reference],
+        &[
+            input as vx_reference,
+            lut as vx_reference,
+            output as vx_reference,
+        ],
     )
 }
 
 /// Table lookup immediate mode
 #[no_mangle]
-pub extern "C" fn vxuTableLookup(context: vx_context, input: vx_image, lut: vx_lut, output: vx_image) -> vx_status {
+pub extern "C" fn vxuTableLookup(
+    context: vx_context,
+    input: vx_image,
+    lut: vx_lut,
+    output: vx_image,
+) -> vx_status {
     if context.is_null() || input.is_null() || lut.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -10459,10 +11998,16 @@ pub extern "C" fn vxuTableLookup(context: vx_context, input: vx_image, lut: vx_l
 // ============================================================================
 // Virtual Object Creation
 
-
 /// Create matrix from pattern and origin
 #[no_mangle]
-pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, pattern: vx_enum, cols: vx_size, rows: vx_size, origin_x: vx_size, origin_y: vx_size) -> vx_matrix {
+pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(
+    context: vx_context,
+    pattern: vx_enum,
+    cols: vx_size,
+    rows: vx_size,
+    origin_x: vx_size,
+    origin_y: vx_size,
+) -> vx_matrix {
     if context.is_null() {
         return std::ptr::null_mut();
     }
@@ -10494,7 +12039,11 @@ pub extern "C" fn vxCreateMatrixFromPatternAndOrigin(context: vx_context, patter
 /// Set graph parameter by index
 /// Binds a reference to a graph parameter, which then binds to connected node parameters
 #[no_mangle]
-pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, param: vx_reference) -> vx_status {
+pub extern "C" fn vxSetGraphParameterByIndex(
+    graph: vx_graph,
+    index: vx_uint32,
+    param: vx_reference,
+) -> vx_status {
     if graph.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -10523,7 +12072,7 @@ pub extern "C" fn vxSetGraphParameterByIndex(graph: vx_graph, index: vx_uint32, 
     }
 
     // Increment ref count of the new parameter being bound
-    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+    if let Ok(counts) = REFERENCE_COUNTS.lock() {
         if let Some(cnt) = counts.get(&(param_addr)) {
             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         } else {
@@ -10584,7 +12133,7 @@ pub extern "C" fn vxGetGraphParameterByIndex(graph: vx_graph, index: vx_uint32) 
                 if (index as usize) < graph_params.len() {
                     let pid = graph_params[index as usize];
                     // Increment ref count for the existing parameter
-                    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    if let Ok(counts) = REFERENCE_COUNTS.lock() {
                         if let Some(cnt) = counts.get(&(pid as usize)) {
                             cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         }
@@ -10636,7 +12185,10 @@ pub extern "C" fn vxReleaseExportedMemory(context: vx_context, ptr: *mut *mut c_
 
 /// Get import reference by name
 #[no_mangle]
-pub extern "C" fn vxGetImportReferenceByName(import: vx_import, name: *const vx_char) -> vx_reference {
+pub extern "C" fn vxGetImportReferenceByName(
+    import: vx_import,
+    name: *const vx_char,
+) -> vx_reference {
     if import.is_null() || name.is_null() {
         return std::ptr::null_mut();
     }
@@ -10666,7 +12218,12 @@ pub extern "C" fn vxRetrieveNodeCallback(node: vx_node) -> vx_nodecomplete_f {
 
 /// Half scale Gaussian node
 #[no_mangle]
-pub extern "C" fn vxHalfScaleGaussianNode(graph: vx_graph, input: vx_image, output: vx_image, kernel_size: vx_size) -> vx_node {
+pub extern "C" fn vxHalfScaleGaussianNode(
+    graph: vx_graph,
+    input: vx_image,
+    output: vx_image,
+    kernel_size: vx_size,
+) -> vx_node {
     if graph.is_null() || input.is_null() || output.is_null() {
         return std::ptr::null_mut();
     }
@@ -10711,7 +12268,12 @@ pub extern "C" fn vxHalfScaleGaussianNode(graph: vx_graph, input: vx_image, outp
 
 /// Immediate mode half scale Gaussian
 #[no_mangle]
-pub extern "C" fn vxuHalfScaleGaussian(context: vx_context, input: vx_image, output: vx_image, kernel_size: vx_size) -> vx_status {
+pub extern "C" fn vxuHalfScaleGaussian(
+    context: vx_context,
+    input: vx_image,
+    output: vx_image,
+    kernel_size: vx_size,
+) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -10724,7 +12286,13 @@ pub extern "C" fn vxuHalfScaleGaussian(context: vx_context, input: vx_image, out
 
 /// Convert depth immediate mode
 #[no_mangle]
-pub extern "C" fn vxuConvertDepth(context: vx_context, input: vx_image, output: vx_image, policy: vx_enum, shift: vx_int32) -> vx_status {
+pub extern "C" fn vxuConvertDepth(
+    context: vx_context,
+    input: vx_image,
+    output: vx_image,
+    policy: vx_enum,
+    shift: vx_int32,
+) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -10733,13 +12301,25 @@ pub extern "C" fn vxuConvertDepth(context: vx_context, input: vx_image, output: 
 
 /// Equalize histogram node
 #[no_mangle]
-pub extern "C" fn vxEqualizeHistNode(graph: vx_graph, input: vx_image, output: vx_image) -> vx_node {
-    create_node_with_params(graph, "org.khronos.openvx.equalize_histogram", &[input as vx_reference, output as vx_reference])
+pub extern "C" fn vxEqualizeHistNode(
+    graph: vx_graph,
+    input: vx_image,
+    output: vx_image,
+) -> vx_node {
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.equalize_histogram",
+        &[input as vx_reference, output as vx_reference],
+    )
 }
 
 /// Equalize histogram immediate mode
 #[no_mangle]
-pub extern "C" fn vxuEqualizeHist(context: vx_context, input: vx_image, output: vx_image) -> vx_status {
+pub extern "C" fn vxuEqualizeHist(
+    context: vx_context,
+    input: vx_image,
+    output: vx_image,
+) -> vx_status {
     if context.is_null() || input.is_null() || output.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -10748,7 +12328,14 @@ pub extern "C" fn vxuEqualizeHist(context: vx_context, input: vx_image, output: 
 
 /// Fast corners node
 #[no_mangle]
-pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_thresh: vx_scalar, nonmax_suppression: vx_bool, corners: vx_array, num_corners: vx_scalar) -> vx_node {
+pub extern "C" fn vxFastCornersNode(
+    graph: vx_graph,
+    input: vx_image,
+    strength_thresh: vx_scalar,
+    nonmax_suppression: vx_bool,
+    corners: vx_array,
+    num_corners: vx_scalar,
+) -> vx_node {
     if graph.is_null() || input.is_null() {
         return std::ptr::null_mut();
     }
@@ -10758,7 +12345,12 @@ pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_t
         return std::ptr::null_mut();
     }
 
-    let mut kernel = unsafe { crate::c_api::vxGetKernelByName(context, b"org.khronos.openvx.fast_corners\0".as_ptr() as *const i8) };
+    let mut kernel = unsafe {
+        crate::c_api::vxGetKernelByName(
+            context,
+            b"org.khronos.openvx.fast_corners\0".as_ptr() as *const i8,
+        )
+    };
     if kernel.is_null() {
         return std::ptr::null_mut();
     }
@@ -10775,7 +12367,11 @@ pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_t
         // Parameter 2: nonmax_suppression (vx_bool as vx_scalar)
         {
             let mut nonmax_val: vx_enum = if nonmax_suppression != 0 { 1 } else { 0 };
-            let mut nonmax_scalar = vxCreateScalar(context, 0x0C, &mut nonmax_val as *mut vx_enum as *mut c_void); // VX_TYPE_BOOL
+            let mut nonmax_scalar = vxCreateScalar(
+                context,
+                0x0C,
+                &mut nonmax_val as *mut vx_enum as *mut c_void,
+            ); // VX_TYPE_BOOL
             if !nonmax_scalar.is_null() {
                 vxSetParameterByIndex(node, 2, nonmax_scalar as vx_reference);
                 vxReleaseScalar(&mut nonmax_scalar as *mut _);
@@ -10795,8 +12391,22 @@ pub extern "C" fn vxFastCornersNode(graph: vx_graph, input: vx_image, strength_t
 
 /// Fast corners immediate mode
 #[no_mangle]
-pub extern "C" fn vxuFastCorners(context: vx_context, input: vx_image, strength_thresh: vx_scalar, nonmax_suppression: vx_bool, corners: vx_array, num_corners: vx_scalar) -> vx_status {
-    crate::vxu_impl::vxu_fast_corners_impl(context, input, strength_thresh, nonmax_suppression as i32, corners, num_corners)
+pub extern "C" fn vxuFastCorners(
+    context: vx_context,
+    input: vx_image,
+    strength_thresh: vx_scalar,
+    nonmax_suppression: vx_bool,
+    corners: vx_array,
+    num_corners: vx_scalar,
+) -> vx_status {
+    crate::vxu_impl::vxu_fast_corners_impl(
+        context,
+        input,
+        strength_thresh,
+        nonmax_suppression as i32,
+        corners,
+        num_corners,
+    )
 }
 
 /// Table lookup implementation
@@ -10835,7 +12445,8 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
         let is_s16_input = input_format == 0x36313053 || input_format == 0x53313053; // 'S016' variants
         let is_s16_output = output_format == 0x36313053 || output_format == 0x53313053;
 
-        if data_type == 0x003 { // VX_TYPE_UINT8
+        if data_type == 0x003 {
+            // VX_TYPE_UINT8
             // UINT8 LUT: input values 0-255, LUT maps each to a UINT8 output
             if is_s16_input {
                 // S16 input with UINT8 LUT: use offset
@@ -10864,7 +12475,8 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
                     }
                 }
             }
-        } else if data_type == 0x004 { // VX_TYPE_INT16
+        } else if data_type == 0x004 {
+            // VX_TYPE_INT16
             // INT16 LUT: 65536 entries, 2 bytes each
             if is_s16_input {
                 // S16 input with INT16 LUT
@@ -10874,7 +12486,8 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
                         let value = i16::from_le_bytes([input_data[idx], input_data[idx + 1]]);
                         let lut_idx = ((value as i32 + offset as i32) as usize) * 2;
                         if lut_idx + 1 < lut_data.len() {
-                            let result = i16::from_le_bytes([lut_data[lut_idx], lut_data[lut_idx + 1]]);
+                            let result =
+                                i16::from_le_bytes([lut_data[lut_idx], lut_data[lut_idx + 1]]);
                             if is_s16_output {
                                 let out_idx = (y * width + x) * 2;
                                 let bytes = result.to_le_bytes();
@@ -10893,7 +12506,8 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
                         let value = input_data[y * width + x] as usize;
                         let lut_idx = ((value as i32 + offset as i32) as usize) * 2;
                         if lut_idx + 1 < lut_data.len() {
-                            let result = i16::from_le_bytes([lut_data[lut_idx], lut_data[lut_idx + 1]]);
+                            let result =
+                                i16::from_le_bytes([lut_data[lut_idx], lut_data[lut_idx + 1]]);
                             if is_s16_output {
                                 let out_idx = (y * width + x) * 2;
                                 let bytes = result.to_le_bytes();
@@ -10913,5 +12527,3 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
 
     VX_SUCCESS
 }
-
-
