@@ -1,37 +1,46 @@
 //! Arithmetic operations
 
-use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
+use openvx_core::{Context, KernelTrait, Referenceable, VxKernel, VxResult};
 use openvx_image::Image;
 
 /// Add kernel - pixel-wise addition with overflow policy
 pub struct AddKernel;
 
 impl AddKernel {
-    pub fn new() -> Self { AddKernel }
+    pub fn new() -> Self {
+        AddKernel
+    }
 }
 
 impl KernelTrait for AddKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.add" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Add }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.add"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Add
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src1 = params.get(0)
+        let src1 = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let src2 = params.get(1)
+        let src2 = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         add(src1, src2, dst)?;
         Ok(())
     }
@@ -41,31 +50,40 @@ impl KernelTrait for AddKernel {
 pub struct SubtractKernel;
 
 impl SubtractKernel {
-    pub fn new() -> Self { SubtractKernel }
+    pub fn new() -> Self {
+        SubtractKernel
+    }
 }
 
 impl KernelTrait for SubtractKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.subtract" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Subtract }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.subtract"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Subtract
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src1 = params.get(0)
+        let src1 = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let src2 = params.get(1)
+        let src2 = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         subtract(src1, src2, dst)?;
         Ok(())
     }
@@ -75,31 +93,40 @@ impl KernelTrait for SubtractKernel {
 pub struct MultiplyKernel;
 
 impl MultiplyKernel {
-    pub fn new() -> Self { MultiplyKernel }
+    pub fn new() -> Self {
+        MultiplyKernel
+    }
 }
 
 impl KernelTrait for MultiplyKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.multiply" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Multiply }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.multiply"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Multiply
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src1 = params.get(0)
+        let src1 = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let src2 = params.get(1)
+        let src2 = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         multiply(src1, src2, dst, 1.0)?;
         Ok(())
     }
@@ -109,31 +136,40 @@ impl KernelTrait for MultiplyKernel {
 pub struct WeightedAverageKernel;
 
 impl WeightedAverageKernel {
-    pub fn new() -> Self { WeightedAverageKernel }
+    pub fn new() -> Self {
+        WeightedAverageKernel
+    }
 }
 
 impl KernelTrait for WeightedAverageKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.weighted_average" }
-    fn get_enum(&self) -> VxKernel { VxKernel::WeightedAverage }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.weighted_average"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::WeightedAverage
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src1 = params.get(0)
+        let src1 = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let src2 = params.get(1)
+        let src2 = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         weighted(src1, src2, dst, 0.5)?;
         Ok(())
     }
@@ -144,12 +180,12 @@ pub fn add(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
-    
+
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as u16;
@@ -158,7 +194,7 @@ pub fn add(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
             dst_data[y * width + x] = sum.min(255) as u8;
         }
     }
-    
+
     Ok(())
 }
 
@@ -167,12 +203,12 @@ pub fn subtract(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
-    
+
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as i16;
@@ -181,7 +217,7 @@ pub fn subtract(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
             dst_data[y * width + x] = diff.max(0).min(255) as u8;
         }
     }
-    
+
     Ok(())
 }
 
@@ -190,12 +226,12 @@ pub fn multiply(src1: &Image, src2: &Image, dst: &Image, scale: f32) -> VxResult
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
-    
+
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as f32;
@@ -204,7 +240,7 @@ pub fn multiply(src1: &Image, src2: &Image, dst: &Image, scale: f32) -> VxResult
             dst_data[y * width + x] = product.max(0.0).min(255.0) as u8;
         }
     }
-    
+
     Ok(())
 }
 
@@ -213,14 +249,14 @@ pub fn weighted(src1: &Image, src2: &Image, dst: &Image, alpha_f32: f32) -> VxRe
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
     let alpha_w = alpha_f32;
     let beta_w = 1.0 - alpha_f32;
-    
+
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y) as f32;
@@ -230,7 +266,7 @@ pub fn weighted(src1: &Image, src2: &Image, dst: &Image, alpha_f32: f32) -> VxRe
             dst_data[y * width + x] = result as i32 as u8;
         }
     }
-    
+
     Ok(())
 }
 
@@ -239,11 +275,11 @@ pub fn and(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y);
@@ -251,7 +287,7 @@ pub fn and(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
             dst_data[y * width + x] = a & b;
         }
     }
-    
+
     Ok(())
 }
 
@@ -260,11 +296,11 @@ pub fn or(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y);
@@ -272,7 +308,7 @@ pub fn or(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
             dst_data[y * width + x] = a | b;
         }
     }
-    
+
     Ok(())
 }
 
@@ -281,11 +317,11 @@ pub fn xor(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     if src1.width() != src2.width() || src1.height() != src2.height() {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
-    
+
     let width = src1.width();
     let height = src1.height();
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src1.get_pixel(x, y);
@@ -293,7 +329,7 @@ pub fn xor(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
             dst_data[y * width + x] = a ^ b;
         }
     }
-    
+
     Ok(())
 }
 
@@ -302,14 +338,14 @@ pub fn not(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
     let mut dst_data = dst.data_mut();
-    
+
     for y in 0..height {
         for x in 0..width {
             let a = src.get_pixel(x, y);
             dst_data[y * width + x] = !a;
         }
     }
-    
+
     Ok(())
 }
 
@@ -317,31 +353,40 @@ pub fn not(src: &Image, dst: &Image) -> VxResult<()> {
 pub struct AndKernel;
 
 impl AndKernel {
-    pub fn new() -> Self { AndKernel }
+    pub fn new() -> Self {
+        AndKernel
+    }
 }
 
 impl KernelTrait for AndKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.and" }
-    fn get_enum(&self) -> VxKernel { VxKernel::And }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.and"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::And
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src1 = params.get(0)
+        let src1 = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let src2 = params.get(1)
+        let src2 = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         and(src1, src2, dst)?;
         Ok(())
     }
@@ -351,31 +396,40 @@ impl KernelTrait for AndKernel {
 pub struct OrKernel;
 
 impl OrKernel {
-    pub fn new() -> Self { OrKernel }
+    pub fn new() -> Self {
+        OrKernel
+    }
 }
 
 impl KernelTrait for OrKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.or" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Or }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.or"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Or
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src1 = params.get(0)
+        let src1 = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let src2 = params.get(1)
+        let src2 = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         or(src1, src2, dst)?;
         Ok(())
     }
@@ -385,31 +439,40 @@ impl KernelTrait for OrKernel {
 pub struct XorKernel;
 
 impl XorKernel {
-    pub fn new() -> Self { XorKernel }
+    pub fn new() -> Self {
+        XorKernel
+    }
 }
 
 impl KernelTrait for XorKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.xor" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Xor }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.xor"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Xor
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src1 = params.get(0)
+        let src1 = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let src2 = params.get(1)
+        let src2 = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(2)
+        let dst = params
+            .get(2)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         xor(src1, src2, dst)?;
         Ok(())
     }
@@ -419,28 +482,36 @@ impl KernelTrait for XorKernel {
 pub struct NotKernel;
 
 impl NotKernel {
-    pub fn new() -> Self { NotKernel }
+    pub fn new() -> Self {
+        NotKernel
+    }
 }
 
 impl KernelTrait for NotKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.not" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Not }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.not"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Not
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(1)
+        let dst = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         not(src, dst)?;
         Ok(())
     }

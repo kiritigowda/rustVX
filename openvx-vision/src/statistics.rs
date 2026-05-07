@@ -1,6 +1,6 @@
 //! Statistical operations
 
-use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
+use openvx_core::{Context, KernelTrait, Referenceable, VxKernel, VxResult};
 use openvx_image::Image;
 use openvx_image::ImageFormat;
 
@@ -8,31 +8,38 @@ use openvx_image::ImageFormat;
 pub struct MinMaxLocKernel;
 
 impl MinMaxLocKernel {
-    pub fn new() -> Self { MinMaxLocKernel }
+    pub fn new() -> Self {
+        MinMaxLocKernel
+    }
 }
 
 impl KernelTrait for MinMaxLocKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.min_max_loc" }
-    fn get_enum(&self) -> VxKernel { VxKernel::MinMaxLoc }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.min_max_loc"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::MinMaxLoc
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 5 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         let (min_val, max_val, min_loc, max_loc) = min_max_loc(src)?;
-        
+
         // Output parameters would be set here in a full implementation
         // For now, we compute and discard (real implementation would write to scalar outputs)
         let _ = (min_val, max_val, min_loc, max_loc);
-        
+
         Ok(())
     }
 }
@@ -41,30 +48,37 @@ impl KernelTrait for MinMaxLocKernel {
 pub struct MeanStdDevKernel;
 
 impl MeanStdDevKernel {
-    pub fn new() -> Self { MeanStdDevKernel }
+    pub fn new() -> Self {
+        MeanStdDevKernel
+    }
 }
 
 impl KernelTrait for MeanStdDevKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.mean_stddev" }
-    fn get_enum(&self) -> VxKernel { VxKernel::MeanStdDev }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.mean_stddev"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::MeanStdDev
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 3 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         let (mean, stddev) = mean_std_dev(src)?;
-        
+
         // Output parameters would be set here
         let _ = (mean, stddev);
-        
+
         Ok(())
     }
 }
@@ -73,27 +87,34 @@ impl KernelTrait for MeanStdDevKernel {
 pub struct HistogramKernel;
 
 impl HistogramKernel {
-    pub fn new() -> Self { HistogramKernel }
+    pub fn new() -> Self {
+        HistogramKernel
+    }
 }
 
 impl KernelTrait for HistogramKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.histogram" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Histogram }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.histogram"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Histogram
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         let _hist = histogram(src)?;
-        
+
         Ok(())
     }
 }
@@ -102,28 +123,36 @@ impl KernelTrait for HistogramKernel {
 pub struct EqualizeHistogramKernel;
 
 impl EqualizeHistogramKernel {
-    pub fn new() -> Self { EqualizeHistogramKernel }
+    pub fn new() -> Self {
+        EqualizeHistogramKernel
+    }
 }
 
 impl KernelTrait for EqualizeHistogramKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.equalize_histogram" }
-    fn get_enum(&self) -> VxKernel { VxKernel::EqualizeHistogram }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.equalize_histogram"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::EqualizeHistogram
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(1)
+        let dst = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         equalize_histogram(src, dst)?;
         Ok(())
     }
@@ -133,28 +162,36 @@ impl KernelTrait for EqualizeHistogramKernel {
 pub struct IntegralImageKernel;
 
 impl IntegralImageKernel {
-    pub fn new() -> Self { IntegralImageKernel }
+    pub fn new() -> Self {
+        IntegralImageKernel
+    }
 }
 
 impl KernelTrait for IntegralImageKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.integral_image" }
-    fn get_enum(&self) -> VxKernel { VxKernel::IntegralImage }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.integral_image"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::IntegralImage
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(1)
+        let dst = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         integral_image(src, dst)?;
         Ok(())
     }
@@ -177,28 +214,28 @@ impl Coordinate {
 pub fn min_max_loc(src: &Image) -> VxResult<(u8, u8, Coordinate, Coordinate)> {
     let width = src.width();
     let height = src.height();
-    
+
     let mut min_val: u8 = 255;
     let mut max_val: u8 = 0;
     let mut min_loc = Coordinate::new(0, 0);
     let mut max_loc = Coordinate::new(0, 0);
-    
+
     for y in 0..height {
         for x in 0..width {
             let val = src.get_pixel(x, y);
-            
+
             if val < min_val {
                 min_val = val;
                 min_loc = Coordinate::new(x, y);
             }
-            
+
             if val > max_val {
                 max_val = val;
                 max_loc = Coordinate::new(x, y);
             }
         }
     }
-    
+
     Ok((min_val, max_val, min_loc, max_loc))
 }
 
@@ -207,7 +244,7 @@ pub fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
     let width = src.width();
     let height = src.height();
     let pixel_count = (width * height) as f32;
-    
+
     // Compute mean
     let mut sum: u64 = 0;
     for y in 0..height {
@@ -216,7 +253,7 @@ pub fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
         }
     }
     let mean = sum as f32 / pixel_count;
-    
+
     // Compute variance
     let mut sum_sq_diff: f64 = 0.0;
     for y in 0..height {
@@ -227,7 +264,7 @@ pub fn mean_std_dev(src: &Image) -> VxResult<(f32, f32)> {
     }
     let variance = sum_sq_diff as f32 / pixel_count;
     let stddev = variance.sqrt();
-    
+
     Ok((mean, stddev))
 }
 
@@ -236,14 +273,14 @@ pub fn histogram(src: &Image) -> VxResult<[u32; 256]> {
     let width = src.width();
     let height = src.height();
     let mut hist = [0u32; 256];
-    
+
     for y in 0..height {
         for x in 0..width {
             let val = src.get_pixel(x, y);
             hist[val as usize] += 1;
         }
     }
-    
+
     Ok(hist)
 }
 
@@ -251,10 +288,10 @@ pub fn histogram(src: &Image) -> VxResult<[u32; 256]> {
 pub fn equalize_histogram(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     // Compute histogram
     let hist = histogram(src)?;
-    
+
     // Compute cumulative distribution function (CDF)
     let total_pixels = (width * height) as u32;
     let mut cdf = [0u32; 256];
@@ -262,7 +299,7 @@ pub fn equalize_histogram(src: &Image, dst: &Image) -> VxResult<()> {
     for i in 1..256 {
         cdf[i] = cdf[i - 1] + hist[i];
     }
-    
+
     // Compute lookup table
     let mut lut = [0u8; 256];
     for i in 0..256 {
@@ -270,7 +307,7 @@ pub fn equalize_histogram(src: &Image, dst: &Image) -> VxResult<()> {
             lut[i] = ((cdf[i] as f32 / total_pixels as f32) * 255.0) as u8;
         }
     }
-    
+
     // Apply lookup table
     let mut dst_data = dst.data_mut();
     for y in 0..height {
@@ -279,7 +316,7 @@ pub fn equalize_histogram(src: &Image, dst: &Image) -> VxResult<()> {
             dst_data[y * width + x] = lut[val as usize];
         }
     }
-    
+
     Ok(())
 }
 
@@ -287,28 +324,27 @@ pub fn equalize_histogram(src: &Image, dst: &Image) -> VxResult<()> {
 pub fn integral_image(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     // Ensure dst is large enough (integral image needs 32-bit values)
     // For simplicity, we'll store as u32 values in the first width*height positions
     let mut dst_data = dst.data_mut();
-    
+
     // Compute integral image using 32-bit accumulator
-    let mut row_sum: u32 = 0;
     let mut prev_row: Vec<u32> = vec![0; width];
-    
+
     for y in 0..height {
-        row_sum = 0;
+        let mut row_sum: u32 = 0;
         for x in 0..width {
             row_sum += src.get_pixel(x, y) as u32;
-            
+
             let integral_val = if y == 0 {
                 row_sum
             } else {
                 row_sum + prev_row[x]
             };
-            
+
             prev_row[x] = integral_val;
-            
+
             // Clamp to u8 for output (in a real implementation, use 32-bit output)
             let idx = y * width + x;
             if idx < dst_data.len() {
@@ -316,7 +352,7 @@ pub fn integral_image(src: &Image, dst: &Image) -> VxResult<()> {
             }
         }
     }
-    
+
     Ok(())
 }
 

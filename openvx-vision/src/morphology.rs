@@ -1,19 +1,25 @@
 //! Morphological operations
 
-use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
-use openvx_image::{Image, ImageFormat};
 use crate::utils::{get_pixel_bordered, BorderMode};
+use openvx_core::{Context, KernelTrait, Referenceable, VxKernel, VxResult};
+use openvx_image::{Image, ImageFormat};
 
 /// Dilate3x3 kernel - max of 3x3 neighborhood
 pub struct Dilate3x3Kernel;
 
 impl Dilate3x3Kernel {
-    pub fn new() -> Self { Dilate3x3Kernel }
+    pub fn new() -> Self {
+        Dilate3x3Kernel
+    }
 }
 
 impl KernelTrait for Dilate3x3Kernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.dilate3x3" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Dilate3x3 }
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.dilate3x3"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Dilate3x3
+    }
 
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
@@ -23,10 +29,12 @@ impl KernelTrait for Dilate3x3Kernel {
     }
 
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(1)
+        let dst = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
 
@@ -39,12 +47,18 @@ impl KernelTrait for Dilate3x3Kernel {
 pub struct Erode3x3Kernel;
 
 impl Erode3x3Kernel {
-    pub fn new() -> Self { Erode3x3Kernel }
+    pub fn new() -> Self {
+        Erode3x3Kernel
+    }
 }
 
 impl KernelTrait for Erode3x3Kernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.erode3x3" }
-    fn get_enum(&self) -> VxKernel { VxKernel::Erode3x3 }
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.erode3x3"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Erode3x3
+    }
 
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 2 {
@@ -54,10 +68,12 @@ impl KernelTrait for Erode3x3Kernel {
     }
 
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        let dst = params.get(1)
+        let dst = params
+            .get(1)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
 

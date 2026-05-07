@@ -182,7 +182,7 @@ impl VxImageFormat {
             VxImageFormat::IYUV => 3,
         }
     }
-    
+
     pub fn bytes_per_pixel(&self) -> usize {
         match self {
             VxImageFormat::Grayscale => 1,

@@ -13,27 +13,27 @@ use openvx_image::Image;
 pub fn gaussian3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     if width < 3 || height < 3 {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let src_data = src.data();
     // Use saturating_mul to prevent integer overflow
     let temp_size = width.saturating_mul(height);
     let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
-    
+
     // Horizontal pass - parallel by rows
     temp_buffer
         .par_chunks_mut(width)
         .enumerate()
         .for_each(|(y, row)| {
             let row_offset = y * width;
-            
+
             // Handle left edge
             row[0] = src_data[row_offset];
-            
+
             // Middle pixels
             for x in 1..width - 1 {
                 let p0 = src_data[row_offset + x - 1] as u16;
@@ -41,13 +41,13 @@ pub fn gaussian3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                 let p2 = src_data[row_offset + x + 1] as u16;
                 row[x] = ((p0 + p1 * 2 + p2) / 4) as u8;
             }
-            
+
             // Handle right edge
             if width > 1 {
                 row[width - 1] = src_data[row_offset + width - 1];
             }
         });
-    
+
     // Vertical pass - parallel by rows
     dst_data
         .par_chunks_mut(width)
@@ -64,7 +64,7 @@ pub fn gaussian3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                 let prev_row = (y - 1) * width;
                 let curr_row = y * width;
                 let next_row = (y + 1) * width;
-                
+
                 for x in 0..width {
                     let p0 = temp_buffer[prev_row + x] as u16;
                     let p1 = temp_buffer[curr_row + x] as u16;
@@ -73,7 +73,7 @@ pub fn gaussian3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                 }
             }
         });
-    
+
     Ok(())
 }
 
@@ -82,19 +82,19 @@ pub fn gaussian3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
 pub fn gaussian5x5_parallel(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     if width < 5 || height < 5 {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let src_data = src.data();
     // Use saturating_mul to prevent integer overflow
     let temp_size = width.saturating_mul(height);
     let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
-    
+
     const KERNEL: [i32; 5] = [1, 4, 6, 4, 1];
-    
+
     // Horizontal pass - parallel by rows
     temp_buffer
         .par_chunks_mut(width)
@@ -113,7 +113,7 @@ pub fn gaussian5x5_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                 row[x] = (sum / weight.max(1)).min(255).max(0) as u8;
             }
         });
-    
+
     // Vertical pass - parallel by rows
     dst_data
         .par_chunks_mut(width)
@@ -132,7 +132,7 @@ pub fn gaussian5x5_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                 row[x] = (sum / weight.max(1)).min(255).max(0) as u8;
             }
         });
-    
+
     Ok(())
 }
 
@@ -141,41 +141,41 @@ pub fn gaussian5x5_parallel(src: &Image, dst: &Image) -> VxResult<()> {
 pub fn box3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     if width < 3 || height < 3 {
         return Err(VxStatus::ErrorInvalidDimension);
     }
-    
+
     let src_data = src.data();
     // Use saturating_mul to prevent integer overflow
     let temp_size = width.saturating_mul(height);
     let mut temp_buffer = vec![0u8; temp_size];
-    
+
     // Horizontal pass with parallel rows
     temp_buffer
         .par_chunks_mut(width)
         .enumerate()
         .for_each(|(y, row)| {
             // Initialize sliding window sum
-            let mut window_sum = (src_data[y * width] as u32 + 
-                                src_data[y * width + 1] as u32) * 2 + 
-                                src_data[y * width + 2] as u32;
-            
+            let mut window_sum = (src_data[y * width] as u32 + src_data[y * width + 1] as u32) * 2
+                + src_data[y * width + 2] as u32;
+
             for x in 1..width - 1 {
                 row[x] = (window_sum / 3) as u8;
-                
+
                 if x + 2 < width {
-                    window_sum = window_sum + src_data[y * width + x + 2] as u32 - 
-                                             src_data[y * width + x - 1] as u32;
+                    window_sum = window_sum + src_data[y * width + x + 2] as u32
+                        - src_data[y * width + x - 1] as u32;
                 }
             }
-            
+
             // Edges
             row[0] = ((src_data[y * width] as u16 + src_data[y * width + 1] as u16) / 2) as u8;
-            row[width - 1] = ((src_data[y * width + width - 2] as u16 + 
-                               src_data[y * width + width - 1] as u16) / 2) as u8;
+            row[width - 1] = ((src_data[y * width + width - 2] as u16
+                + src_data[y * width + width - 1] as u16)
+                / 2) as u8;
         });
-    
+
     // Vertical pass with parallel rows
     let mut dst_data = dst.data_mut();
     dst_data
@@ -186,7 +186,7 @@ pub fn box3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                 // Simple vertical average
                 let mut sum = temp_buffer[y * width + x] as u32;
                 let mut count = 1u32;
-                
+
                 if y > 0 {
                     sum += temp_buffer[(y - 1) * width + x] as u32;
                     count += 1;
@@ -195,11 +195,11 @@ pub fn box3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                     sum += temp_buffer[(y + 1) * width + x] as u32;
                     count += 1;
                 }
-                
+
                 row[x] = (sum / count) as u8;
             }
         });
-    
+
     Ok(())
 }
 
@@ -208,26 +208,18 @@ pub fn box3x3_parallel(src: &Image, dst: &Image) -> VxResult<()> {
 pub fn sobel3x3_parallel(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     if grad_x.len() < width * height || grad_y.len() < width * height {
         return Err(VxStatus::ErrorInvalidParameters);
     }
-    
+
     let src_data = src.data();
-    
+
     // Sobel kernels
-    const SOBEL_X: [[i32; 3]; 3] = [
-        [-1, 0, 1],
-        [-2, 0, 2],
-        [-1, 0, 1],
-    ];
-    
-    const SOBEL_Y: [[i32; 3]; 3] = [
-        [-1, -2, -1],
-        [ 0,  0,  0],
-        [ 1,  2,  1],
-    ];
-    
+    const SOBEL_X: [[i32; 3]; 3] = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]];
+
+    const SOBEL_Y: [[i32; 3]; 3] = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]];
+
     // Parallel by rows
     grad_x
         .par_chunks_mut(width)
@@ -249,7 +241,7 @@ pub fn sobel3x3_parallel(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) ->
                         // Sobel X
                         let mut sum_x: i32 = 0;
                         let mut sum_y: i32 = 0;
-                        
+
                         for ky in 0..3 {
                             for kx in 0..3 {
                                 let px = x + kx - 1;
@@ -259,14 +251,14 @@ pub fn sobel3x3_parallel(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) ->
                                 sum_y += pixel * SOBEL_Y[ky][kx];
                             }
                         }
-                        
+
                         gx_row[x] = sum_x as i16;
                         gy_row[x] = sum_y as i16;
                     }
                 }
             }
         });
-    
+
     Ok(())
 }
 
@@ -275,10 +267,10 @@ pub fn sobel3x3_parallel(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) ->
 pub fn rgb_to_gray_parallel(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-    
+
     let src_data = src.data();
     let mut dst_data = dst.data_mut();
-    
+
     // Parallel by rows
     dst_data
         .par_chunks_mut(width)
@@ -293,7 +285,7 @@ pub fn rgb_to_gray_parallel(src: &Image, dst: &Image) -> VxResult<()> {
                 row[x] = ((54 * r + 183 * g + 18 * b) / 255) as u8;
             }
         });
-    
+
     Ok(())
 }
 
@@ -302,11 +294,11 @@ pub fn rgb_to_gray_parallel(src: &Image, dst: &Image) -> VxResult<()> {
 pub fn add_images_parallel(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     let width = src1.width();
     let height = src1.height();
-    
+
     let src1_data = src1.data();
     let src2_data = src2.data();
     let mut dst_data = dst.data_mut();
-    
+
     // Parallel by rows with SIMD chunks
     dst_data
         .par_chunks_mut(width)
@@ -314,13 +306,13 @@ pub fn add_images_parallel(src1: &Image, src2: &Image, dst: &Image) -> VxResult<
         .for_each(|(y, row)| {
             let src1_row = &src1_data[y * width..(y + 1) * width];
             let src2_row = &src2_data[y * width..(y + 1) * width];
-            
+
             for x in 0..width {
                 let sum = src1_row[x] as u16 + src2_row[x] as u16;
                 row[x] = sum.min(255) as u8;
             }
         });
-    
+
     Ok(())
 }
 
@@ -329,11 +321,11 @@ pub fn add_images_parallel(src1: &Image, src2: &Image, dst: &Image) -> VxResult<
 pub fn subtract_images_parallel(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     let width = src1.width();
     let height = src1.height();
-    
+
     let src1_data = src1.data();
     let src2_data = src2.data();
     let mut dst_data = dst.data_mut();
-    
+
     // Parallel by rows
     dst_data
         .par_chunks_mut(width)
@@ -341,13 +333,13 @@ pub fn subtract_images_parallel(src1: &Image, src2: &Image, dst: &Image) -> VxRe
         .for_each(|(y, row)| {
             let src1_row = &src1_data[y * width..(y + 1) * width];
             let src2_row = &src2_data[y * width..(y + 1) * width];
-            
+
             for x in 0..width {
                 let diff = src1_row[x] as i16 - src2_row[x] as i16;
                 row[x] = diff.max(0).min(255) as u8;
             }
         });
-    
+
     Ok(())
 }
 

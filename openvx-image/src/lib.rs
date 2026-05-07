@@ -4,30 +4,27 @@ pub mod c_api;
 pub mod ct_image;
 
 // Re-export from c_api
-pub use c_api::vxCreateImageFromChannel;
 pub use c_api::vxCloneImage;
 pub use c_api::vxCloneImageWithGraph;
+pub use c_api::vxCreateImageFromChannel;
 
 // Re-export CT Image functions for conformance testing
 pub use ct_image::{
-    CT_Rect, CT_Image, CT_ImageCopyDirection, CT_ImageData,
-    ct_channels, ct_stride_bytes, ct_image_bits_per_pixel,
-    ct_get_num_planes, ct_image_get_plane_base,
-    ct_image_get_channel_step_x, ct_image_get_channel_step_y,
-    ct_image_get_channel_subsampling_x, ct_image_get_channel_subsampling_y,
-    ct_image_get_channel_plane, ct_image_get_channel_component,
-    ct_get_num_channels, ct_allocate_image, ct_allocate_image_hdr,
-    ct_get_image_roi, ct_get_image_roi_, ct_adjust_roi,
-    ct_image_data_ptr_1u, ct_image_data_replicate_1u, ct_image_data_constant_1u,
-    ct_image_data_ptr_8u, ct_image_data_replicate_8u, ct_image_data_constant_8u,
-    ct_free_image, ct_image_to_vx_image, ct_image_from_vx_image, ct_image_copy,
-    ct_image_create_clone, ct_fill_ct_image_random, ct_allocate_ct_image_random,
-    U8_ct_image_to_U1_ct_image, U1_ct_image_to_U8_ct_image,
-    threshold_U8_ct_image, ct_assert_eq_ctimage, ct_dump_image_info,
-    ct_read_image, ct_write_image, ct_image_read_rect_S32,
+    ct_adjust_roi, ct_allocate_ct_image_random, ct_allocate_image, ct_allocate_image_hdr,
+    ct_assert_eq_ctimage, ct_channels, ct_dump_image_info, ct_fill_ct_image_random, ct_free_image,
+    ct_get_image_roi, ct_get_image_roi_, ct_get_num_channels, ct_get_num_planes,
+    ct_image_bits_per_pixel, ct_image_copy, ct_image_create_clone, ct_image_data_constant_1u,
+    ct_image_data_constant_8u, ct_image_data_ptr_1u, ct_image_data_ptr_8u,
+    ct_image_data_replicate_1u, ct_image_data_replicate_8u, ct_image_from_vx_image,
+    ct_image_get_channel_component, ct_image_get_channel_plane, ct_image_get_channel_step_x,
+    ct_image_get_channel_step_y, ct_image_get_channel_subsampling_x,
+    ct_image_get_channel_subsampling_y, ct_image_get_plane_base, ct_image_read_rect_S32,
+    ct_image_to_vx_image, ct_read_image, ct_stride_bytes, ct_write_image, threshold_U8_ct_image,
+    CT_Image, CT_ImageCopyDirection, CT_ImageData, CT_Rect, U1_ct_image_to_U8_ct_image,
+    U8_ct_image_to_U1_ct_image,
 };
 
-use openvx_core::{VxResult, Referenceable, VxType};
+use openvx_core::{Referenceable, VxResult, VxType};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Image format
@@ -59,7 +56,7 @@ impl ImageFormat {
             ImageFormat::YUYV | ImageFormat::UYVY => 1,
         }
     }
-    
+
     /// Calculate buffer size for this format with given dimensions
     /// For planar formats, this accounts for subsampled chroma planes
     pub fn buffer_size(&self, width: usize, height: usize) -> usize {
@@ -104,16 +101,22 @@ impl Image {
     pub fn new(width: usize, height: usize, format: ImageFormat) -> Self {
         // Use format-specific buffer size calculation for planar formats
         let size = format.buffer_size(width, height);
-        
+
         // Add sanity limit to prevent massive allocations
         const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB
         if size > MAX_ALLOCATION_SIZE {
-            panic!("Image allocation size {}x{} format {:?} = {} exceeds maximum allocation limit", width, height, format, size);
+            panic!(
+                "Image allocation size {}x{} format {:?} = {} exceeds maximum allocation limit",
+                width, height, format, size
+            );
         }
         if size == 0 {
-            panic!("Image allocation size is 0 for {}x{} format {:?}", width, height, format);
+            panic!(
+                "Image allocation size is 0 for {}x{} format {:?}",
+                width, height, format
+            );
         }
-        
+
         let data = vec![0u8; size];
         Image {
             width,
@@ -122,7 +125,7 @@ impl Image {
             data: RwLock::new(data),
         }
     }
-    
+
     pub fn from_data(width: usize, height: usize, format: ImageFormat, data: Vec<u8>) -> Self {
         Image {
             width,
@@ -131,33 +134,39 @@ impl Image {
             data: RwLock::new(data),
         }
     }
-    
-    pub fn width(&self) -> usize { self.width }
-    pub fn height(&self) -> usize { self.height }
-    pub fn format(&self) -> ImageFormat { self.format }
-    
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+    pub fn height(&self) -> usize {
+        self.height
+    }
+    pub fn format(&self) -> ImageFormat {
+        self.format
+    }
+
     pub fn data(&self) -> RwLockReadGuard<'_, Vec<u8>> {
         self.data.read().unwrap()
     }
-    
+
     pub fn data_mut(&self) -> RwLockWriteGuard<'_, Vec<u8>> {
         self.data.write().unwrap()
     }
-    
+
     pub fn get_pixel(&self, x: usize, y: usize) -> u8 {
         self.data.read().unwrap()[y * self.width + x]
     }
-    
+
     pub fn set_pixel(&self, x: usize, y: usize, value: u8) {
         self.data.write().unwrap()[y * self.width + x] = value;
     }
-    
+
     pub fn get_rgb(&self, x: usize, y: usize) -> (u8, u8, u8) {
         let idx = (y * self.width + x) * 3;
         let data = self.data.read().unwrap();
         (data[idx], data[idx + 1], data[idx + 2])
     }
-    
+
     pub fn set_rgb(&self, x: usize, y: usize, r: u8, g: u8, b: u8) {
         let idx = (y * self.width + x) * 3;
         let mut data = self.data.write().unwrap();
@@ -165,18 +174,18 @@ impl Image {
         data[idx + 1] = g;
         data[idx + 2] = b;
     }
-    
+
     pub fn pixels(&self) -> Vec<u8> {
         self.data.read().unwrap().iter().cloned().collect()
     }
-    
+
     /// Get pixel as i16 (for S16 format)
     pub fn get_pixel_i16(&self, x: usize, y: usize) -> i16 {
         let idx = (y * self.width + x) * 2; // 2 bytes per i16
         let data = self.data.read().unwrap();
         i16::from_le_bytes([data[idx], data[idx + 1]])
     }
-    
+
     /// Set pixel as i16 (for S16 format)
     pub fn set_pixel_i16(&self, x: usize, y: usize, value: i16) {
         let idx = (y * self.width + x) * 2; // 2 bytes per i16
@@ -185,7 +194,7 @@ impl Image {
         data[idx] = bytes[0];
         data[idx + 1] = bytes[1];
     }
-    
+
     /// Get mutable data as i16 slice (for S16 format)
     pub fn data_mut_i16(&self) -> Vec<i16> {
         let data = self.data.write().unwrap();
@@ -193,7 +202,7 @@ impl Image {
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect()
     }
-    
+
     /// Get YUV packed pixel (for UYVY format)
     /// Returns (Y, U, V) for the pixel at (x, y)
     /// UYVY layout: U0 Y0 V0 Y1 U1 Y2 V1 Y3 ...
@@ -212,7 +221,7 @@ impl Image {
             (128, 128, 128)
         }
     }
-    
+
     /// Get YUV packed pixel (for YUYV format)
     /// Returns (Y, U, V) for the pixel at (x, y)
     /// YUYV layout: Y0 U Y1 V Y2 U2 Y3 V2 ...
@@ -234,30 +243,50 @@ impl Image {
 }
 
 impl Referenceable for Image {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn get_type(&self) -> VxType { VxType::Image }
-    fn get_reference_count(&self) -> usize { 1 }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn get_type(&self) -> VxType {
+        VxType::Image
+    }
+    fn get_reference_count(&self) -> usize {
+        1
+    }
     fn retain(&self) {}
-    fn release(&self) -> usize { 1 }
-    fn get_context_id(&self) -> u32 { 1 }
-    fn get_id(&self) -> u64 { 1 }
-    fn query_attribute(&self, _attr: u32, _val: &mut [u8]) -> VxResult<()> { Ok(()) }
+    fn release(&self) -> usize {
+        1
+    }
+    fn get_context_id(&self) -> u32 {
+        1
+    }
+    fn get_id(&self) -> u64 {
+        1
+    }
+    fn query_attribute(&self, _attr: u32, _val: &mut [u8]) -> VxResult<()> {
+        Ok(())
+    }
 }
 
 /// Create a uniform image
 pub fn create_uniform_image(width: usize, height: usize, format: ImageFormat, value: u8) -> Image {
     // Use format-specific buffer size calculation for planar formats
     let size = format.buffer_size(width, height);
-    
+
     // Add sanity limit to prevent massive allocations
     const MAX_ALLOCATION_SIZE: usize = 1024 * 1024 * 1024; // 1GB
     if size > MAX_ALLOCATION_SIZE {
-        panic!("Image allocation size {}x{} format {:?} = {} exceeds maximum allocation limit", width, height, format, size);
+        panic!(
+            "Image allocation size {}x{} format {:?} = {} exceeds maximum allocation limit",
+            width, height, format, size
+        );
     }
     if size == 0 {
-        panic!("Image allocation size is 0 for {}x{} format {:?}", width, height, format);
+        panic!(
+            "Image allocation size is 0 for {}x{} format {:?}",
+            width, height, format
+        );
     }
-    
+
     let data = vec![value; size];
     Image::from_data(width, height, format, data)
 }
@@ -275,13 +304,13 @@ pub fn create_test_image(width: usize, height: usize) -> Image {
 }
 
 /// Clone an image - creates a deep copy
-/// 
+///
 /// This creates a new image with the same dimensions and format,
 /// then copies all pixel data from the source.
 pub fn clone_image(source: &Image) -> Image {
     let source_data = source.data.read().unwrap();
     let cloned_data = source_data.clone();
-    
+
     Image {
         width: source.width,
         height: source.height,
@@ -307,11 +336,17 @@ impl Pyramid {
             levels,
         }
     }
-    
-    pub fn num_levels(&self) -> usize { self.num_levels }
-    pub fn scale(&self) -> f32 { self.scale }
-    pub fn levels(&self) -> &Vec<std::sync::Arc<Image>> { &self.levels }
-    
+
+    pub fn num_levels(&self) -> usize {
+        self.num_levels
+    }
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+    pub fn levels(&self) -> &Vec<std::sync::Arc<Image>> {
+        &self.levels
+    }
+
     pub fn get_level(&self, index: usize) -> Option<&std::sync::Arc<Image>> {
         self.levels.get(index)
     }

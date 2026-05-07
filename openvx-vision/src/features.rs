@@ -1,36 +1,43 @@
 //! Feature detection
 
-use openvx_core::{Context, Referenceable, VxResult, VxKernel, KernelTrait};
+use openvx_core::{Context, KernelTrait, Referenceable, VxKernel, VxResult};
 use openvx_image::Image;
 
 /// HarrisCorners kernel
 pub struct HarrisCornersKernel;
 
 impl HarrisCornersKernel {
-    pub fn new() -> Self { HarrisCornersKernel }
+    pub fn new() -> Self {
+        HarrisCornersKernel
+    }
 }
 
 impl KernelTrait for HarrisCornersKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.harris_corners" }
-    fn get_enum(&self) -> VxKernel { VxKernel::HarrisCorners }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.harris_corners"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::HarrisCorners
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 6 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         // Simplified: just run Harris corner detection
         let k = 0.04f32; // Harris sensitivity
         let threshold = 100.0f32; // Strength threshold
         let _corners = harris_corners(src, k, threshold, 10)?;
-        
+
         Ok(())
     }
 }
@@ -39,28 +46,35 @@ impl KernelTrait for HarrisCornersKernel {
 pub struct FASTCornersKernel;
 
 impl FASTCornersKernel {
-    pub fn new() -> Self { FASTCornersKernel }
+    pub fn new() -> Self {
+        FASTCornersKernel
+    }
 }
 
 impl KernelTrait for FASTCornersKernel {
-    fn get_name(&self) -> &str { "org.khronos.openvx.fast_corners" }
-    fn get_enum(&self) -> VxKernel { VxKernel::FASTCorners }
-    
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.fast_corners"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::FASTCorners
+    }
+
     fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
         if params.len() < 4 {
             return Err(openvx_core::VxStatus::ErrorInvalidParameters);
         }
         Ok(())
     }
-    
+
     fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
-        let src = params.get(0)
+        let src = params
+            .get(0)
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
-        
+
         let threshold = 20u8; // Default threshold
         let _corners = fast9(src, threshold)?;
-        
+
         Ok(())
     }
 }
@@ -82,49 +96,49 @@ pub fn harris_corners(
     // Use saturating_mul to prevent integer overflow
     let response_size = width.saturating_mul(height);
     let mut responses = vec![0f32; response_size];
-    
+
     // Compute gradients using Sobel
     let (grad_x, grad_y) = compute_gradients_sobel(image)?;
-    
+
     // Compute structure tensor and corner response
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let mut ixx: f32 = 0.0;
             let mut iyy: f32 = 0.0;
             let mut ixy: f32 = 0.0;
-            
+
             // Sum over 3x3 window
             for wy in -1..=1 {
                 for wx in -1..=1 {
                     let idx = ((y as isize + wy) as usize) * width + ((x as isize + wx) as usize);
                     let ix = grad_x[idx] as f32;
                     let iy = grad_y[idx] as f32;
-                    
+
                     ixx += ix * ix;
                     iyy += iy * iy;
                     ixy += ix * iy;
                 }
             }
-            
+
             // Harris corner response: R = det(M) - k * trace(M)²
             let det = ixx * iyy - ixy * ixy;
             let trace = ixx + iyy;
             let response = det - k * trace * trace;
-            
+
             responses[y * width + x] = response;
         }
     }
-    
+
     // Non-maximum suppression
     let mut corners = Vec::new();
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let response = responses[y * width + x];
-            
+
             if response < threshold {
                 continue;
             }
-            
+
             // Check if local maximum
             let mut is_max = true;
             for dy in -1..=1 {
@@ -143,7 +157,7 @@ pub fn harris_corners(
                     break;
                 }
             }
-            
+
             if is_max {
                 corners.push(Corner {
                     x,
@@ -153,10 +167,14 @@ pub fn harris_corners(
             }
         }
     }
-    
+
     // Sort by strength (descending)
-    corners.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
-    
+    corners.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     Ok(corners)
 }
 
@@ -168,19 +186,33 @@ pub fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
     let width = image.width();
     let height = image.height();
     let mut corners = Vec::new();
-    
+
     // Bresenham circle of radius 3 (16 points around center)
     const CIRCLE_OFFSETS: [(isize, isize); 16] = [
-        (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
-        (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
+        (0, -3),
+        (1, -3),
+        (2, -2),
+        (3, -1),
+        (3, 0),
+        (3, 1),
+        (2, 2),
+        (1, 3),
+        (0, 3),
+        (-1, 3),
+        (-2, 2),
+        (-3, 1),
+        (-3, 0),
+        (-3, -1),
+        (-2, -2),
+        (-1, -3),
     ];
-    
+
     for y in 3..height - 3 {
         for x in 3..width - 3 {
             let center = image.get_pixel(x, y);
             let high = center.saturating_add(threshold);
             let low = center.saturating_sub(threshold);
-            
+
             // Sample circle
             let mut circle = [0u8; 16];
             for (i, (dx, dy)) in CIRCLE_OFFSETS.iter().enumerate() {
@@ -188,16 +220,16 @@ pub fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
                 let py = (y as isize + dy) as usize;
                 circle[i] = image.get_pixel(px, py);
             }
-            
+
             // Check for 9 contiguous brighter or darker pixels
             let mut is_corner = false;
-            
+
             // Try all starting positions
             for start in 0..16 {
                 // Check brighter
                 let mut brighter_count = 0;
                 let mut darker_count = 0;
-                
+
                 for i in 0..16 {
                     let idx = (start + i) % 16;
                     if circle[idx] > high {
@@ -210,18 +242,18 @@ pub fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
                         brighter_count = 0;
                         darker_count = 0;
                     }
-                    
+
                     if brighter_count >= 9 || darker_count >= 9 {
                         is_corner = true;
                         break;
                     }
                 }
-                
+
                 if is_corner {
                     break;
                 }
             }
-            
+
             if is_corner {
                 // Score using segment test
                 let score = compute_fast_score(&circle, center, threshold);
@@ -233,10 +265,14 @@ pub fn fast9(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
             }
         }
     }
-    
+
     // Sort by strength
-    corners.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
-    
+    corners.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     Ok(corners)
 }
 
@@ -245,19 +281,33 @@ pub fn fast12(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
     let width = image.width();
     let height = image.height();
     let mut corners = Vec::new();
-    
+
     // Bresenham circle of radius 3 (16 points)
     const CIRCLE_OFFSETS: [(isize, isize); 16] = [
-        (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
-        (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
+        (0, -3),
+        (1, -3),
+        (2, -2),
+        (3, -1),
+        (3, 0),
+        (3, 1),
+        (2, 2),
+        (1, 3),
+        (0, 3),
+        (-1, 3),
+        (-2, 2),
+        (-3, 1),
+        (-3, 0),
+        (-3, -1),
+        (-2, -2),
+        (-1, -3),
     ];
-    
+
     for y in 3..height - 3 {
         for x in 3..width - 3 {
             let center = image.get_pixel(x, y);
             let high = center.saturating_add(threshold);
             let low = center.saturating_sub(threshold);
-            
+
             // Sample circle
             let mut circle = [0u8; 16];
             for (i, (dx, dy)) in CIRCLE_OFFSETS.iter().enumerate() {
@@ -265,14 +315,14 @@ pub fn fast12(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
                 let py = (y as isize + dy) as usize;
                 circle[i] = image.get_pixel(px, py);
             }
-            
+
             // Check for 12 contiguous brighter or darker pixels
             let mut is_corner = false;
-            
+
             for start in 0..16 {
                 let mut brighter_count = 0;
                 let mut darker_count = 0;
-                
+
                 for i in 0..16 {
                     let idx = (start + i) % 16;
                     if circle[idx] > high {
@@ -285,18 +335,18 @@ pub fn fast12(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
                         brighter_count = 0;
                         darker_count = 0;
                     }
-                    
+
                     if brighter_count >= 12 || darker_count >= 12 {
                         is_corner = true;
                         break;
                     }
                 }
-                
+
                 if is_corner {
                     break;
                 }
             }
-            
+
             if is_corner {
                 let score = compute_fast_score(&circle, center, threshold);
                 corners.push(Corner {
@@ -307,8 +357,12 @@ pub fn fast12(image: &Image, threshold: u8) -> VxResult<Vec<Corner>> {
             }
         }
     }
-    
-    corners.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
+
+    corners.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(corners)
 }
 
@@ -336,24 +390,16 @@ fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
     let gradient_size = width.saturating_mul(height);
     let mut grad_x = vec![0f32; gradient_size];
     let mut grad_y = vec![0f32; gradient_size];
-    
+
     // Sobel kernels
-    const SOBEL_X: [[i32; 3]; 3] = [
-        [-1, 0, 1],
-        [-2, 0, 2],
-        [-1, 0, 1],
-    ];
-    const SOBEL_Y: [[i32; 3]; 3] = [
-        [-1, -2, -1],
-        [0, 0, 0],
-        [1, 2, 1],
-    ];
-    
+    const SOBEL_X: [[i32; 3]; 3] = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]];
+    const SOBEL_Y: [[i32; 3]; 3] = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]];
+
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let mut gx: i32 = 0;
             let mut gy: i32 = 0;
-            
+
             for ky in 0..3 {
                 for kx in 0..3 {
                     let px = x + kx - 1;
@@ -363,13 +409,13 @@ fn compute_gradients_sobel(image: &Image) -> VxResult<(Vec<f32>, Vec<f32>)> {
                     gy += pixel * SOBEL_Y[ky][kx];
                 }
             }
-            
+
             let idx = y * width + x;
             grad_x[idx] = gx as f32 / 4.0; // Scale for normalized response
             grad_y[idx] = gy as f32 / 4.0;
         }
     }
-    
+
     Ok((grad_x, grad_y))
 }
 
@@ -386,7 +432,7 @@ pub fn non_max_suppression(corners: &mut Vec<Corner>, min_distance: usize) {
     let mut i = 0;
     while i < corners.len() {
         let (cx, cy) = (corners[i].x, corners[i].y);
-        
+
         // Remove nearby corners with lower strength
         corners.retain(|c| {
             let dx = (c.x as isize - cx as isize).abs() as usize;
@@ -398,7 +444,7 @@ pub fn non_max_suppression(corners: &mut Vec<Corner>, min_distance: usize) {
                 true
             }
         });
-        
+
         i += 1;
     }
 }
