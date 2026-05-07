@@ -1,28 +1,27 @@
 //! C API for OpenVX Buffer and Array
 
 #![allow(non_camel_case_types)]
+#![allow(dead_code, unused_unsafe)]
 
-use std::ffi::c_void;
-use std::sync::{RwLock, atomic::AtomicUsize};
-use std::collections::HashMap;
-use openvx_core::c_api::{
-    vx_context, vx_graph, vx_array, vx_status, vx_enum, vx_size, vx_uint32, vx_map_id, vx_int32,
-    vx_reference,
-    VX_SUCCESS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_INVALID_PARAMETERS,
-    VX_ERROR_NOT_IMPLEMENTED,
-    VX_TYPE_CHAR, VX_TYPE_UINT8, VX_TYPE_INT8, VX_TYPE_UINT16, VX_TYPE_INT16,
-    VX_TYPE_UINT32, VX_TYPE_INT32, VX_TYPE_FLOAT32, VX_TYPE_FLOAT64,
-    VX_TYPE_INT64, VX_TYPE_UINT64,
-    VX_TYPE_BOOL, VX_TYPE_ENUM, VX_TYPE_SIZE, VX_TYPE_DF_IMAGE,
-    VX_TYPE_RECTANGLE, VX_TYPE_KEYPOINT, VX_TYPE_COORDINATES2D, VX_TYPE_COORDINATES3D,
-    VX_ARRAY_CAPACITY, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS, VX_ARRAY_ITEMSIZE,
-    VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE,
-    vx_bool, vx_df_image, vx_rectangle_t, vx_keypoint_t, vx_coordinates2d_t, vx_coordinates3d_t,
-    VX_READ_ONLY, VX_WRITE_ONLY,
-};
-use openvx_core::unified_c_api::{vx_distribution, vxCreateDistribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS};
-use openvx_core::unified_c_api::{VX_TYPE_ARRAY};
 use openvx_core::c_api::vxGetContext;
+use openvx_core::c_api::{
+    vx_array, vx_bool, vx_context, vx_coordinates2d_t, vx_coordinates3d_t, vx_df_image, vx_enum,
+    vx_graph, vx_int32, vx_keypoint_t, vx_map_id, vx_rectangle_t, vx_reference, vx_size, vx_status,
+    vx_uint32, VX_ARRAY_CAPACITY, VX_ARRAY_ITEMSIZE, VX_ARRAY_ITEMTYPE, VX_ARRAY_NUMITEMS,
+    VX_ERROR_INVALID_PARAMETERS, VX_ERROR_INVALID_REFERENCE, VX_ERROR_NOT_IMPLEMENTED,
+    VX_MEMORY_TYPE_HOST, VX_MEMORY_TYPE_NONE, VX_READ_ONLY, VX_SUCCESS, VX_TYPE_BOOL, VX_TYPE_CHAR,
+    VX_TYPE_COORDINATES2D, VX_TYPE_COORDINATES3D, VX_TYPE_DF_IMAGE, VX_TYPE_ENUM, VX_TYPE_FLOAT32,
+    VX_TYPE_FLOAT64, VX_TYPE_INT16, VX_TYPE_INT32, VX_TYPE_INT64, VX_TYPE_INT8, VX_TYPE_KEYPOINT,
+    VX_TYPE_RECTANGLE, VX_TYPE_SIZE, VX_TYPE_UINT16, VX_TYPE_UINT32, VX_TYPE_UINT64, VX_TYPE_UINT8,
+    VX_WRITE_ONLY,
+};
+use openvx_core::unified_c_api::VX_TYPE_ARRAY;
+use openvx_core::unified_c_api::{
+    vxCreateDistribution, vx_distribution, REFERENCE_COUNTS, REFERENCE_TYPES, USER_STRUCTS,
+};
+use std::collections::HashMap;
+use std::ffi::c_void;
+use std::sync::{atomic::AtomicUsize, RwLock};
 
 /// Array struct for C API
 pub struct VxCArray {
@@ -49,7 +48,7 @@ impl VxCArray {
             // Default to 16 bytes for unknown user structs
             return 16;
         }
-        
+
         match item_type {
             VX_TYPE_CHAR | VX_TYPE_UINT8 | VX_TYPE_INT8 => 1,
             VX_TYPE_UINT16 | VX_TYPE_INT16 => 2,
@@ -67,7 +66,7 @@ impl VxCArray {
 }
 
 // Internal storage for arrays
-use std::sync::atomic::{Ordering};
+use std::sync::atomic::Ordering;
 static ARRAY_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Create an array
@@ -105,21 +104,21 @@ pub extern "C" fn vxCreateArray(
     });
 
     let array_ptr = Box::into_raw(array) as vx_array;
-    
+
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
             counts.insert(array_ptr as usize, AtomicUsize::new(1));
         }
     }
-    
+
     // Register in REFERENCE_TYPES for type detection
     unsafe {
         if let Ok(mut types) = REFERENCE_TYPES.lock() {
             types.insert(array_ptr as usize, VX_TYPE_ARRAY);
         }
     }
-    
+
     array_ptr
 }
 
@@ -183,10 +182,7 @@ pub extern "C" fn vxAddArrayItems(
 
 /// Truncate array
 #[no_mangle]
-pub extern "C" fn vxTruncateArray(
-    arr: vx_array,
-    new_num_items: vx_size,
-) -> vx_status {
+pub extern "C" fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status {
     if arr.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
@@ -262,13 +258,13 @@ pub extern "C" fn vxCreateVirtualArray(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
-    
+
     // Get the context from the graph
     let context = vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
     }
-    
+
     // Virtual arrays can have capacity 0 (unspecified), so default to something reasonable
     let actual_capacity = if capacity == 0 { 4096 } else { capacity };
     if actual_capacity == 0 {
@@ -306,21 +302,21 @@ pub extern "C" fn vxCreateVirtualArray(
     });
 
     let array_ptr = Box::into_raw(array) as vx_array;
-    
+
     // Register in reference counting
     unsafe {
         if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
             counts.insert(array_ptr as usize, AtomicUsize::new(1));
         }
     }
-    
+
     // Register in REFERENCE_TYPES for type detection
     unsafe {
         if let Ok(mut types) = REFERENCE_TYPES.lock() {
             types.insert(array_ptr as usize, VX_TYPE_ARRAY);
         }
     }
-    
+
     array_ptr
 }
 
@@ -349,7 +345,7 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
     unsafe {
         if !(*arr).is_null() {
             let addr = *arr as usize;
-            
+
             // Check reference count before freeing
             let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(cnt) = counts.get(&addr) {
@@ -366,7 +362,7 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
             } else {
                 false
             };
-            
+
             if should_free {
                 // Remove from reference counts and types
                 if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
@@ -375,10 +371,10 @@ pub extern "C" fn vxReleaseArray(arr: *mut vx_array) -> vx_status {
                 if let Ok(mut types) = REFERENCE_TYPES.lock() {
                     types.remove(&addr);
                 }
-                
+
                 let _ = Box::from_raw(*arr as *mut VxCArray);
             }
-            
+
             *arr = std::ptr::null_mut();
         } else {
         }
@@ -421,7 +417,8 @@ pub extern "C" fn vxMapArrayRange(
     // Copy data to a temporary buffer for mapping
     let data = array.data.read().unwrap();
 
-    let range_size = end.checked_sub(start)
+    let range_size = end
+        .checked_sub(start)
         .and_then(|len| len.checked_mul(array.item_size))
         .unwrap_or(0);
     if range_size == 0 && start < end {
@@ -435,7 +432,8 @@ pub extern "C" fn vxMapArrayRange(
     // Allocate stable heap memory for mapped range
     // Using Box<[u8]> ensures the heap pointer stays valid
     // even if the HashMap moves the Box struct (pointer doesn't change)
-    let range_size = end.checked_sub(start)
+    let range_size = end
+        .checked_sub(start)
         .and_then(|len| len.checked_mul(array.item_size))
         .unwrap_or(0);
     if range_size == 0 && start < end {
@@ -489,11 +487,12 @@ pub extern "C" fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_stat
 
     if let Some((start, end, data)) = mapped.remove(&map_id) {
         // Copy data back if it was a write
-        let range_size = end.checked_sub(start)
+        let range_size = end
+            .checked_sub(start)
             .and_then(|len| len.checked_mul(array.item_size))
             .unwrap_or(0);
         let offset = start.checked_mul(array.item_size).unwrap_or(0);
-        
+
         let mut array_data = array.data.write().unwrap();
         unsafe {
             std::ptr::copy_nonoverlapping(
@@ -541,9 +540,15 @@ pub extern "C" fn vxCopyArrayRange(
     };
 
     let status = vxMapArrayRange(
-        arr, range_start, range_end,
-        &mut map_id, &mut stride, &mut ptr,
-        map_usage, VX_MEMORY_TYPE_HOST, 0,
+        arr,
+        range_start,
+        range_end,
+        &mut map_id,
+        &mut stride,
+        &mut ptr,
+        map_usage,
+        VX_MEMORY_TYPE_HOST,
+        0,
     );
     if status != VX_SUCCESS {
         return status;

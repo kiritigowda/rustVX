@@ -5,6 +5,8 @@
 //! Since VX_ID_KHRONOS=0x000 and VX_LIBRARY_KHR_BASE=0x0, the base is 0x00000000
 //! Kernel enums start at 0x1 (not 0x0).
 
+#![allow(non_upper_case_globals)]
+
 /// Vendor ID for Khronos (standard OpenVX kernels)
 pub const VX_ID_KHRONOS: u32 = 0x000;
 
@@ -85,9 +87,21 @@ pub const VX_KERNEL_TENSOR_PADDING: i32 = 0x37;
 /// Kernel name to enum mapping for vision kernels
 pub const VISION_KERNELS: &[(&str, i32, u32)] = &[
     // Color conversions
-    ("org.khronos.openvx.color_convert", VX_KERNEL_COLOR_CONVERT, 2),
-    ("org.khronos.openvx.channel_extract", VX_KERNEL_CHANNEL_EXTRACT, 3),
-    ("org.khronos.openvx.channel_combine", VX_KERNEL_CHANNEL_COMBINE, 4),
+    (
+        "org.khronos.openvx.color_convert",
+        VX_KERNEL_COLOR_CONVERT,
+        2,
+    ),
+    (
+        "org.khronos.openvx.channel_extract",
+        VX_KERNEL_CHANNEL_EXTRACT,
+        3,
+    ),
+    (
+        "org.khronos.openvx.channel_combine",
+        VX_KERNEL_CHANNEL_COMBINE,
+        4,
+    ),
     // Gradient operations
     ("org.khronos.openvx.sobel_3x3", VX_KERNEL_SOBEL_3x3, 3),
     ("org.khronos.openvx.magnitude", VX_KERNEL_MAGNITUDE, 3),
@@ -95,15 +109,31 @@ pub const VISION_KERNELS: &[(&str, i32, u32)] = &[
     // Geometric
     ("org.khronos.openvx.scale_image", VX_KERNEL_SCALE_IMAGE, 3),
     ("org.khronos.openvx.warp_affine", VX_KERNEL_WARP_AFFINE, 4),
-    ("org.khronos.openvx.warp_perspective", VX_KERNEL_WARP_PERSPECTIVE, 4),
+    (
+        "org.khronos.openvx.warp_perspective",
+        VX_KERNEL_WARP_PERSPECTIVE,
+        4,
+    ),
     ("org.khronos.openvx.remap", VX_KERNEL_REMAP, 4),
-    ("org.khronos.openvx.halfscale_gaussian", VX_KERNEL_HALFSCALE_GAUSSIAN, 3),
+    (
+        "org.khronos.openvx.halfscale_gaussian",
+        VX_KERNEL_HALFSCALE_GAUSSIAN,
+        3,
+    ),
     // Filters
     ("org.khronos.openvx.gaussian_3x3", VX_KERNEL_GAUSSIAN_3x3, 2),
     ("org.khronos.openvx.box_3x3", VX_KERNEL_BOX_3x3, 2),
     ("org.khronos.openvx.median_3x3", VX_KERNEL_MEDIAN_3x3, 2),
-    ("org.khronos.openvx.custom_convolution", VX_KERNEL_CUSTOM_CONVOLUTION, 3),
-    ("org.khronos.openvx.gaussian_pyramid", VX_KERNEL_GAUSSIAN_PYRAMID, 2),
+    (
+        "org.khronos.openvx.custom_convolution",
+        VX_KERNEL_CUSTOM_CONVOLUTION,
+        3,
+    ),
+    (
+        "org.khronos.openvx.gaussian_pyramid",
+        VX_KERNEL_GAUSSIAN_PYRAMID,
+        2,
+    ),
     // Morphology
     ("org.khronos.openvx.dilate_3x3", VX_KERNEL_DILATE_3x3, 2),
     ("org.khronos.openvx.erode_3x3", VX_KERNEL_ERODE_3x3, 2),
@@ -118,8 +148,16 @@ pub const VISION_KERNELS: &[(&str, i32, u32)] = &[
     ("org.khronos.openvx.not", VX_KERNEL_NOT, 2),
     // Statistics
     ("org.khronos.openvx.histogram", VX_KERNEL_HISTOGRAM, 2),
-    ("org.khronos.openvx.equalize_histogram", VX_KERNEL_EQUALIZE_HISTOGRAM, 2),
-    ("org.khronos.openvx.integral_image", VX_KERNEL_INTEGRAL_IMAGE, 2),
+    (
+        "org.khronos.openvx.equalize_histogram",
+        VX_KERNEL_EQUALIZE_HISTOGRAM,
+        2,
+    ),
+    (
+        "org.khronos.openvx.integral_image",
+        VX_KERNEL_INTEGRAL_IMAGE,
+        2,
+    ),
     ("org.khronos.openvx.mean_stddev", VX_KERNEL_MEAN_STDDEV, 4),
     ("org.khronos.openvx.minmaxloc", VX_KERNEL_MINMAXLOC, 6),
     // Additional operations
@@ -128,14 +166,42 @@ pub const VISION_KERNELS: &[(&str, i32, u32)] = &[
     ("org.khronos.openvx.table_lookup", VX_KERNEL_TABLE_LOOKUP, 3),
     ("org.khronos.openvx.convertdepth", VX_KERNEL_CONVERTDEPTH, 4),
     // Feature detection
-    ("org.khronos.openvx.harris_corners", VX_KERNEL_HARRIS_CORNERS, 8),
+    (
+        "org.khronos.openvx.harris_corners",
+        VX_KERNEL_HARRIS_CORNERS,
+        8,
+    ),
     ("org.khronos.openvx.fast_corners", VX_KERNEL_FAST_CORNERS, 5),
-    ("org.khronos.openvx.optical_flow_pyr_lk", VX_KERNEL_OPTICAL_FLOW_PYR_LK, 7),
-    ("org.khronos.openvx.canny_edge_detector", VX_KERNEL_CANNY_EDGE_DETECTOR, 5),
+    (
+        "org.khronos.openvx.optical_flow_pyr_lk",
+        VX_KERNEL_OPTICAL_FLOW_PYR_LK,
+        7,
+    ),
+    (
+        "org.khronos.openvx.canny_edge_detector",
+        VX_KERNEL_CANNY_EDGE_DETECTOR,
+        5,
+    ),
     // OpenVX 1.1
-    ("org.khronos.openvx.laplacian_pyramid", VX_KERNEL_LAPLACIAN_PYRAMID, 3),
-    ("org.khronos.openvx.laplacian_reconstruct", VX_KERNEL_LAPLACIAN_RECONSTRUCT, 3),
-    ("org.khronos.openvx.non_linear_filter", VX_KERNEL_NON_LINEAR_FILTER, 4),
+    (
+        "org.khronos.openvx.laplacian_pyramid",
+        VX_KERNEL_LAPLACIAN_PYRAMID,
+        3,
+    ),
+    (
+        "org.khronos.openvx.laplacian_reconstruct",
+        VX_KERNEL_LAPLACIAN_RECONSTRUCT,
+        3,
+    ),
+    (
+        "org.khronos.openvx.non_linear_filter",
+        VX_KERNEL_NON_LINEAR_FILTER,
+        4,
+    ),
     // OpenVX 1.0.2
-    ("org.khronos.openvx.weighted_average", VX_KERNEL_WEIGHTED_AVERAGE, 4),
+    (
+        "org.khronos.openvx.weighted_average",
+        VX_KERNEL_WEIGHTED_AVERAGE,
+        4,
+    ),
 ];
