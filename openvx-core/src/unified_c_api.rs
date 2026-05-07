@@ -1630,10 +1630,18 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 }
             }
 
-            // Collect user kernel validator info before dropping GRAPHS_DATA lock
-            // to avoid deadlock when callbacks call back into the API
-            let mut user_kernel_validators: Vec<(u64, u64, Vec<vx_reference>, VxKernelValidateF)> =
-                Vec::new();
+            // Collect user kernel callbacks (validate, init, deinit) before
+            // dropping the GRAPHS_DATA lock so the callbacks can re-enter the
+            // API without deadlocking.
+            struct UserKernelHook {
+                node_id: u64,
+                param_refs: Vec<vx_reference>,
+                validate: VxKernelValidateF,
+                init: VxKernelInitializeF,
+                deinit: VxKernelDeinitializeF,
+                auto_local_size: usize,
+            }
+            let mut user_kernel_hooks: Vec<UserKernelHook> = Vec::new();
             for node_id in nodes_vec.iter() {
                 let (kernel_id, param_refs) = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
                     if let Some(node_data) = nodes_data.get(node_id) {
@@ -1662,14 +1670,16 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                         .get(&user_kernel_key)
                         .or_else(|| user_kernels.get(&user_kernel_key_alt))
                     {
-                        if uk.validate.is_some() {
-                            user_kernel_validators.push((
-                                *node_id,
-                                kernel_id,
-                                param_refs,
-                                uk.validate,
-                            ));
-                        }
+                        user_kernel_hooks.push(UserKernelHook {
+                            node_id: *node_id,
+                            param_refs,
+                            validate: uk.validate,
+                            init: uk.init,
+                            deinit: uk.deinit,
+                            auto_local_size: uk
+                                .local_data_size
+                                .load(Ordering::SeqCst),
+                        });
                     }
                 }
             }
@@ -1677,15 +1687,75 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             // Clone Arc to graph data so we can access it after dropping GRAPHS_DATA
             let g_clone = Arc::clone(g);
 
-            // Drop GRAPHS_DATA lock BEFORE calling validator callbacks
-            // Callbacks may call vxQueryReference etc. which need GRAPHS_DATA
+            // Drop GRAPHS_DATA lock BEFORE calling user-kernel callbacks.
+            // Callbacks may call vxQueryReference / vxSetNodeAttribute etc.
+            // which need GRAPHS_DATA themselves.
             drop(graphs);
 
-            // Call user kernel validator callbacks (no GRAPHS_DATA lock held)
-            for (node_id, _kernel_id, param_refs, validate_fn_opt) in &user_kernel_validators {
-                if let Some(validate_fn) = validate_fn_opt {
-                    let num_params = param_refs.len();
-                    let metas: Vec<Box<VxMetaFormat>> = (0..num_params)
+            // Run the user-kernel verify lifecycle:
+            //   1. If a previous `init` ran for this node, call `deinit` first.
+            //   2. Call `validate`.
+            //   3. Auto-allocate the per-node local-data buffer if requested.
+            //   4. Call `init`.
+            // After this loop, each user-kernel node is in the `initialized`
+            // state. `vxProcessGraph` (and the kernel dispatcher) must NOT
+            // call init/deinit again — only the kernel function.
+            for hook in &user_kernel_hooks {
+                let node_ptr = hook.node_id as vx_node;
+                let num_params = hook.param_refs.len() as vx_uint32;
+
+                // 1) Tear down previous init (re-verify path).
+                let was_initialized = if let Ok(nodes) = crate::c_api::NODES.lock() {
+                    nodes
+                        .get(&hook.node_id)
+                        .map(|n| n.user_kernel_initialized.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                if was_initialized {
+                    if let Some(deinit_fn) = hook.deinit {
+                        push_user_kernel_in_init(hook.node_id);
+                        let _ = unsafe {
+                            deinit_fn(node_ptr, hook.param_refs.as_ptr(), num_params)
+                        };
+                        pop_user_kernel_in_init();
+                    }
+                    if let Ok(nodes) = crate::c_api::NODES.lock() {
+                        if let Some(n) = nodes.get(&hook.node_id) {
+                            n.user_kernel_initialized.store(false, Ordering::SeqCst);
+                            // Free the auto-allocated buffer if any. User-managed
+                            // buffers are released by the user kernel itself
+                            // inside `deinit` (see test_usernode.c:524-531).
+                            if n.local_data_auto_alloc.load(Ordering::SeqCst) {
+                                let old_ptr = n.local_data_ptr.load(Ordering::SeqCst);
+                                if !old_ptr.is_null() {
+                                    let old_size = n.local_data_size.load(Ordering::SeqCst);
+                                    if old_size > 0 {
+                                        unsafe {
+                                            let _ = Vec::from_raw_parts(
+                                                old_ptr as *mut u8,
+                                                old_size,
+                                                old_size,
+                                            );
+                                        }
+                                    }
+                                    n.local_data_ptr
+                                        .store(std::ptr::null_mut(), Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2) Validate. The validator may register a per-output
+                // `VX_VALID_RECT_CALLBACK` on the meta-format object; after
+                // validate succeeds we replay that callback to populate the
+                // output image's valid rectangle (the test asserts on this
+                // post-vxProcessGraph, but the rect depends only on input
+                // rects so it is safe to compute it during verify).
+                if let Some(validate_fn) = hook.validate {
+                    let metas: Vec<Box<VxMetaFormat>> = (0..hook.param_refs.len())
                         .map(|_| {
                             Box::new(VxMetaFormat {
                                 attributes: Mutex::new(HashMap::new()),
@@ -1696,17 +1766,60 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                         .iter()
                         .map(|m| &**m as *const VxMetaFormat as vx_meta_format)
                         .collect();
-                    let node_ptr = *node_id as vx_node;
                     let status = unsafe {
                         validate_fn(
                             node_ptr,
-                            param_refs.as_ptr(),
-                            num_params as vx_uint32,
+                            hook.param_refs.as_ptr(),
+                            num_params,
                             meta_ptrs.as_mut_ptr(),
                         )
                     };
                     if status != VX_SUCCESS {
                         return status;
+                    }
+
+                    // Apply VX_VALID_RECT_CALLBACK for each output image param.
+                    apply_valid_rect_callbacks(
+                        node_ptr,
+                        &hook.param_refs,
+                        &metas,
+                    );
+                }
+
+                // 3) Auto-allocate per-node local data if the kernel requested it.
+                if hook.auto_local_size > 0 {
+                    let buf = vec![0u8; hook.auto_local_size];
+                    let size = buf.len();
+                    let ptr = Box::into_raw(buf.into_boxed_slice()) as *mut u8 as *mut c_void;
+                    if let Ok(nodes) = crate::c_api::NODES.lock() {
+                        if let Some(n) = nodes.get(&hook.node_id) {
+                            n.local_data_size.store(size, Ordering::SeqCst);
+                            n.local_data_ptr.store(ptr, Ordering::SeqCst);
+                            n.local_data_auto_alloc.store(true, Ordering::SeqCst);
+                        }
+                    }
+                } else if let Ok(nodes) = crate::c_api::NODES.lock() {
+                    if let Some(n) = nodes.get(&hook.node_id) {
+                        n.local_data_auto_alloc.store(false, Ordering::SeqCst);
+                    }
+                }
+
+                // 4) Mark "in init" so vxSetNodeAttribute can permit local-data
+                // mutation, then call init.
+                push_user_kernel_in_init(hook.node_id);
+                let init_status = if let Some(init_fn) = hook.init {
+                    unsafe { init_fn(node_ptr, hook.param_refs.as_ptr(), num_params) }
+                } else {
+                    VX_SUCCESS
+                };
+                pop_user_kernel_in_init();
+                if init_status != VX_SUCCESS {
+                    return init_status;
+                }
+
+                if let Ok(nodes) = crate::c_api::NODES.lock() {
+                    if let Some(n) = nodes.get(&hook.node_id) {
+                        n.user_kernel_initialized.store(true, Ordering::SeqCst);
                     }
                 }
             }
@@ -2379,9 +2492,165 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
         }
     }
 
+    // If this node was registered as a replicated node via vxReplicateNode,
+    // run the kernel once per pyramid level / object-array item, replacing
+    // the parameters whose replicate flag is set with the corresponding
+    // sub-object on each iteration.
+    if let Some(flags) = lookup_node_replication_flags(node_id) {
+        if let Some(replicas) = build_node_replicas(&params, &flags) {
+            let mut last_status = VX_SUCCESS;
+            for replica in replicas {
+                let status = dispatch_kernel_with_border_ex(
+                    &kernel_name,
+                    &replica,
+                    Some(node_border),
+                    node_id,
+                );
+                if status != VX_SUCCESS {
+                    last_status = status;
+                    break;
+                }
+                last_status = status;
+            }
+            return Some(last_status);
+        }
+    }
+
     // Dispatch to appropriate VXU implementation based on kernel name
     let result = dispatch_kernel_with_border_ex(&kernel_name, &params, Some(node_border), node_id);
     Some(result)
+}
+
+/// Look up the replication flags for `node_id` if `vxReplicateNode` was
+/// previously called for it. Returns `None` for non-replicated nodes.
+fn lookup_node_replication_flags(node_id: u64) -> Option<Vec<vx_bool>> {
+    let graph_id = get_node_graph_id(node_id).ok()?;
+    if let Ok(graphs) = GRAPHS_DATA.lock() {
+        let g = graphs.get(&graph_id)?;
+        let map = g.replicated_nodes.lock().ok()?;
+        return map.get(&node_id).cloned();
+    }
+    None
+}
+
+/// Compute the per-iteration parameter lists for a replicated node.
+///
+/// For each parameter whose replicate flag is `true`, look up the parent
+/// container (pyramid level → its pyramid, object-array item → its array)
+/// and capture the per-iteration substitution. The replication count is the
+/// minimum over all replicated parameters; non-replicated parameters are
+/// passed through unchanged.
+fn build_node_replicas(
+    params: &[vx_reference],
+    flags: &[vx_bool],
+) -> Option<Vec<Vec<vx_reference>>> {
+    let mut count: Option<usize> = None;
+    // (param_index, parent_kind, parent_addr)
+    let mut replicas: Vec<(usize, ReplicaKind, usize)> = Vec::new();
+
+    for (i, &p) in params.iter().enumerate() {
+        if i >= flags.len() || flags[i] == 0 || p.is_null() {
+            continue;
+        }
+        let addr = p as usize;
+
+        // Look up object-array parent. The recorded parent address may be
+        // stale (the array could have been released since the item was
+        // captured), so we validate that the address is still registered
+        // as a VX_TYPE_OBJECT_ARRAY before dereferencing it.
+        let arr_parent: Option<usize> = if let Ok(parents) = OBJECT_ARRAY_ITEM_PARENTS.lock() {
+            parents.get(&addr).map(|&(a, _)| a)
+        } else {
+            None
+        };
+        if let Some(arr_addr) = arr_parent {
+            let alive = is_reference_type(arr_addr, VX_TYPE_OBJECT_ARRAY);
+            if alive {
+                let arr = unsafe { &*(arr_addr as *const VxCObjectArray) };
+                let item_count = arr.count;
+                if item_count == 0 {
+                    return None;
+                }
+                count = Some(count.map_or(item_count, |c| c.min(item_count)));
+                replicas.push((i, ReplicaKind::ObjectArray, arr_addr));
+                continue;
+            }
+        }
+
+        // Look up pyramid parent.
+        let pyr_parent: Option<usize> = if let Ok(level_imgs) = PYRAMID_LEVEL_IMAGES.lock() {
+            level_imgs.get(&addr).map(|&(a, _)| a)
+        } else {
+            None
+        };
+        if let Some(pyr_addr) = pyr_parent {
+            let alive = is_reference_type(pyr_addr, VX_TYPE_PYRAMID);
+            if alive {
+                let pyr = unsafe { &*(pyr_addr as *const VxCPyramid) };
+                let levels = pyr.num_levels;
+                if levels == 0 {
+                    return None;
+                }
+                count = Some(count.map_or(levels, |c| c.min(levels)));
+                replicas.push((i, ReplicaKind::Pyramid, pyr_addr));
+                continue;
+            }
+        }
+
+        // Replicated parameter without a (live) recognised parent container.
+        // Fall back to non-replicated dispatch.
+        return None;
+    }
+
+    let count = count?;
+    if replicas.is_empty() || count == 0 {
+        return None;
+    }
+
+    let mut iterations: Vec<Vec<vx_reference>> = Vec::with_capacity(count);
+    for idx in 0..count {
+        let mut iter_params = params.to_vec();
+        for (param_idx, kind, parent_addr) in &replicas {
+            let item: vx_reference = match kind {
+                ReplicaKind::Pyramid => {
+                    let pyr = unsafe { &*(*parent_addr as *const VxCPyramid) };
+                    *pyr.levels.get(idx)? as vx_reference
+                }
+                ReplicaKind::ObjectArray => {
+                    let arr = unsafe { &*(*parent_addr as *const VxCObjectArray) };
+                    let items = arr.items.read().ok()?;
+                    *items.get(idx)? as vx_reference
+                }
+            };
+            iter_params[*param_idx] = item;
+        }
+        iterations.push(iter_params);
+    }
+
+    Some(iterations)
+}
+
+#[derive(Clone, Copy)]
+enum ReplicaKind {
+    Pyramid,
+    ObjectArray,
+}
+
+/// Returns true if `addr` is currently registered as a live reference of the
+/// given OpenVX type. Used by the replication code to ignore stale entries
+/// in `OBJECT_ARRAY_ITEM_PARENTS` / `PYRAMID_LEVEL_IMAGES` whose recorded
+/// parent address may have been freed (and possibly reallocated to a
+/// different object) since the entry was inserted.
+fn is_reference_type(addr: usize, expected_type: vx_enum) -> bool {
+    if addr == 0 {
+        return false;
+    }
+    if let Ok(types) = REFERENCE_TYPES.lock() {
+        if let Some(&t) = types.get(&addr) {
+            return t == expected_type;
+        }
+    }
+    false
 }
 
 /// Convert vx_border_t to BorderMode for use in image processing
@@ -3762,24 +4031,20 @@ fn dispatch_kernel_with_border_impl(
             };
             // USER_KERNELS lock is dropped here
 
-            if let Some((init_fn, kernel_fn, deinit_fn)) = uk_callbacks {
+            if let Some((_init_fn, kernel_fn, _deinit_fn)) = uk_callbacks {
                 let node_ptr = node_id as vx_node;
                 let params_ptr = params.as_ptr();
                 let num_params = params.len() as vx_uint32;
-                // Call init callback if present
-                if let Some(init_fn) = init_fn {
-                    unsafe { init_fn(node_ptr, params_ptr, num_params) };
-                }
-                // Call the user kernel function
-                let mut result = VX_SUCCESS;
+                // Per OpenVX 1.3, user-kernel `init` and `deinit` are run once
+                // each by `vxVerifyGraph`, NOT per execution. `vxProcessGraph`
+                // only invokes the kernel function. (See test_usernode.c
+                // ImmediateProcessing assertions: after vxProcessGraph,
+                // is_initialize_called == is_deinitialize_called == false.)
                 if let Some(kernel_fn) = kernel_fn {
-                    result = unsafe { kernel_fn(node_ptr, params_ptr, num_params) };
+                    unsafe { kernel_fn(node_ptr, params_ptr, num_params) }
+                } else {
+                    VX_SUCCESS
                 }
-                // Call deinit callback if present
-                if let Some(deinit_fn) = deinit_fn {
-                    unsafe { deinit_fn(node_ptr, params_ptr, num_params) };
-                }
-                result
             } else {
                 // Unregistered kernel - return error
                 VX_ERROR_INVALID_KERNEL
@@ -4626,6 +4891,12 @@ pub static DELAY_PYRAMID_LEVEL: Lazy<Mutex<HashMap<(u64, u32), (usize, i32, usiz
 pub static PYRAMID_LEVEL_IMAGES: Lazy<Mutex<HashMap<usize, (usize, usize)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+// Maps: item_ref_addr -> (object_array_addr, item_index)
+// Populated by `vxGetObjectArrayItem` so that `vxReplicateNode` can walk back
+// from a node parameter to the parent object array and iterate every item.
+pub static OBJECT_ARRAY_ITEM_PARENTS: Lazy<Mutex<HashMap<usize, (usize, u32)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 /// Register a pyramid level image for delay parameter resolution
 #[no_mangle]
 pub extern "C" fn vxRegisterPyramidLevelImage(
@@ -5334,10 +5605,272 @@ pub struct VxCUserKernel {
     pub deinit: VxKernelDeinitializeF,
     pub num_params: vx_uint32,
     pub context_id: u64,
+    /// Auto-allocate size for VX_NODE_LOCAL_DATA. If > 0, the framework
+    /// allocates a buffer for the node before calling `init` and the user
+    /// kernel cannot resize/replace it from inside `init`/`deinit`. If 0,
+    /// the user kernel manages its own local data via `vxSetNodeAttribute`
+    /// during `init`. Set via `vxSetKernelAttribute(VX_KERNEL_LOCAL_DATA_SIZE)`.
+    pub local_data_size: AtomicUsize,
 }
 
 pub static USER_KERNELS: Lazy<Mutex<HashMap<vx_enum, Arc<VxCUserKernel>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+thread_local! {
+    /// Per-thread stack of node ids that are currently executing a user-kernel
+    /// `init` or `deinit` callback. Inside such a callback,
+    /// `vxSetNodeAttribute(VX_NODE_LOCAL_DATA_*)` is allowed (when the kernel
+    /// is not in auto-allocate mode) and `vxQueryNode` returns the current
+    /// values; outside callbacks, attempts to mutate these attributes must
+    /// fail per the OpenVX 1.3 spec.
+    static USER_KERNEL_INIT_STACK: std::cell::RefCell<Vec<u64>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Push a node onto the user-kernel init/deinit stack for the current thread.
+pub(crate) fn push_user_kernel_in_init(node_id: u64) {
+    USER_KERNEL_INIT_STACK.with(|s| s.borrow_mut().push(node_id));
+}
+
+/// Pop the topmost entry from the user-kernel init/deinit stack.
+pub(crate) fn pop_user_kernel_in_init() {
+    USER_KERNEL_INIT_STACK.with(|s| {
+        s.borrow_mut().pop();
+    });
+}
+
+/// Returns true if the current thread is currently inside a user-kernel
+/// `init` or `deinit` callback for the given node.
+pub(crate) fn is_user_kernel_in_init(node_id: u64) -> bool {
+    USER_KERNEL_INIT_STACK.with(|s| s.borrow().last().copied() == Some(node_id))
+}
+
+/// If `node_id` refers to a user-kernel node that was previously initialised
+/// by `vxVerifyGraph`, invoke its `deinit` callback and free the auto-
+/// allocated local-data buffer (if any). Idempotent: a no-op if the node
+/// isn't a user-kernel node, isn't initialised, or doesn't exist.
+pub(crate) fn deinit_user_kernel_node(node_id: u64) {
+    // Snapshot the node fields we need under the NODES lock.
+    let (kernel_id, was_initialized, params_snapshot, auto_alloc, local_size, local_ptr) =
+        if let Ok(nodes) = crate::c_api::NODES.lock() {
+            if let Some(n) = nodes.get(&node_id) {
+                let was_init = n.user_kernel_initialized.load(Ordering::SeqCst);
+                if !was_init {
+                    return;
+                }
+                let kid = n.kernel_id;
+                let params: Vec<vx_reference> = if let Ok(p) = n.parameters.lock() {
+                    p.iter().map(|opt| opt.unwrap_or(0) as vx_reference).collect()
+                } else {
+                    Vec::new()
+                };
+                (
+                    kid,
+                    true,
+                    params,
+                    n.local_data_auto_alloc.load(Ordering::SeqCst),
+                    n.local_data_size.load(Ordering::SeqCst),
+                    n.local_data_ptr.load(Ordering::SeqCst),
+                )
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+    if !was_initialized || kernel_id < 0xFFE00000 {
+        return;
+    }
+    // Look up the user-kernel `deinit` callback (drop the lock before calling).
+    let user_kernel_key = kernel_id as i32;
+    let user_kernel_key_alt = (kernel_id & 0xFFFFFFFF) as i32;
+    let deinit_fn = if let Ok(user_kernels) = USER_KERNELS.lock() {
+        user_kernels
+            .get(&user_kernel_key)
+            .or_else(|| user_kernels.get(&user_kernel_key_alt))
+            .and_then(|uk| uk.deinit)
+    } else {
+        None
+    };
+
+    if let Some(deinit_fn) = deinit_fn {
+        push_user_kernel_in_init(node_id);
+        let _ = unsafe {
+            deinit_fn(
+                node_id as vx_node,
+                params_snapshot.as_ptr(),
+                params_snapshot.len() as vx_uint32,
+            )
+        };
+        pop_user_kernel_in_init();
+    }
+
+    // Free the auto-allocated local data buffer.
+    if auto_alloc && !local_ptr.is_null() && local_size > 0 {
+        unsafe {
+            let _ = Vec::from_raw_parts(local_ptr as *mut u8, local_size, local_size);
+        }
+    }
+
+    if let Ok(nodes) = crate::c_api::NODES.lock() {
+        if let Some(n) = nodes.get(&node_id) {
+            n.user_kernel_initialized.store(false, Ordering::SeqCst);
+            n.local_data_ptr
+                .store(std::ptr::null_mut(), Ordering::SeqCst);
+        }
+    }
+}
+
+/// Per-output `VX_VALID_RECT_CALLBACK` signature, matching
+/// `vx_kernel_image_valid_rectangle_f` from the OpenVX spec.
+pub type VxKernelImageValidRectangleF = extern "C" fn(
+    node: vx_node,
+    index: vx_uint32,
+    input_valid: *const *const vx_rectangle_t,
+    output_valid: *const *mut vx_rectangle_t,
+) -> vx_status;
+
+/// VX_VALID_RECT_CALLBACK = VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_META_FORMAT) + 0x1
+const VX_VALID_RECT_CALLBACK: i32 = (VX_TYPE_META_FORMAT << 8) + 0x1;
+
+/// After a user kernel's validator has run, scan each output IMAGE parameter's
+/// meta-format for a registered `VX_VALID_RECT_CALLBACK`. If present, gather
+/// the input image valid rectangles, invoke the callback, and write the
+/// resulting rectangle onto the output image. This mirrors the post-validate
+/// behaviour required by `test_usernode.c`.
+pub(crate) fn apply_valid_rect_callbacks(
+    node: vx_node,
+    param_refs: &[vx_reference],
+    metas: &[Box<VxMetaFormat>],
+) {
+    let num_params = param_refs.len();
+    if num_params == 0 || metas.len() != num_params {
+        return;
+    }
+
+    // Pre-collect each input image's current valid rectangle so we can pass
+    // an array of pointers to the callback.
+    let mut input_rects: Vec<vx_rectangle_t> = Vec::with_capacity(num_params);
+    for (i, &p) in param_refs.iter().enumerate() {
+        let rect = if !p.is_null() && is_image_ref(p) {
+            read_image_valid_rect(p as vx_image)
+        } else {
+            vx_rectangle_t {
+                start_x: 0,
+                start_y: 0,
+                end_x: 0,
+                end_y: 0,
+            }
+        };
+        input_rects.push(rect);
+        let _ = i;
+    }
+    let input_ptrs: Vec<*const vx_rectangle_t> =
+        input_rects.iter().map(|r| r as *const _).collect();
+
+    for (idx, meta) in metas.iter().enumerate() {
+        let p = param_refs[idx];
+        if p.is_null() || !is_image_ref(p) {
+            continue;
+        }
+        let cb_ptr = if let Ok(attrs) = meta.attributes.lock() {
+            attrs.get(&VX_VALID_RECT_CALLBACK).cloned()
+        } else {
+            None
+        };
+        let cb_bytes = match cb_ptr {
+            Some(b) if b.len() >= std::mem::size_of::<*const ()>() => b,
+            _ => continue,
+        };
+        let mut cb_addr: usize = 0;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                cb_bytes.as_ptr(),
+                &mut cb_addr as *mut usize as *mut u8,
+                std::mem::size_of::<usize>(),
+            );
+        }
+        if cb_addr == 0 {
+            continue;
+        }
+        let callback: VxKernelImageValidRectangleF = unsafe { std::mem::transmute(cb_addr) };
+
+        // Invoke with a single output rect (one output sub-rect per image).
+        let mut out_rect = vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: 0,
+            end_y: 0,
+        };
+        let out_rect_ptr: *mut vx_rectangle_t = &mut out_rect as *mut _;
+        let out_ptr_array: [*mut vx_rectangle_t; 1] = [out_rect_ptr];
+
+        let status = callback(
+            node,
+            idx as vx_uint32,
+            input_ptrs.as_ptr(),
+            out_ptr_array.as_ptr(),
+        );
+        if status != VX_SUCCESS {
+            continue;
+        }
+        write_image_valid_rect(p as vx_image, &out_rect);
+    }
+}
+
+fn is_image_ref(r: vx_reference) -> bool {
+    if r.is_null() {
+        return false;
+    }
+    if let Ok(images) = IMAGES.lock() {
+        if images.contains(&(r as usize)) {
+            return true;
+        }
+    }
+    if let Ok(types) = REFERENCE_TYPES.lock() {
+        if let Some(&t) = types.get(&(r as usize)) {
+            return t == VX_TYPE_IMAGE;
+        }
+    }
+    false
+}
+
+fn read_image_valid_rect(image: vx_image) -> vx_rectangle_t {
+    if image.is_null() {
+        return vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: 0,
+            end_y: 0,
+        };
+    }
+    let img = unsafe { &*(image as *const VxCImage) };
+    if let Ok(r) = img.valid_rect.read() {
+        let mut out = *r;
+        // If the valid rect was never set, default to the full image extent.
+        if out.end_x == 0 && out.end_y == 0 && out.start_x == 0 && out.start_y == 0 {
+            out.end_x = img.width;
+            out.end_y = img.height;
+        }
+        return out;
+    }
+    vx_rectangle_t {
+        start_x: 0,
+        start_y: 0,
+        end_x: 0,
+        end_y: 0,
+    }
+}
+
+fn write_image_valid_rect(image: vx_image, rect: &vx_rectangle_t) {
+    if image.is_null() {
+        return;
+    }
+    let img = unsafe { &*(image as *const VxCImage) };
+    if let Ok(mut r) = img.valid_rect.write() {
+        *r = *rect;
+    }
+}
 
 static NEXT_KERNEL_ENUM: Lazy<AtomicUsize> = Lazy::new(|| {
     // VX_KERNEL_BASE(VX_ID_USER, 0) where VX_ID_USER = 0xFFE
@@ -5389,6 +5922,7 @@ pub extern "C" fn vxAddUserKernel(
             deinit,
             num_params,
             context_id: context as usize as u64,
+            local_data_size: AtomicUsize::new(0),
         });
 
         if let Ok(mut kernels) = USER_KERNELS.lock() {
@@ -7432,6 +7966,10 @@ pub extern "C" fn vxGetObjectArrayItem(obj_arr: vx_object_array, index: u32) -> 
             cnt.fetch_add(1, Ordering::SeqCst);
         }
     }
+    // Record parent info so vxReplicateNode can walk back to the array.
+    if let Ok(mut parents) = OBJECT_ARRAY_ITEM_PARENTS.lock() {
+        parents.insert(item as usize, (obj_arr as usize, index));
+    }
     item
 }
 
@@ -8194,14 +8732,42 @@ pub extern "C" fn vxAddParameterToKernel(
 #[no_mangle]
 pub extern "C" fn vxSetKernelAttribute(
     kernel: vx_kernel,
-    _attribute: i32,
-    _ptr: *const c_void,
-    _size: usize,
+    attribute: i32,
+    ptr: *const c_void,
+    size: usize,
 ) -> i32 {
     if kernel.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    // Accept all kernel attribute settings (VX_KERNEL_LOCAL_DATA_SIZE, etc.)
+
+    // VX_KERNEL_LOCAL_DATA_SIZE controls auto-allocation of a per-node local
+    // data buffer for user kernels. We persist it on the user-kernel record
+    // so node creation / vxVerifyGraph can allocate the buffer before calling
+    // the user's `init` callback.
+    //
+    // The full OpenVX-spec value is `VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_KERNEL) + 0x3`,
+    // which expands to `0x80403`. The legacy short value `0x03` is also accepted
+    // for compatibility with code that uses the offset directly.
+    const VX_KERNEL_LOCAL_DATA_SIZE_FULL: i32 = 0x80403;
+    if attribute == VX_KERNEL_LOCAL_DATA_SIZE_FULL
+        || attribute == VX_KERNEL_LOCAL_DATA_SIZE
+    {
+        if ptr.is_null() || size < std::mem::size_of::<vx_size>() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let value: vx_size = unsafe { *(ptr as *const vx_size) };
+        let kernel_enum_id = kernel as usize as vx_enum;
+        if let Ok(kernels) = USER_KERNELS.lock() {
+            if let Some(uk) = kernels.get(&kernel_enum_id) {
+                uk.local_data_size.store(value, Ordering::SeqCst);
+                return VX_SUCCESS;
+            }
+        }
+        // Built-in kernels accept this attribute but ignore it.
+        return VX_SUCCESS;
+    }
+
+    // Accept other kernel attribute settings as no-ops for now.
     VX_SUCCESS
 }
 
@@ -10137,21 +10703,37 @@ pub extern "C" fn vxRemoveKernel(kernel: vx_kernel) -> vx_status {
     }
     // Check if this is a user kernel (registered via vxAddUserKernel)
     let kernel_enum = kernel as usize as vx_enum;
-    if let Ok(kernels) = USER_KERNELS.lock() {
-        if kernels.contains_key(&kernel_enum) {
-            // User kernel - can be removed
-            drop(kernels);
-            if let Ok(mut kernels) = USER_KERNELS.lock() {
-                kernels.remove(&kernel_enum);
-            }
-            if let Ok(mut params) = USER_KERNEL_PARAMS.lock() {
-                params.remove(&kernel_enum);
-            }
-            return VX_SUCCESS;
-        }
+    let is_user_kernel = if let Ok(kernels) = USER_KERNELS.lock() {
+        kernels.contains_key(&kernel_enum)
+    } else {
+        false
+    };
+    if !is_user_kernel {
+        // Built-in kernels cannot be removed.
+        return VX_ERROR_INVALID_PARAMETERS;
     }
-    // Built-in kernel - cannot be removed
-    VX_ERROR_INVALID_PARAMETERS
+
+    if let Ok(mut kernels) = USER_KERNELS.lock() {
+        kernels.remove(&kernel_enum);
+    }
+    if let Ok(mut params) = USER_KERNEL_PARAMS.lock() {
+        params.remove(&kernel_enum);
+    }
+    // Clean up reference-tracking metadata so the kernel no longer counts as
+    // a dangling reference in `VX_CONTEXT_REFERENCES`. The pointer itself
+    // remains valid for the caller (as the test comment notes), but the
+    // framework no longer accounts for it.
+    let addr = kernel as usize;
+    if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+        counts.remove(&addr);
+    }
+    if let Ok(mut types) = REFERENCE_TYPES.lock() {
+        types.remove(&addr);
+    }
+    if let Ok(mut names) = REFERENCE_NAMES.lock() {
+        names.remove(&addr);
+    }
+    VX_SUCCESS
 }
 
 /// Set meta format from reference - copies type-specific attributes from the reference
