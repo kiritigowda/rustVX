@@ -1147,18 +1147,23 @@ pub extern "C" fn vxMapImagePatch(
                 + (roi_start_x + start_x) as isize * ext_stride_x as isize;
             let patch_ptr = ext_ptr.offset(offset_bytes) as *mut c_void;
 
-            // For NV12/NV21 UV plane (plane 1), use subsampled addressing convention:
-            // dim_x/dim_y = full image dimensions, step_x/step_y = subsampling factor,
-            // scale_x/scale_y = VX_SCALE_UNITY / subsampling factor
-            // This matches the OpenVX spec where vxFormatImagePatchAddress2d uses:
-            // offset = (y * stride_y * scale_y / 1024) + (x * stride_x * scale_x / 1024)
-            let is_nv12_nv21_uv = (img.format == VX_DF_IMAGE_NV12 || img.format == VX_DF_IMAGE_NV21) && plane_index == 1;
-            if is_nv12_nv21_uv {
-                // Convention B: full-image coordinates with scale factors
-                (*addr).dim_x = img.width as vx_uint32;
-                (*addr).dim_y = img.height as vx_uint32;
-                (*addr).stride_x = ext_stride_x; // 2 bytes per UV pair
-                (*addr).stride_y = ext_stride_y; // actual row stride in bytes
+            // Check if this is a subsampled UV plane (NV12/NV21 plane 1)
+            let is_nv_uv = (img.format == VX_DF_IMAGE_NV12 || img.format == VX_DF_IMAGE_NV21)
+                && plane_index == 1;
+
+            if is_nv_uv {
+                // Convention B for external NV12/NV21 UV plane:
+                // dim_x = full_width, dim_y = full_height, step_x = 2, step_y = 2
+                // scale_x = 512, scale_y = 512
+                // This makes vxFormatImagePatchAddress2d compute:
+                //   offset = stride_y * (512*y/1024) + stride_x * (512*x/1024)
+                //          = stride_y * (y/2) + stride_x * (x/2)
+                // which matches the CTS own_check_image_patch_plane_vx_layout formula:
+                //   ref_ptr = base + y * (width/2) + x
+                (*addr).dim_x = (width * 2) as vx_uint32;
+                (*addr).dim_y = (height * 2) as vx_uint32;
+                (*addr).stride_x = ext_stride_x;
+                (*addr).stride_y = ext_stride_y;
                 (*addr).step_x = 2;
                 (*addr).step_y = 2u16;
                 (*addr).scale_x = 512; // VX_SCALE_UNITY / 2
@@ -1245,18 +1250,22 @@ pub extern "C" fn vxMapImagePatch(
             return VX_ERROR_INVALID_REFERENCE;
         };
 
-        // Fill addressing structure
-        // For NV12/NV21 UV plane, use subsampled addressing convention
-        let is_nv12_nv21_uv = (img.format == VX_DF_IMAGE_NV12 || img.format == VX_DF_IMAGE_NV21) && plane_index == 1;
-        if is_nv12_nv21_uv {
-            (*addr).dim_x = img.width as vx_uint32;
-            (*addr).dim_y = img.height as vx_uint32;
-            (*addr).stride_x = bpp as vx_int32; // 2 bytes per UV pair
-            (*addr).stride_y = mapped_stride_y as vx_int32; // actual row stride
+        // Check if this is a subsampled UV plane (NV12/NV21 plane 1)
+        let is_nv_uv_internal = (img.format == VX_DF_IMAGE_NV12 || img.format == VX_DF_IMAGE_NV21)
+            && plane_index == 1;
+
+        if is_nv_uv_internal {
+            // Convention B for NV12/NV21 UV plane (internal memory):
+            // Same convention as external path for consistency with CTS
+            // own_check_image_patch_plane_vx_layout
+            (*addr).dim_x = (width * 2) as vx_uint32;
+            (*addr).dim_y = (height * 2) as vx_uint32;
+            (*addr).stride_x = bpp as vx_int32;
+            (*addr).stride_y = mapped_stride_y as vx_int32;
             (*addr).step_x = 2;
             (*addr).step_y = 2u16;
-            (*addr).scale_x = 512; // VX_SCALE_UNITY / 2
-            (*addr).scale_y = 512; // VX_SCALE_UNITY / 2
+            (*addr).scale_x = 512;
+            (*addr).scale_y = 512;
         } else {
             (*addr).dim_x = width as vx_uint32;
             (*addr).dim_y = height as vx_uint32;

@@ -686,25 +686,26 @@ pub extern "C" fn ct_image_to_vx_image(
             for plane_idx in 0..num_planes {
                 let mut addr = std::mem::zeroed::<vx_imagepatch_addressing_t>();
                 let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-                
+
                 // Get plane dimensions
                 let (plane_width, plane_height) = VxCImage::plane_dimensions(width, height, vx_format, plane_idx);
-                let rect = vx_rectangle_t { 
-                    start_x: 0, start_y: 0, 
-                    end_x: plane_width, end_y: plane_height 
+                // Per OpenVX spec, rect is in full-image coordinates
+                let rect = vx_rectangle_t {
+                    start_x: 0, start_y: 0,
+                    end_x: width, end_y: height
                 };
                 let mut map_id: vx_map_id = 0;
-                
-                let status = vxMapImagePatch(vximg, &rect, plane_idx as vx_uint32, 
-                                             &mut map_id, &mut addr, &mut ptr, 
+
+                let status = vxMapImagePatch(vximg, &rect, plane_idx as vx_uint32,
+                                             &mut map_id, &mut addr, &mut ptr,
                                              VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST, 0);
                 if status != VX_SUCCESS {
                     let mut img_ptr = vximg;
                     vxReleaseImage(&mut img_ptr);
                     return std::ptr::null_mut();
                 }
-                
-                // Copy data row by row using scale-aware addressing
+
+                // Copy data row by row
                 if !ptr.is_null() && !img.data_begin_.is_null() {
                     let plane_offset = VxCImage::plane_offset(width, height, vx_format, plane_idx);
 
@@ -712,14 +713,8 @@ pub extern "C" fn ct_image_to_vx_image(
                     let plane_bpp = VxCImage::plane_stride_x(vx_format, plane_idx);
                     let row_size = plane_width as usize * plane_bpp;  // Bytes per row
 
-                    // For subsampled planes with scale factors, compute actual destination stride
-                    let scale_y = addr.scale_y as usize;
-                    let step_y = addr.step_y as usize;
-                    let actual_dst_stride = if scale_y > 0 && scale_y < 1024 {
-                        (step_y * (addr.stride_y as usize) * scale_y) / 1024
-                    } else {
-                        addr.stride_y as usize
-                    };
+                    // Destination stride: addr.stride_y is the byte stride between rows
+                    let actual_dst_stride = addr.stride_y as usize;
 
                     // CT_Image stores NV12/NV21 UV with row stride = width (full image width)
                     let src_row_stride = if (vx_format == VX_DF_IMAGE_NV12 || vx_format == VX_DF_IMAGE_NV21) && plane_idx > 0 {
@@ -736,7 +731,7 @@ pub extern "C" fn ct_image_to_vx_image(
                         }
                     }
                 }
-                
+
                 vxUnmapImagePatch(vximg, map_id);
             }
         } else {
@@ -823,22 +818,23 @@ pub extern "C" fn ct_image_from_vx_image(vximg: vx_image) -> CT_Image {
             for plane_idx in 0..num_planes {
                 let mut addr = std::mem::zeroed::<vx_imagepatch_addressing_t>();
                 let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-                
+
                 // Get plane dimensions
                 let (plane_width, plane_height) = VxCImage::plane_dimensions(width, height, format, plane_idx);
-                let rect = vx_rectangle_t { 
-                    start_x: 0, start_y: 0, 
-                    end_x: plane_width, end_y: plane_height 
+                // Per OpenVX spec, rect is in full-image coordinates
+                let rect = vx_rectangle_t {
+                    start_x: 0, start_y: 0,
+                    end_x: width, end_y: height
                 };
                 let mut map_id: vx_map_id = 0;
-                
+
                 let status = vxMapImagePatch(vximg, &rect, plane_idx as vx_uint32, &mut map_id, &mut addr, &mut ptr, VX_READ_ONLY, VX_MEMORY_TYPE_HOST, 0);
                 if status != VX_SUCCESS {
                     ct_free_image(ctimg);
                     return std::ptr::null_mut();
                 }
-                
-                // Copy data row by row using scale-aware addressing
+
+                // Copy data row by row
                 if !ptr.is_null() && !img.data_begin_.is_null() {
                     let plane_offset = VxCImage::plane_offset(width, height, format, plane_idx);
                     let plane_size = VxCImage::plane_size(width, height, format, plane_idx);
@@ -847,21 +843,9 @@ pub extern "C" fn ct_image_from_vx_image(vximg: vx_image) -> CT_Image {
                     let plane_bpp = VxCImage::plane_stride_x(format, plane_idx);
                     let row_size = plane_width as usize * plane_bpp;  // Bytes per row
 
-                    // For subsampled planes with scale factors (e.g., NV12/NV21 UV),
-                    // the stride_y in the addr may be scaled. Use scale_y to compute
-                    // the actual byte stride between plane rows.
-                    let scale_y = addr.scale_y as usize;
-                    let step_y = addr.step_y as usize;
-                    let actual_src_stride = if scale_y > 0 && scale_y < 1024 {
-                        // Subsampled: actual row stride = stride_y * step_y * scale_y / 1024
-                        // But since we iterate y in plane coordinates (0..plane_height),
-                        // each y step maps to step_y in the full-image coords.
-                        // Byte offset for plane row y = (y * step_y * stride_y * scale_y) / 1024
-                        // So per-row stride in mapped buffer = step_y * stride_y * scale_y / 1024
-                        (step_y * (addr.stride_y as usize) * scale_y) / 1024
-                    } else {
-                        addr.stride_y as usize
-                    };
+                    // Source stride: addr.stride_y is the byte stride between rows
+                    // in the mapped buffer (always in actual plane row bytes)
+                    let actual_src_stride = addr.stride_y as usize;
 
                     // CT_Image stores NV12/NV21 UV with row stride = width (full image width)
                     let dst_row_stride = if (format == VX_DF_IMAGE_NV12 || format == VX_DF_IMAGE_NV21) && plane_idx > 0 {
@@ -879,7 +863,7 @@ pub extern "C" fn ct_image_from_vx_image(vximg: vx_image) -> CT_Image {
                     }
                     total_copied += plane_size;
                 }
-                
+
                 vxUnmapImagePatch(vximg, map_id);
             }
         } else {
@@ -914,6 +898,34 @@ pub extern "C" fn ct_image_from_vx_image(vximg: vx_image) -> CT_Image {
         
         ctimg
     }
+}
+
+/// Override the CTS ct_image_to_vx_image_impl.
+/// The C macro ct_image_to_vx_image(ctimg, ctx) expands to
+/// ct_image_to_vx_image_impl(ctimg, ctx, __FUNCTION__, __FILE__, __LINE__).
+/// By providing this symbol from Rust, the linker uses our version instead of
+/// the C version in test_image.c, avoiding ct_image_copy_impl which has
+/// NV12/NV21 UV addressing incompatible with Convention B.
+#[no_mangle]
+pub extern "C" fn ct_image_to_vx_image_impl(
+    ctimg: CT_Image,
+    context: vx_context,
+    _func: *const std::os::raw::c_char,
+    _file: *const std::os::raw::c_char,
+    _line: std::os::raw::c_int,
+) -> vx_image {
+    ct_image_to_vx_image(ctimg, context)
+}
+
+/// Override the CTS ct_image_from_vx_image_impl.
+#[no_mangle]
+pub extern "C" fn ct_image_from_vx_image_impl(
+    vximg: vx_image,
+    _func: *const std::os::raw::c_char,
+    _file: *const std::os::raw::c_char,
+    _line: std::os::raw::c_int,
+) -> CT_Image {
+    ct_image_from_vx_image(vximg)
 }
 
 /// Copy between CT Image and VX Image (stub for direct calls)
