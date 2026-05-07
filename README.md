@@ -6,7 +6,7 @@
 
 # rustVX
 
-[![OpenVX Conformance](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml)
+[![OpenVX Conformance](../../actions/workflows/conformance.yml/badge.svg?branch=develop)](../../actions/workflows/conformance.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
 
@@ -22,7 +22,7 @@ rustVX passes the full [Khronos OpenVX 1.3 Conformance Test Suite](https://githu
 | Vision conformance profile | 4957 | **4957 / 4957** |
 | **Total enabled** | **5820** | **5820 / 5820** |
 
-Latest CTS run results are published on each push and pull request via the [Actions tab](https://github.com/kiritigowda/rustVX/actions).
+Latest CTS run results are published on each push and pull request via the [Actions tab](../../actions).
 
 ## Project Structure
 
@@ -152,21 +152,21 @@ Use the `--filter` flag to run a subset of tests:
 
 GitHub Actions builds and runs the full CTS on every push and pull request. The workflow splits the suite into parallel jobs for faster feedback:
 
-| Job | Test categories | Pipeline |
-|-----|-----------------|----------|
-| **baseline** | GraphBase, Logging, SmokeTest, Target | [conformance.yml#L62](.github/workflows/conformance.yml#L62) |
-| **graph** | Graph framework (cycles, virtual data, multi-run, replicate node), GraphCallback, GraphDelay, GraphROI, UserNode | [conformance.yml#L81](.github/workflows/conformance.yml#L81) |
-| **data-objects** | Scalar, Array, ObjectArray, Matrix, Convolution, Distribution, LUT, Histogram | [conformance.yml#L101](.github/workflows/conformance.yml#L101) |
-| **image-ops** | Image, CopyImagePatch, MapImagePatch, CreateImageFromChannel, Remap | [conformance.yml#L121](.github/workflows/conformance.yml#L121) |
-| **vision-color** | ColorConvert, ChannelExtract, ChannelCombine, ConvertDepth | [conformance.yml#L141](.github/workflows/conformance.yml#L141) |
-| **vision-filters** | Box, Gaussian, Median, Dilate, Erode, Sobel, Magnitude, Phase, NonLinearFilter, Convolve, EqualizeHistogram | [conformance.yml#L161](.github/workflows/conformance.yml#L161) |
-| **vision-arithmetic** | Add, Subtract, Multiply, Bitwise (And/Or/Xor/Not), WeightedAverage, Threshold | [conformance.yml#L181](.github/workflows/conformance.yml#L181) |
-| **vision-geometric** | Scale, WarpAffine, WarpPerspective, Remap, HalfScaleGaussian | [conformance.yml#L201](.github/workflows/conformance.yml#L201) |
-| **vision-features** | HarrisCorners, FastCorners, Canny | [conformance.yml#L221](.github/workflows/conformance.yml#L221) |
-| **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [conformance.yml#L241](.github/workflows/conformance.yml#L241) |
-| **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [conformance.yml#L261](.github/workflows/conformance.yml#L261) |
+| Job | Test categories |
+|-----|-----------------|
+| **baseline** | GraphBase, Logging, SmokeTest, Target |
+| **graph** | Graph framework (cycles, virtual data, multi-run, replicate node), GraphCallback, GraphDelay, GraphROI, UserNode |
+| **data-objects** | Scalar, Array, ObjectArray, Matrix, Convolution, Distribution, LUT, Histogram |
+| **image-ops** | Image, CopyImagePatch, MapImagePatch, CreateImageFromChannel, Remap |
+| **vision-color** | ColorConvert, ChannelExtract, ChannelCombine, ConvertDepth |
+| **vision-filters** | Box, Gaussian, Median, Dilate, Erode, Sobel, Magnitude, Phase, NonLinearFilter, Convolve, EqualizeHistogram |
+| **vision-arithmetic** | Add, Subtract, Multiply, Bitwise (And/Or/Xor/Not), WeightedAverage, Threshold |
+| **vision-geometric** | Scale, WarpAffine, WarpPerspective, Remap, HalfScaleGaussian |
+| **vision-features** | HarrisCorners, FastCorners, Canny |
+| **vision-statistics** | MeanStdDev, MinMaxLoc, Integral |
+| **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK |
 
-See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for the latest results.
+Per-job status for the latest run is visible from the [Actions tab](../../actions/workflows/conformance.yml).
 
 ## License
 
