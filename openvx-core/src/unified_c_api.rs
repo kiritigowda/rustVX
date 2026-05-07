@@ -3603,88 +3603,102 @@ fn dispatch_kernel_with_border_impl(
             }
         }
         // Optical Flow Pyr LK
+        // Graph parameters (matching `vxOpticalFlowPyrLKNode` ordering):
+        //   0: old_pyramid, 1: new_pyramid,
+        //   2: old_points, 3: new_points_estimates, 4: new_points,
+        //   5: termination (scalar enum), 6: epsilon (scalar f32),
+        //   7: num_iterations (scalar u32), 8: use_initial_estimate (scalar bool),
+        //   9: window_dimension (scalar size).
         "org.khronos.openvx.optical_flow_pyr_lk" => {
-            if params.len() >= 7 {
-                let old_images = params[0] as vx_pyramid;
-                let new_images = params[1] as vx_pyramid;
-                let old_points = params[2] as vx_array;
-                let _new_points_estimates = params[3] as vx_array;
-                let new_points = params[4] as vx_array;
-                if !old_images.is_null()
-                    && !new_images.is_null()
-                    && !old_points.is_null()
-                    && !new_points.is_null()
-                {
-                    // Minimal implementation: copy old_points to new_points
-                    // This allows downstream nodes to have data to work with
-                    extern "C" {
-                        fn vxQueryArray(
-                            arr: vx_array,
-                            attr: vx_enum,
-                            ptr: *mut c_void,
-                            size: vx_size,
-                        ) -> vx_status;
-                        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
-                        fn vxAddArrayItems(
-                            arr: vx_array,
-                            count: vx_size,
-                            ptr: *const c_void,
-                            stride: vx_size,
-                        ) -> vx_status;
-                        fn vxMapArrayRange(
-                            arr: vx_array,
-                            start: vx_size,
-                            end: vx_size,
-                            map_id: *mut vx_map_id,
-                            stride: *mut vx_size,
-                            ptr: *mut *mut c_void,
-                            usage: vx_enum,
-                            mem_type: vx_enum,
-                            flags: vx_uint32,
-                        ) -> vx_status;
-                        fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_status;
-                    }
-                    const VX_ARRAY_NUMITEMS_ATTR: vx_enum = 0x80E01;
-                    let mut num_items: vx_size = 0;
-                    let query_status = unsafe {
-                        vxQueryArray(
-                            old_points,
-                            VX_ARRAY_NUMITEMS_ATTR,
-                            &mut num_items as *mut vx_size as *mut c_void,
-                            std::mem::size_of::<vx_size>(),
-                        )
-                    };
-                    if query_status == VX_SUCCESS && num_items > 0 {
-                        let mut map_id: vx_map_id = 0;
-                        let mut stride: vx_size = 0;
-                        let mut data_ptr: *mut c_void = std::ptr::null_mut();
-                        let map_status = unsafe {
-                            vxMapArrayRange(
-                                old_points,
-                                0,
-                                num_items,
-                                &mut map_id,
-                                &mut stride,
-                                &mut data_ptr,
-                                0x11001,
-                                0xE001,
-                                0,
-                            )
-                        };
-                        if map_status == VX_SUCCESS && !data_ptr.is_null() {
-                            let _trunc_status = unsafe { vxTruncateArray(new_points, 0) };
-                            let _add_status =
-                                unsafe { vxAddArrayItems(new_points, num_items, data_ptr, stride) };
-                            unsafe { vxUnmapArrayRange(old_points, map_id) };
-                        }
-                    }
-                    VX_SUCCESS
-                } else {
-                    VX_ERROR_INVALID_PARAMETERS
-                }
-            } else {
-                VX_ERROR_INVALID_PARAMETERS
+            if params.len() < 5 {
+                return VX_ERROR_INVALID_PARAMETERS;
             }
+            let old_images = params[0] as vx_pyramid;
+            let new_images = params[1] as vx_pyramid;
+            let old_points = params[2] as vx_array;
+            let new_points_estimates = if params.len() > 3 {
+                params[3] as vx_array
+            } else {
+                std::ptr::null_mut()
+            };
+            let new_points = params[4] as vx_array;
+            if old_images.is_null()
+                || new_images.is_null()
+                || old_points.is_null()
+                || new_points.is_null()
+            {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+
+            // Pull the scalar parameters; fall back to sensible defaults when missing.
+            let epsilon = if params.len() > 6 && !params[6].is_null() {
+                let mut val: vx_float32 = 0.001;
+                unsafe {
+                    vxCopyScalar(
+                        params[6] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val
+            } else {
+                0.001
+            };
+            let num_iter = if params.len() > 7 && !params[7].is_null() {
+                let mut val: vx_uint32 = 10;
+                unsafe {
+                    vxCopyScalar(
+                        params[7] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val as usize
+            } else {
+                10
+            };
+            let use_initial = if params.len() > 8 && !params[8].is_null() {
+                let mut val: vx_bool = 0;
+                unsafe {
+                    vxCopyScalar(
+                        params[8] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val != 0
+            } else {
+                false
+            };
+            let window_dim: usize = if params.len() > 9 && !params[9].is_null() {
+                let mut val: vx_size = 9;
+                unsafe {
+                    vxCopyScalar(
+                        params[9] as vx_scalar,
+                        &mut val as *mut _ as *mut c_void,
+                        VX_READ_ONLY,
+                        VX_MEMORY_TYPE_HOST,
+                    );
+                }
+                val
+            } else {
+                9
+            };
+
+            crate::vxu_impl::optical_flow_pyr_lk_run(
+                old_images,
+                new_images,
+                old_points,
+                new_points_estimates,
+                new_points,
+                epsilon,
+                num_iter,
+                use_initial,
+                window_dim,
+            )
         }
         // Non Linear Filter
         "org.khronos.openvx.non_linear_filter" => {
@@ -9211,7 +9225,7 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
     _epsilon: vx_scalar,
     _num_iterations: vx_scalar,
     _use_initial_estimate: vx_scalar,
-    _window_dimension: vx_scalar,
+    _window_dimension: vx_size,
 ) -> vx_node {
     if graph.is_null()
         || old_images.is_null()
@@ -9290,23 +9304,28 @@ pub extern "C" fn vxOpticalFlowPyrLKNode(
         params.push(use_init_scalar as vx_reference);
     }
 
-    // Add window_dimension as param 10 (required)
-    if !_window_dimension.is_null() {
-        params.push(_window_dimension as vx_reference);
+    // Add window_dimension as param 10 (required). Per the OpenVX spec this
+    // parameter is `vx_size` (an integer), not `vx_scalar`. Wrap the integer
+    // in a scalar so the graph parameter list stays homogeneous and the
+    // dispatcher can read it via `vxCopyScalar`.
+    let window_value: vx_size = if _window_dimension == 0 {
+        9
     } else {
-        let default_window: vx_size = 9;
-        let window_scalar = vxCreateScalar(
-            context,
-            VX_TYPE_SIZE,
-            &default_window as *const _ as *const c_void,
-        );
-        params.push(window_scalar as vx_reference);
-    }
+        _window_dimension
+    };
+    let mut window_scalar = vxCreateScalar(
+        context,
+        VX_TYPE_SIZE,
+        &window_value as *const _ as *const c_void,
+    );
+    params.push(window_scalar as vx_reference);
 
     let node = create_node_with_params(graph, "org.khronos.openvx.optical_flow_pyr_lk", &params);
 
-    // Release the termination scalar (node has reference now)
+    // Release the scalars we created locally; the node now holds its own
+    // references to them via the graph parameter list.
     vxReleaseScalar(&mut termination_scalar);
+    vxReleaseScalar(&mut window_scalar);
 
     node
 }
