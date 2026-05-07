@@ -80,6 +80,8 @@ pub extern "C" fn vxCreateImage(
         external_dim_y: Vec::new(),
         roi_offsets: Vec::new(),
         is_from_handle: false,
+        channel_plane_offset: 0,
+        parent_plane_index: None,
         valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height }),
     });
 
@@ -206,6 +208,8 @@ pub extern "C" fn vxCreateVirtualImage(
         external_dim_y: Vec::new(),
         roi_offsets: Vec::new(),
         is_from_handle: false,
+        channel_plane_offset: 0,
+        parent_plane_index: None,
         valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: store_width, end_y: store_height }),
     });
 
@@ -341,6 +345,8 @@ pub extern "C" fn vxCreateImageFromHandle(
             external_dim_y,
             roi_offsets: Vec::new(),
             is_from_handle: true,
+            channel_plane_offset: 0,
+            parent_plane_index: None,
             valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height }),
         });
 
@@ -573,6 +579,8 @@ pub extern "C" fn vxCreateUniformImage(
         external_dim_y: Vec::new(),
         roi_offsets: Vec::new(),
         is_from_handle: false,
+        channel_plane_offset: 0,
+        parent_plane_index: None,
         valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: width, end_y: height }),
     });
 
@@ -655,55 +663,69 @@ pub extern "C" fn vxCreateImageFromChannel(
         };
 
         let parent_ptr = img as usize;
-
-        // For channel images, we create a new image with its own data buffer
-        // that contains a copy of just the channel plane data.
-        // This avoids complex offset calculations during map/unmap.
-        let plane_size = VxCImage::plane_size(output_width, output_height, source_img.format, plane_index);
         let plane_offset = VxCImage::plane_offset(source_img.width, source_img.height, source_img.format, plane_index);
 
-        // Create data buffer for the channel image
-        let mut channel_data = vec![0u8; plane_size];
-
-        // Copy the channel data from parent
-        if source_img.is_external_memory {
-            // Read from external memory
+        // Channel images SHARE memory with the parent (per OpenVX spec).
+        // Writes to the channel image must be visible when reading the parent, and vice versa.
+        let channel_image = if source_img.is_external_memory {
+            // For external memory parents: create an external-memory channel image
+            // that points directly to the parent's plane pointer.
             let ext_ptr = if plane_index < source_img.external_ptrs.len() {
                 source_img.external_ptrs[plane_index]
             } else {
                 std::ptr::null_mut()
             };
-            if !ext_ptr.is_null() {
-                std::ptr::copy_nonoverlapping(ext_ptr, channel_data.as_mut_ptr(), plane_size);
-            }
+            let ext_stride_y = if plane_index < source_img.external_strides.len() {
+                source_img.external_strides[plane_index]
+            } else {
+                output_width as vx_int32
+            };
+            Box::new(VxCImage {
+                width: output_width,
+                height: output_height,
+                format: VX_DF_IMAGE_U8,
+                is_virtual: false,
+                context: context,
+                data: Arc::new(RwLock::new(Vec::new())),
+                mapped_patches: Arc::new(RwLock::new(Vec::new())),
+                parent: Some(parent_ptr),
+                is_external_memory: true,
+                external_ptrs: vec![ext_ptr],
+                external_strides: vec![ext_stride_y],
+                external_stride_x: vec![1], // U8 = 1 byte per pixel
+                external_dim_x: vec![output_width],
+                external_dim_y: vec![output_height],
+                roi_offsets: Vec::new(),
+                is_from_handle: false,
+                channel_plane_offset: 0,
+                parent_plane_index: Some(plane_index),
+                valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: output_width, end_y: output_height }),
+            })
         } else {
-            // Read from internal data
-            if let Ok(data) = source_img.data.read() {
-                if plane_offset + plane_size <= data.len() {
-                    channel_data.copy_from_slice(&data[plane_offset..plane_offset + plane_size]);
-                }
-            }
-        }
-
-        let channel_image = Box::new(VxCImage {
-            width: output_width,
-            height: output_height,
-            format: VX_DF_IMAGE_U8, // Channel images are always U8
-            is_virtual: false,
-            context: context,
-            data: Arc::new(RwLock::new(channel_data)),
-            mapped_patches: Arc::new(RwLock::new(Vec::new())),
-            parent: Some(parent_ptr),
-            is_external_memory: false,
-            external_ptrs: Vec::new(),
-        external_strides: Vec::new(),
-        external_stride_x: Vec::new(),
-        external_dim_x: Vec::new(),
-        external_dim_y: Vec::new(),
-        roi_offsets: Vec::new(),
-        is_from_handle: false,
-        valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: output_width, end_y: output_height }),
-        });
+            // For internal memory parents: share the parent's data Arc and store
+            // the plane byte offset so reads/writes go to the correct location.
+            Box::new(VxCImage {
+                width: output_width,
+                height: output_height,
+                format: VX_DF_IMAGE_U8,
+                is_virtual: false,
+                context: context,
+                data: Arc::clone(&source_img.data),
+                mapped_patches: Arc::new(RwLock::new(Vec::new())),
+                parent: Some(parent_ptr),
+                is_external_memory: false,
+                external_ptrs: Vec::new(),
+                external_strides: Vec::new(),
+                external_stride_x: Vec::new(),
+                external_dim_x: Vec::new(),
+                external_dim_y: Vec::new(),
+                roi_offsets: Vec::new(),
+                is_from_handle: false,
+                channel_plane_offset: plane_offset,
+                parent_plane_index: None,
+                valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: output_width, end_y: output_height }),
+            })
+        };
 
         let image_ptr = Box::into_raw(channel_image) as vx_image;
 
@@ -1038,9 +1060,14 @@ pub extern "C" fn vxMapImagePatch(
 
         // For external memory images (created from handle), return pointer directly into user memory
         if img.is_external_memory {
-            // For ROI images, we need to get the root parent's current external pointers
-            // because the parent may have had its handles swapped.
+            // For ROI/channel sub-images, we need to get the root parent's current
+            // external pointers because the parent may have had its handles swapped.
             // We follow the parent chain to find the image created from handle.
+            //
+            // For channel images (parent_plane_index is Some), the channel's plane 0
+            // corresponds to a specific plane in the parent (e.g., U channel = parent plane 1).
+            // We use parent_plane_index to index into the root parent's arrays.
+            let effective_plane_index = img.parent_plane_index.unwrap_or(plane_index as usize);
             let (effective_ptrs, effective_strides, effective_stride_x, roi_start_x, roi_start_y) = {
                 if img.parent.is_some() {
                     // This is a sub-image (ROI or channel) - find the root parent
@@ -1082,8 +1109,8 @@ pub extern "C" fn vxMapImagePatch(
                 }
             };
 
-            let ext_ptr = if (plane_index as usize) < effective_ptrs.len() {
-                effective_ptrs[plane_index as usize]
+            let ext_ptr = if effective_plane_index < effective_ptrs.len() {
+                effective_ptrs[effective_plane_index]
             } else {
                 return VX_ERROR_INVALID_PARAMETERS;
             };
@@ -1096,14 +1123,14 @@ pub extern "C" fn vxMapImagePatch(
             }
 
             // Use the original strides from the image handle
-            let ext_stride_y = if (plane_index as usize) < effective_strides.len() {
-                effective_strides[plane_index as usize]
+            let ext_stride_y = if effective_plane_index < effective_strides.len() {
+                effective_strides[effective_plane_index]
             } else {
                 // Fallback: compute stride from plane dimensions
                 plane_width as vx_int32
             };
-            let ext_stride_x = if (plane_index as usize) < effective_stride_x.len() {
-                effective_stride_x[plane_index as usize]
+            let ext_stride_x = if effective_plane_index < effective_stride_x.len() {
+                effective_stride_x[effective_plane_index]
             } else {
                 // For planar formats, stride_x varies per plane (e.g., NV12 UV plane = 2)
                 // For packed formats, it's bytes_per_pixel
@@ -1120,15 +1147,37 @@ pub extern "C" fn vxMapImagePatch(
                 + (roi_start_x + start_x) as isize * ext_stride_x as isize;
             let patch_ptr = ext_ptr.offset(offset_bytes) as *mut c_void;
 
-            // Fill addressing structure with ORIGINAL strides from handle
-            (*addr).dim_x = width as vx_uint32;
-            (*addr).dim_y = height as vx_uint32;
-            (*addr).stride_x = ext_stride_x;
-            (*addr).stride_y = ext_stride_y;
-            (*addr).step_x = 1;
-            (*addr).step_y = 1u16;
-            (*addr).scale_x = 1024; // VX_SCALE_UNITY
-            (*addr).scale_y = 1024; // VX_SCALE_UNITY
+            // Check if this is a subsampled UV plane (NV12/NV21 plane 1)
+            let is_nv_uv = (img.format == VX_DF_IMAGE_NV12 || img.format == VX_DF_IMAGE_NV21)
+                && plane_index == 1;
+
+            if is_nv_uv {
+                // Convention B for external NV12/NV21 UV plane:
+                // dim_x = full_width, dim_y = full_height, step_x = 2, step_y = 2
+                // scale_x = 512, scale_y = 512
+                // This makes vxFormatImagePatchAddress2d compute:
+                //   offset = stride_y * (512*y/1024) + stride_x * (512*x/1024)
+                //          = stride_y * (y/2) + stride_x * (x/2)
+                // which matches the CTS own_check_image_patch_plane_vx_layout formula:
+                //   ref_ptr = base + y * (width/2) + x
+                (*addr).dim_x = (width * 2) as vx_uint32;
+                (*addr).dim_y = (height * 2) as vx_uint32;
+                (*addr).stride_x = ext_stride_x;
+                (*addr).stride_y = ext_stride_y;
+                (*addr).step_x = 2;
+                (*addr).step_y = 2u16;
+                (*addr).scale_x = 512; // VX_SCALE_UNITY / 2
+                (*addr).scale_y = 512; // VX_SCALE_UNITY / 2
+            } else {
+                (*addr).dim_x = width as vx_uint32;
+                (*addr).dim_y = height as vx_uint32;
+                (*addr).stride_x = ext_stride_x;
+                (*addr).stride_y = ext_stride_y;
+                (*addr).step_x = 1;
+                (*addr).step_y = 1u16;
+                (*addr).scale_x = 1024; // VX_SCALE_UNITY
+                (*addr).scale_y = 1024; // VX_SCALE_UNITY
+            }
             *ptr = patch_ptr;
 
             // For external memory, we don't need to copy data.
@@ -1168,7 +1217,8 @@ pub extern "C" fn vxMapImagePatch(
             0
         };
 
-        let offset = plane_offset + start_y * stride_y + start_x * bpp;
+        // For channel images sharing parent's data buffer, add the channel plane offset
+        let offset = plane_offset + img.channel_plane_offset + start_y * stride_y + start_x * bpp;
 
         // Create a copy of the data for the mapped patch
         let mapped_stride_y = width * bpp;
@@ -1200,15 +1250,32 @@ pub extern "C" fn vxMapImagePatch(
             return VX_ERROR_INVALID_REFERENCE;
         };
 
-        // Fill addressing structure
-        (*addr).dim_x = width as vx_uint32;
-        (*addr).dim_y = height as vx_uint32;
-        (*addr).stride_x = bpp as vx_int32;
-        (*addr).stride_y = mapped_stride_y as vx_int32;
-        (*addr).step_x = 1;
-        (*addr).step_y = 1u16;
-        (*addr).scale_x = 1024; // VX_SCALE_UNITY
-        (*addr).scale_y = 1024; // VX_SCALE_UNITY
+        // Check if this is a subsampled UV plane (NV12/NV21 plane 1)
+        let is_nv_uv_internal = (img.format == VX_DF_IMAGE_NV12 || img.format == VX_DF_IMAGE_NV21)
+            && plane_index == 1;
+
+        if is_nv_uv_internal {
+            // Convention B for NV12/NV21 UV plane (internal memory):
+            // Same convention as external path for consistency with CTS
+            // own_check_image_patch_plane_vx_layout
+            (*addr).dim_x = (width * 2) as vx_uint32;
+            (*addr).dim_y = (height * 2) as vx_uint32;
+            (*addr).stride_x = bpp as vx_int32;
+            (*addr).stride_y = mapped_stride_y as vx_int32;
+            (*addr).step_x = 2;
+            (*addr).step_y = 2u16;
+            (*addr).scale_x = 512;
+            (*addr).scale_y = 512;
+        } else {
+            (*addr).dim_x = width as vx_uint32;
+            (*addr).dim_y = height as vx_uint32;
+            (*addr).stride_x = bpp as vx_int32;
+            (*addr).stride_y = mapped_stride_y as vx_int32;
+            (*addr).step_x = 1;
+            (*addr).step_y = 1u16;
+            (*addr).scale_x = 1024; // VX_SCALE_UNITY
+            (*addr).scale_y = 1024; // VX_SCALE_UNITY
+        }
         *map_id = map_id_val;
 
         // Return pointer to the STORED patch data (not the local variable)
@@ -1359,6 +1426,12 @@ pub extern "C" fn vxCopyImagePatch(
             (img.width as usize, img.height as usize)
         };
 
+        // Clamp the copy region to the actual plane dimensions
+        // The caller may pass a rect in full-image coordinates (e.g., {0,0,640,480} for NV12),
+        // but the UV plane is only half that size. We must not read/write past the plane boundary.
+        let width = width.min(plane_width);
+        let height = height.min(plane_height);
+
         // Calculate stride and offset based on format and plane
         let (bpp, stride_y, plane_offset) = if img.is_external_memory {
             // For external memory images, use the strides from vxCreateImageFromHandle
@@ -1389,7 +1462,8 @@ pub extern "C" fn vxCopyImagePatch(
             (bpp, stride_y, 0)
         };
 
-        let offset = plane_offset + start_y * stride_y + start_x * bpp;
+        // For channel images sharing parent's data buffer, add the channel plane offset
+        let offset = plane_offset + img.channel_plane_offset + start_y * stride_y + start_x * bpp;
 
         match usage {
             VX_READ_ONLY => {
@@ -1868,6 +1942,8 @@ pub extern "C" fn vxCreateImageFromROI(
             external_dim_y: roi_external_dim_y,
             roi_offsets,
             is_from_handle: false, // ROI images should NOT support vxSwapImageHandle
+            channel_plane_offset: 0,
+            parent_plane_index: None,
             valid_rect: RwLock::new(vx_rectangle_t { start_x: 0, start_y: 0, end_x: roi_width, end_y: roi_height }),
         });
 
@@ -2179,11 +2255,18 @@ pub extern "C" fn vxCreatePyramid(
     let mut level_images: Vec<usize> = Vec::with_capacity(levels_usize);
 
     // Create images for each level
+    // VX_SCALE_PYRAMID_ORB uses 2^(-level/4) per the OpenVX spec
+    let is_orb = (scale - 0.8408964_f32).abs() < 0.001;
     for level in 0..levels_usize {
-        // Calculate dimensions for this level using scale^level
-        let level_scale = scale.powi(level as i32);
-        let level_width = (width as f32 * level_scale) as vx_uint32;
-        let level_height = (height as f32 * level_scale) as vx_uint32;
+        let level_scale = if is_orb {
+            // ORB scale: 2^(-level/4)
+            2.0_f64.powf(-(level as f64) / 4.0) as f32
+        } else {
+            scale.powi(level as i32)
+        };
+        // Use ceil per OpenVX spec for dimension computation
+        let level_width = (width as f32 * level_scale).ceil() as vx_uint32;
+        let level_height = (height as f32 * level_scale).ceil() as vx_uint32;
 
         // Ensure minimum dimensions of 1x1
         let level_width = level_width.max(1);

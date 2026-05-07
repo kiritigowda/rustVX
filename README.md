@@ -1,139 +1,145 @@
 # rustVX
 
-[![OpenVX Vision Conformance](https://github.com/simoncatbot/rustVX/actions/workflows/openvx-conformance.yml/badge.svg)](https://github.com/simoncatbot/rustVX/actions/workflows/openvx-conformance.yml)
+[![OpenVX Conformance](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml)
 
-OpenVX 1.3.1 Vision Conformant Implementation in Rust
+An [OpenVX 1.3.1](https://www.khronos.org/openvx/) implementation written in Rust. rustVX provides the complete OpenVX Vision Feature Set through a standard C API (`libopenvx_ffi`), enabling existing OpenVX applications to use a memory-safe, portable backend with no source changes.
 
-## Overview
+## Project Structure
 
-rustVX is a complete, conformant implementation of the Khronos OpenVX 1.3.1 specification written in Rust. It provides a safe, fast, and portable vision processing framework with full Vision Feature Set support.
+```
+rustVX/
+├── openvx-core/       # Core framework: context, graph, node, types, C API
+├── openvx-image/      # Image data object and channel operations
+├── openvx-buffer/     # Generic buffer for intermediate data
+├── openvx-vision/     # All vision kernels (filters, geometric, features, etc.)
+├── openvx-ffi/        # C shared library (cdylib) exporting the full OpenVX API
+├── include/VX/        # Standard OpenVX C headers
+└── OpenVX-cts/        # Khronos Conformance Test Suite (git submodule)
+```
 
-## Features
+The workspace compiles into a single shared library (`libopenvx_ffi.so` / `.dylib` / `.dll`) that any OpenVX application can link against.
 
-- **Complete OpenVX 1.3.1 API** - All base and vision functions
-- **Vision Conformance** - Passes Khronos CTS for Vision Feature Set
-- **Memory Safe** - Rust's ownership model prevents use-after-free, data races
-- **SIMD Optimized** - SSE2/AVX2/NEON vectorized kernels
-- **C API Compatible** - Drop-in replacement for existing OpenVX applications
-- **Thread Safe** - Lock-free graph execution where possible
+## Prerequisites
 
-## Vision Feature Set
+| Tool | Version |
+|------|---------|
+| [Rust](https://rustup.rs/) | stable |
+| C compiler | gcc, clang, or MSVC |
+| [CMake](https://cmake.org/) | 3.10+ |
+| Make or Ninja | for building the CTS |
 
-### Color Conversions
-- vxColorConvert (RGB↔YUV, RGB↔NV12, RGB↔IYUV)
-- vxChannelExtract, vxChannelCombine
-
-### Filters
-- vxConvolve (generic NxM)
-- vxGaussian3x3, vxGaussian5x5
-- vxMedian3x3
-- vxBox3x3
-
-### Morphology
-- vxDilate3x3, vxErode3x3
-
-### Gradients
-- vxSobel3x3, vxSobel5x5
-- vxMagnitude, vxPhase
-
-### Arithmetic
-- vxAdd, vxSubtract, vxMultiply
-- vxWeightedAverage
-
-### Geometric
-- vxScaleImage (bilinear, nearest, area)
-- vxWarpAffine, vxWarpPerspective
-- vxRemap
-
-### Optical Flow
-- vxOpticalFlowPyrLK (Lucas-Kanade)
-
-### Feature Detection
-- vxHarrisCorners
-- vxFASTCorners
-- vxMinMaxLoc
-
-## Building
+## Build
 
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/rustVX.git
+# Clone with submodules
+git clone --recurse-submodules https://github.com/kiritigowda/rustVX.git
 cd rustVX
 
-# Build with cargo
-cargo build --release --all
-
-# Run tests
-cargo test --all
+# Build the library
+cargo build --release
 ```
 
-## Usage
+The shared library is produced at:
 
-### C API
-```c
-#include <VX/vx.h>
+| Platform | Path |
+|----------|------|
+| Linux | `target/release/libopenvx_ffi.so` |
+| macOS | `target/release/libopenvx_ffi.dylib` |
+| Windows | `target/release/openvx_ffi.dll` |
 
-vx_context context = vxCreateContext();
-vx_graph graph = vxCreateGraph(context);
+## Running Conformance Tests
 
-// Create nodes...
-vxVerifyGraph(graph);
-vxProcessGraph(graph);
+The [OpenVX Conformance Test Suite](https://github.com/simonCatBot/OpenVX-cts) is included as a git submodule. Build and run it against the rustVX library:
 
-vxReleaseGraph(&graph);
-vxReleaseContext(&context);
+### Linux
+
+```bash
+# Build the CTS
+cd OpenVX-cts
+mkdir -p build && cd build
+cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+  -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+  -DOPENVX_INCLUDES="$(pwd)/../../include;$(pwd)/../include" \
+  -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.so;m" \
+  -DOPENVX_CONFORMANCE_VISION=ON
+make -j$(nproc)
+
+# Run all tests
+export LD_LIBRARY_PATH=$(pwd)/../../target/release
+export VX_TEST_DATA_PATH=$(pwd)/../test_data/
+./bin/vx_test_conformance
 ```
 
-### Rust API
-```rust
-use rustVX::prelude::*;
+### macOS
 
-let context = Context::new()?;
-let mut graph = context.create_graph()?;
+```bash
+# Build the CTS
+cd OpenVX-cts
+mkdir -p build && cd build
+cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DOPENVX_INCLUDES="$(pwd)/../../include;$(pwd)/../include" \
+  -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.dylib" \
+  -DOPENVX_CONFORMANCE_VISION=ON
+make -j$(sysctl -n hw.ncpu)
 
-// Create nodes...
-graph.verify()?;
-graph.execute()?;
+# Run all tests
+export DYLD_LIBRARY_PATH=$(pwd)/../../target/release
+export VX_TEST_DATA_PATH=$(pwd)/../test_data/
+./bin/vx_test_conformance
 ```
 
-## Conformance
+### Windows (MSVC)
 
-This implementation passes the Khronos OpenVX Conformance Test Suite for:
-- Base Feature Set
-- Vision Conformance Feature Set
+```powershell
+# Build the CTS
+cd OpenVX-cts
+mkdir build; cd build
+cmake .. `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DOPENVX_INCLUDES="$PWD\..\..\include;$PWD\..\include" `
+  -DOPENVX_LIBRARIES="$PWD\..\..\target\release\openvx_ffi.dll.lib" `
+  -DOPENVX_CONFORMANCE_VISION=ON
+cmake --build . --config Release
 
-See CONFORMANCE.md for detailed results.
+# Run all tests
+$env:PATH = "$PWD\..\..\target\release;$env:PATH"
+$env:VX_TEST_DATA_PATH = "$PWD\..\test_data\"
+.\bin\Release\vx_test_conformance.exe
+```
+
+### Running Specific Test Categories
+
+Use the `--filter` flag to run a subset of tests:
+
+```bash
+# Run only filter tests
+./bin/vx_test_conformance --filter="Gaussian3x3.*:Median3x3.*:Box3x3.*"
+
+# Run only feature detection tests
+./bin/vx_test_conformance --filter="HarrisCorners.*:FastCorners.*:vxCanny.*"
+```
 
 ## Continuous Integration
 
-This project uses GitHub Actions to automatically build and run OpenVX Vision Conformance tests on every push and pull request.
+GitHub Actions builds and runs the full CTS on every push and pull request. The workflow splits tests into parallel jobs for faster feedback:
 
-### CI Workflow
-- **Build**: Compiles rustVX with `cargo build --release`
-- **CTS**: Builds the Khronos OpenVX Conformance Test Suite
-- **Test**: Runs Vision Conformance tests with rustVX implementation
-- **Report**: Uploads test results and generates summary
+- **baseline** -- Graph, Logging, SmokeTest, Target
+- **graph** -- Graph callbacks, delays, ROI, UserNode
+- **data-objects** -- Scalar, Array, Matrix, Convolution, Distribution, LUT, Histogram
+- **image-ops** -- Image, CopyImagePatch, MapImagePatch, Remap
+- **vision-color** -- ColorConvert, ChannelExtract, ChannelCombine, ConvertDepth
+- **vision-filters** -- Box, Gaussian, Median, Dilate, Erode, Sobel, Convolve, EqualizeHistogram, NonLinearFilter
+- **vision-arithmetic** -- Add, Subtract, Multiply, Bitwise, Not, WeightedAverage, Threshold
+- **vision-geometric** -- Scale, WarpAffine, WarpPerspective, Remap, HalfScaleGaussian
+- **vision-features** -- HarrisCorners, FastCorners, Canny
+- **vision-statistics** -- MeanStdDev, MinMaxLoc, Integral
+- **vision-pyramid** -- GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK
 
-### Running Tests Locally
-```bash
-# Build rustVX
-cargo build --release
-
-# Build and run CTS
-cd OpenVX-cts/build
-LD_LIBRARY_PATH=../../target/release ./bin/vx_test_conformance
-```
-
-### Workflow Status
-See [Actions tab](https://github.com/simoncatbot/rustVX/actions) for latest test results.
+See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for latest results.
 
 ## License
 
-MIT License - See LICENSE file
-
-## Acknowledgements
-
-Based on the Khronos OpenVX specification and reference implementations from:
-- Khronos Group OpenVX Sample Implementation
-- AMD MIVisionX
-- Texas Instruments TIOVX
+MIT

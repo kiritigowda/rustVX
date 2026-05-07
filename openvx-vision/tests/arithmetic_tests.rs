@@ -169,8 +169,8 @@ fn test_weighted_average() {
         }
     }
     
-    // alpha = 128 means equal weighting (128/256 each)
-    weighted(&src1, &src2, &dst, 128).unwrap();
+    // alpha = 0.5 means equal weighting
+    weighted(&src1, &src2, &dst, 0.5).unwrap();
     
     let dst_data = dst.data();
     
@@ -204,8 +204,8 @@ fn test_weighted_full_alpha() {
         }
     }
     
-    // alpha = 255 means src1 gets all weight (almost)
-    weighted(&src1, &src2, &dst, 255).unwrap();
+    // alpha ~1.0 means src1 gets all weight (almost)
+    weighted(&src1, &src2, &dst, 1.0).unwrap();
     
     let dst_data = dst.data();
     
