@@ -112,6 +112,13 @@ pub struct VxCImage {
     pub roi_offsets: Vec<(usize, usize)>,  // (start_x, start_y) per plane in parent coordinates
     /// True only if created via vxCreateImageFromHandle (not inherited by ROI/channel sub-images)
     pub is_from_handle: bool,
+    /// For channel images: byte offset of this channel's plane within the parent's data buffer.
+    /// Only meaningful when parent.is_some() and this image was created via vxCreateImageFromChannel.
+    pub channel_plane_offset: usize,
+    /// For channel images created from handle parents: the plane index in the parent image
+    /// that this channel corresponds to. Used when resolving root parent pointers after
+    /// vxSwapImageHandle. E.g., U channel of YUV4 parent has parent_plane_index = 1.
+    pub parent_plane_index: Option<usize>,
     /// Valid region rectangle for the image
     pub valid_rect: RwLock<vx_rectangle_t>,
 }
@@ -4924,8 +4931,15 @@ pub extern "C" fn vxFormatImagePatchAddress2d(
         let address = &*addr;
         let stride_y = address.stride_y as isize;
         let stride_x = address.stride_x as isize;
+        let scale_x = address.scale_x as isize;
+        let scale_y = address.scale_y as isize;
+        const VX_SCALE_UNITY: isize = 1024;
 
-        let offset = (y as isize) * stride_y + (x as isize) * stride_x;
+        // OpenVX spec formula (matches sample implementation vxComputePatchOffset):
+        // offset = stride_y * ((scale_y * y) / VX_SCALE_UNITY) +
+        //          stride_x * ((scale_x * x) / VX_SCALE_UNITY)
+        let offset = stride_y * ((scale_y * (y as isize)) / VX_SCALE_UNITY)
+            + stride_x * ((scale_x * (x as isize)) / VX_SCALE_UNITY);
         (ptr as *mut u8).offset(offset) as *mut c_void
     }
 }
@@ -9716,9 +9730,12 @@ pub extern "C" fn vxFormatImagePatchAddress1d(
         let dim_x = if address.dim_x == 0 { 1 } else { address.dim_x };
         let stride_y = address.stride_y as isize;
         let stride_x = address.stride_x as isize;
+        let scale_x = if address.scale_x == 0 { 1024u32 } else { address.scale_x };
+        let scale_y = if address.scale_y == 0 { 1024u32 } else { address.scale_y };
         let y = index / dim_x;
         let x = index % dim_x;
-        let offset = (y as isize) * stride_y + (x as isize) * stride_x;
+        let offset = stride_y * ((scale_y as isize * y as isize) / 1024)
+            + stride_x * ((scale_x as isize * x as isize) / 1024);
         (ptr as *mut u8).offset(offset) as *mut c_void
     }
 }
