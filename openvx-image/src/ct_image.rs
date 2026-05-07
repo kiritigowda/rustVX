@@ -704,18 +704,34 @@ pub extern "C" fn ct_image_to_vx_image(
                     return std::ptr::null_mut();
                 }
                 
-                // Copy data row by row
+                // Copy data row by row using scale-aware addressing
                 if !ptr.is_null() && !img.data_begin_.is_null() {
                     let plane_offset = VxCImage::plane_offset(width, height, vx_format, plane_idx);
-                    
-                    // For planar formats, each pixel is 1 byte
-                    let row_size = plane_width as usize;  // Bytes to copy per row
-                    let dst_stride = addr.stride_y as usize;
-                    
+
+                    // Calculate actual row size in bytes for this plane
+                    let plane_bpp = VxCImage::plane_stride_x(vx_format, plane_idx);
+                    let row_size = plane_width as usize * plane_bpp;  // Bytes per row
+
+                    // For subsampled planes with scale factors, compute actual destination stride
+                    let scale_y = addr.scale_y as usize;
+                    let step_y = addr.step_y as usize;
+                    let actual_dst_stride = if scale_y > 0 && scale_y < 1024 {
+                        (step_y * (addr.stride_y as usize) * scale_y) / 1024
+                    } else {
+                        addr.stride_y as usize
+                    };
+
+                    // CT_Image stores NV12/NV21 UV with row stride = width (full image width)
+                    let src_row_stride = if (vx_format == VX_DF_IMAGE_NV12 || vx_format == VX_DF_IMAGE_NV21) && plane_idx > 0 {
+                        width as usize  // CT_Image stride for UV = image width
+                    } else {
+                        plane_width as usize
+                    };
+
                     for y in 0..plane_height as usize {
-                        let src_row = img.data_begin_.add(plane_offset + y * plane_width as usize);
-                        let dst_row = (ptr as *mut u8).add(y * dst_stride);
-                        if row_size > 0 && plane_offset + y * plane_width as usize + row_size <= img.data_size_ {
+                        let src_row = img.data_begin_.add(plane_offset + y * src_row_stride);
+                        let dst_row = (ptr as *mut u8).add(y * actual_dst_stride);
+                        if row_size > 0 && plane_offset + y * src_row_stride + row_size <= img.data_size_ {
                             std::ptr::copy_nonoverlapping(src_row, dst_row, row_size);
                         }
                     }
@@ -822,19 +838,42 @@ pub extern "C" fn ct_image_from_vx_image(vximg: vx_image) -> CT_Image {
                     return std::ptr::null_mut();
                 }
                 
-                // Copy data row by row
+                // Copy data row by row using scale-aware addressing
                 if !ptr.is_null() && !img.data_begin_.is_null() {
                     let plane_offset = VxCImage::plane_offset(width, height, format, plane_idx);
                     let plane_size = VxCImage::plane_size(width, height, format, plane_idx);
-                    
-                    // For planar formats, each pixel is 1 byte
-                    let row_size = plane_width as usize;  // Bytes to copy per row
-                    let src_stride = addr.stride_y as usize;
-                    
+
+                    // Calculate actual row size in bytes for this plane
+                    let plane_bpp = VxCImage::plane_stride_x(format, plane_idx);
+                    let row_size = plane_width as usize * plane_bpp;  // Bytes per row
+
+                    // For subsampled planes with scale factors (e.g., NV12/NV21 UV),
+                    // the stride_y in the addr may be scaled. Use scale_y to compute
+                    // the actual byte stride between plane rows.
+                    let scale_y = addr.scale_y as usize;
+                    let step_y = addr.step_y as usize;
+                    let actual_src_stride = if scale_y > 0 && scale_y < 1024 {
+                        // Subsampled: actual row stride = stride_y * step_y * scale_y / 1024
+                        // But since we iterate y in plane coordinates (0..plane_height),
+                        // each y step maps to step_y in the full-image coords.
+                        // Byte offset for plane row y = (y * step_y * stride_y * scale_y) / 1024
+                        // So per-row stride in mapped buffer = step_y * stride_y * scale_y / 1024
+                        (step_y * (addr.stride_y as usize) * scale_y) / 1024
+                    } else {
+                        addr.stride_y as usize
+                    };
+
+                    // CT_Image stores NV12/NV21 UV with row stride = width (full image width)
+                    let dst_row_stride = if (format == VX_DF_IMAGE_NV12 || format == VX_DF_IMAGE_NV21) && plane_idx > 0 {
+                        width as usize  // CT_Image stride for UV = image width
+                    } else {
+                        plane_width as usize
+                    };
+
                     for y in 0..plane_height as usize {
-                        let dst_row = img.data_begin_.add(plane_offset + y * plane_width as usize);
-                        let src_row = (ptr as *const u8).add(y * src_stride);
-                        if row_size > 0 && plane_offset + y * plane_width as usize + row_size <= img.data_size_ {
+                        let dst_row = img.data_begin_.add(plane_offset + y * dst_row_stride);
+                        let src_row = (ptr as *const u8).add(y * actual_src_stride);
+                        if row_size > 0 && plane_offset + y * dst_row_stride + row_size <= img.data_size_ {
                             std::ptr::copy_nonoverlapping(src_row, dst_row, row_size);
                         }
                     }
@@ -877,7 +916,7 @@ pub extern "C" fn ct_image_from_vx_image(vximg: vx_image) -> CT_Image {
     }
 }
 
-/// Copy between CT Image and VX Image
+/// Copy between CT Image and VX Image (stub for direct calls)
 #[no_mangle]
 pub extern "C" fn ct_image_copy(
     ctimg: CT_Image,
@@ -887,10 +926,7 @@ pub extern "C" fn ct_image_copy(
     if ctimg.is_null() || vximg.is_null() {
         return;
     }
-    
-    // For now, stub implementation - would need proper VxCImage access
-    // This would copy data between CT_Image and vx_image structures
-    let _ = dir; // silence warning
+    let _ = dir;
 }
 
 /// Clone a CT Image
