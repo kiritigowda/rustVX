@@ -22,6 +22,7 @@ use crate::c_api::{
     vx_enum,
     vx_float32,
     vx_image,
+    vx_map_id,
     vx_matrix,
     vx_pyramid,
     vx_scalar,
@@ -5018,7 +5019,24 @@ pub fn vxu_laplacian_pyramid_impl(
     }
 }
 
-/// Laplacian reconstruct: upsample and add Laplacian levels back
+/// Laplacian reconstruct: upsample and add Laplacian levels back.
+///
+/// Implements the algorithm from `own_laplacian_reconstruct_reference` in
+/// `OpenVX-cts/test_conformance/test_laplacianpyramid.c`:
+///
+/// 1. Start with the U8 input image as the running reconstruction.
+/// 2. For each laplacian level from coarsest (`num_levels-1`) to finest (0):
+///    - Build a U8 zero-interleaved buffer at the laplacian level dimensions
+///      (only even-coord pixels carry data, odd-coord pixels are zero), with
+///      pre-interleaved values clamped to `[0, 255]`.
+///    - Convolve with the 5x5 Burt-Adelson Gaussian (sum/256) using the
+///      CTS's "upsample replicate" border rule: out-of-bounds positions whose
+///      *interleaved* coordinates would be odd are zero, while out-of-bounds
+///      positions at even-even coordinates are taken from the pre-interleaved
+///      buffer with REPLICATE.
+///    - Multiply by 4 (S16 saturate) and add the laplacian level (S16
+///      saturate). Saturate to U8 to form the next running reconstruction.
+/// 3. The final running reconstruction is the U8 output.
 pub fn vxu_laplacian_reconstruct_impl(
     context: vx_context,
     laplacian: vx_pyramid,
@@ -5029,17 +5047,58 @@ pub fn vxu_laplacian_reconstruct_impl(
         return VX_ERROR_INVALID_REFERENCE;
     }
 
+    // 5x5 Gaussian kernel from the OpenVX spec / Burt-Adelson; sums to 256.
+    const GAUSSIAN5X5: [i32; 25] = [
+        1, 4, 6, 4, 1, 4, 16, 24, 16, 4, 6, 24, 36, 24, 6, 4, 16, 24, 16, 4, 1, 4, 6, 4, 1,
+    ];
+
+    /// Sample the conceptually upsampled image at integer coords `(sx, sy)`,
+    /// which may be out of bounds. `pre` is the pre-interleaved (smaller)
+    /// buffer with U8 values; `(pw, ph)` is its size; `(uw, uh)` is the
+    /// upsampled size. Out-of-bounds even-even positions REPLICATE the
+    /// pre-image; everything else (odd-coord positions) returns 0.
+    fn sample_upsample(
+        sx: i32,
+        sy: i32,
+        pre: &[u8],
+        pw: usize,
+        ph: usize,
+        _uw: usize,
+        _uh: usize,
+    ) -> u8 {
+        // Odd-coord positions are zero by construction of the zero-interleave.
+        if (sx & 1) != 0 || (sy & 1) != 0 {
+            return 0;
+        }
+        // Even-even positions map back to the pre-interleaved image.
+        let px = (sx >> 1).clamp(0, pw as i32 - 1) as usize;
+        let py = (sy >> 1).clamp(0, ph as i32 - 1) as usize;
+        pre[py * pw + px]
+    }
+
     unsafe {
         let pyr = &*(laplacian as *const VxCPyramid);
         let num_levels = pyr.num_levels;
+        if num_levels == 0 {
+            if let Some(img) = c_image_to_rust(input) {
+                copy_rust_to_c_image(&img, output);
+            }
+            return VX_SUCCESS;
+        }
 
-        // Start from the lowest resolution (input image)
-        let mut current = match c_image_to_rust(input) {
+        let input_img = match c_image_to_rust(input) {
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
+        let mut cur_w = input_img.width();
+        let mut cur_h = input_img.height();
+        let mut current: Vec<u8> = Vec::with_capacity(cur_w * cur_h);
+        for y in 0..cur_h {
+            for x in 0..cur_w {
+                current.push(input_img.get_pixel(x, y));
+            }
+        }
 
-        // Reconstruct from bottom to top: G[i] = expand(G[i+1]) + L[i]
         for level_idx in (0..num_levels).rev() {
             let level_img = pyr
                 .levels
@@ -5047,83 +5106,95 @@ pub fn vxu_laplacian_reconstruct_impl(
                 .map(|&img| img as vx_image)
                 .unwrap_or(std::ptr::null_mut());
             if level_img.is_null() {
-                break;
+                return VX_ERROR_INVALID_PARAMETERS;
             }
             let (lw, lh, _) = match get_image_info(level_img) {
                 Some(info) => (info.0 as usize, info.1 as usize, info.2),
-                None => break,
+                None => return VX_ERROR_INVALID_PARAMETERS,
             };
 
-            // Read Laplacian level data (S16)
             let img_ref = &*(level_img as *const VxCImage);
             let lap_data = match img_ref.data.read() {
                 Ok(d) => d.clone(),
-                Err(_) => break,
+                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
             };
 
-            let (cw, ch) = (current.width(), current.height());
-
-            // Burt-Adelson expand current to lw x lh
-            // Step 1: zero-interleave
-            let mut interleaved = vec![0u8; lw * lh];
-            for y in 0..lh {
-                for x in 0..lw {
-                    if x % 2 == 0 && y % 2 == 0 {
-                        let sx = x / 2;
-                        let sy = y / 2;
-                        if sx < cw && sy < ch {
-                            interleaved[y * lw + x] = current.get_pixel(sx, sy);
-                        }
-                    }
-                }
-            }
-
-            // Step 2: convolve with 5x5 Gaussian (integer, /256)
-            let kernel: [i32; 25] = [
-                1, 4, 6, 4, 1, 4, 16, 24, 16, 4, 6, 24, 36, 24, 6, 4, 16, 24, 16, 4, 1, 4, 6, 4, 1,
-            ];
-            let mut expanded = vec![0i16; lw * lh];
+            // 1) Convolve the zero-interleaved view of `current` (lw x lh) with
+            //    the 5x5 Gaussian / 256, using the CTS's special upsample-with-
+            //    replicate rule for out-of-bounds samples.
+            let mut expanded: Vec<i16> = vec![0i16; lw * lh];
             for y in 0..lh {
                 for x in 0..lw {
                     let mut sum: i32 = 0;
                     for ky in 0..5_i32 {
                         for kx in 0..5_i32 {
-                            let sy = (y as i32 + ky - 2).clamp(0, lh as i32 - 1) as usize;
-                            let sx = (x as i32 + kx - 2).clamp(0, lw as i32 - 1) as usize;
-                            sum +=
-                                interleaved[sy * lw + sx] as i32 * kernel[(ky * 5 + kx) as usize];
+                            let sx = x as i32 + kx - 2;
+                            let sy = y as i32 + ky - 2;
+                            let pixel = if sx >= 0
+                                && sx < lw as i32
+                                && sy >= 0
+                                && sy < lh as i32
+                            {
+                                // In-bounds: zero-interleaved value.
+                                if (sx & 1) != 0 || (sy & 1) != 0 {
+                                    0u8
+                                } else {
+                                    let px = (sx as usize) / 2;
+                                    let py = (sy as usize) / 2;
+                                    if px < cur_w && py < cur_h {
+                                        current[py * cur_w + px]
+                                    } else {
+                                        0
+                                    }
+                                }
+                            } else {
+                                // Out-of-bounds: emulate REPLICATE on the
+                                // pre-interleaved image and re-zero-interleave.
+                                sample_upsample(sx, sy, &current, cur_w, cur_h, lw, lh)
+                            };
+                            sum += pixel as i32 * GAUSSIAN5X5[(ky * 5 + kx) as usize];
                         }
                     }
-                    // Divide by 256 then multiply by 4
-                    expanded[y * lw + x] = ((sum / 256) * 4).clamp(-32768, 32767) as i16;
+                    let conv = (sum / 256).clamp(i16::MIN as i32, i16::MAX as i32);
+                    let scaled = conv
+                        .saturating_mul(4)
+                        .clamp(i16::MIN as i32, i16::MAX as i32);
+                    expanded[y * lw + x] = scaled as i16;
                 }
             }
 
-            // Step 3: reconstruct = expand(current) + Laplacian
-            let mut reconstructed = match Image::new(lw, lh, ImageFormat::Gray) {
-                Some(img) => img,
-                None => break,
-            };
-
+            // 2) Add the laplacian level with S16 saturation, then saturate to
+            //    U8 to form the next running reconstruction.
+            let mut next: Vec<u8> = Vec::with_capacity(lw * lh);
             for y in 0..lh {
                 for x in 0..lw {
-                    let exp_val = expanded[y * lw + x] as i32;
-                    let offset = (y * lw + x) * 2;
-                    let lap_val = if offset + 1 < lap_data.len() {
-                        i16::from_le_bytes([lap_data[offset], lap_data[offset + 1]]) as i32
+                    let off = (y * lw + x) * 2;
+                    let lap = if off + 1 < lap_data.len() {
+                        i16::from_le_bytes([lap_data[off], lap_data[off + 1]]) as i32
                     } else {
                         0
                     };
-                    let val = (exp_val + lap_val).clamp(0, 255) as u8;
-                    reconstructed.set_pixel(x, y, val);
+                    let s16_sum = (expanded[y * lw + x] as i32 + lap)
+                        .clamp(i16::MIN as i32, i16::MAX as i32);
+                    next.push(s16_sum.clamp(0, 255) as u8);
                 }
             }
 
-            current = reconstructed;
+            current = next;
+            cur_w = lw;
+            cur_h = lh;
         }
 
-        // Copy result to output
-        copy_rust_to_c_image(&current, output);
+        let mut out_img = match Image::new(cur_w, cur_h, ImageFormat::Gray) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        for y in 0..cur_h {
+            for x in 0..cur_w {
+                out_img.set_pixel(x, y, current[y * cur_w + x]);
+            }
+        }
+        copy_rust_to_c_image(&out_img, output);
         VX_SUCCESS
     }
 }
@@ -7757,7 +7828,7 @@ pub struct vx_keypoint_t {
 /// - use_initial_estimate: Whether to use new_points_estimates
 /// - window_dimension: Size of the tracking window (3, 5, 7, etc.)
 pub fn vxu_optical_flow_pyr_lk_impl(
-    _context: vx_context,
+    context: vx_context,
     old_images: vx_pyramid,
     new_images: vx_pyramid,
     old_points: vx_array,
@@ -7769,8 +7840,7 @@ pub fn vxu_optical_flow_pyr_lk_impl(
     use_initial_estimate: vx_bool,
     window_dimension: vx_size,
 ) -> vx_status {
-    // Validate inputs
-    if _context.is_null()
+    if context.is_null()
         || old_images.is_null()
         || new_images.is_null()
         || old_points.is_null()
@@ -7779,147 +7849,357 @@ pub fn vxu_optical_flow_pyr_lk_impl(
         return VX_ERROR_INVALID_REFERENCE;
     }
 
-    // Validate window dimension (must be odd and > 0)
     let window_size = window_dimension as usize;
     if window_size == 0 || window_size % 2 == 0 {
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
-    let max_iter = num_iterations as usize;
-    let eps = epsilon;
+    optical_flow_pyr_lk_run(
+        old_images,
+        new_images,
+        old_points,
+        new_points_estimates,
+        new_points,
+        epsilon,
+        num_iterations as usize,
+        use_initial_estimate != 0,
+        window_size,
+    )
+}
+
+/// Shared Lucas-Kanade pyramidal optical flow runner used by both the immediate
+/// (`vxuOpticalFlowPyrLK`) and graph-mode dispatch paths.
+///
+/// Reads the input keypoint array via the public `vxQueryArray` /
+/// `vxMapArrayRange` FFI (so it works regardless of the array's internal
+/// struct layout), walks the U8 pyramid levels by treating each
+/// `pyr.levels[i]` pointer as a `*const VxCImage`, runs a coarse-to-fine
+/// Lucas-Kanade tracker, and writes results back via `vxTruncateArray` /
+/// `vxAddArrayItems`.
+pub(crate) fn optical_flow_pyr_lk_run(
+    old_images: vx_pyramid,
+    new_images: vx_pyramid,
+    old_points: vx_array,
+    new_points_estimates: vx_array,
+    new_points: vx_array,
+    epsilon: vx_float32,
+    max_iterations: usize,
+    use_initial_estimate: bool,
+    window_size: usize,
+) -> vx_status {
+    extern "C" {
+        fn vxQueryArray(
+            arr: vx_array,
+            attr: vx_enum,
+            ptr: *mut c_void,
+            size: vx_size,
+        ) -> vx_status;
+        fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+        fn vxAddArrayItems(
+            arr: vx_array,
+            count: vx_size,
+            ptr: *const c_void,
+            stride: vx_size,
+        ) -> vx_status;
+        fn vxMapArrayRange(
+            arr: vx_array,
+            start: vx_size,
+            end: vx_size,
+            map_id: *mut vx_map_id,
+            stride: *mut vx_size,
+            ptr: *mut *mut c_void,
+            usage: vx_enum,
+            mem_type: vx_enum,
+            flags: vx_uint32,
+        ) -> vx_status;
+        fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_status;
+    }
+
+    const VX_ARRAY_NUMITEMS_ATTR: vx_enum = 0x80E01;
+    const VX_READ_ONLY_USAGE: vx_enum = 0x11001;
+    const VX_MEMORY_TYPE_HOST_C: vx_enum = 0xE001;
+
+    if window_size < 3 || window_size % 2 == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    let half_window = (window_size / 2) as i32;
+    let kp_size = std::mem::size_of::<vx_keypoint_t>() as vx_size;
 
     unsafe {
-        // Get array data for old_points
-        let old_pts_arr = &*(old_points as *const crate::unified_c_api::VxCArray);
-        let num_points = old_pts_arr.capacity;
-
-        if num_points == 0 {
-            return VX_SUCCESS; // Nothing to track
+        // 1) Number of input keypoints.
+        let mut num_items: vx_size = 0;
+        let qstatus = vxQueryArray(
+            old_points,
+            VX_ARRAY_NUMITEMS_ATTR,
+            &mut num_items as *mut vx_size as *mut c_void,
+            std::mem::size_of::<vx_size>() as vx_size,
+        );
+        if qstatus != VX_SUCCESS {
+            return qstatus;
+        }
+        if num_items == 0 {
+            // Just clear the output array.
+            let _ = vxTruncateArray(new_points, 0);
+            return VX_SUCCESS;
         }
 
-        // Read keypoints from array
-        let old_pts_data = match old_pts_arr.items.read() {
-            Ok(d) => d,
-            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
-        };
+        // 2) Read input keypoints into a local buffer (avoid leaving array mapped).
+        let mut input_keys: Vec<vx_keypoint_t> = vec![std::mem::zeroed(); num_items];
+        {
+            let mut map_id: vx_map_id = 0;
+            let mut stride: vx_size = 0;
+            let mut data_ptr: *mut c_void = std::ptr::null_mut();
+            let map_status = vxMapArrayRange(
+                old_points,
+                0,
+                num_items,
+                &mut map_id,
+                &mut stride,
+                &mut data_ptr,
+                VX_READ_ONLY_USAGE,
+                VX_MEMORY_TYPE_HOST_C,
+                0,
+            );
+            if map_status != VX_SUCCESS || data_ptr.is_null() {
+                return if map_status != VX_SUCCESS {
+                    map_status
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                };
+            }
+            let stride = if stride == 0 { kp_size } else { stride };
+            for i in 0..num_items {
+                let kp_ptr = (data_ptr as *const u8).add(i * stride) as *const vx_keypoint_t;
+                input_keys[i] = *kp_ptr;
+            }
+            let _ = vxUnmapArrayRange(old_points, map_id);
+        }
 
-        let mut keypoints: Vec<(f32, f32)> = Vec::with_capacity(num_points);
-
-        // VX_TYPE_KEYPOINT is a struct with 6 floats (24 bytes)
-        let keypoint_size = std::mem::size_of::<vx_keypoint_t>();
-        for i in 0..num_points {
-            let offset = i * keypoint_size;
-            if offset + keypoint_size <= old_pts_data.len() {
-                let kp_ptr = old_pts_data.as_ptr().add(offset) as *const vx_keypoint_t;
-                let kp = &*kp_ptr;
-                keypoints.push((kp.x as f32, kp.y as f32));
+        // 3) Optionally read initial estimates. The CTS frequently passes
+        // `old_points` here as the same array, in which case the values
+        // already match `input_keys`.
+        let mut initial_keys: Vec<vx_keypoint_t> = Vec::new();
+        if use_initial_estimate && !new_points_estimates.is_null() {
+            let mut est_num: vx_size = 0;
+            let est_status = vxQueryArray(
+                new_points_estimates,
+                VX_ARRAY_NUMITEMS_ATTR,
+                &mut est_num as *mut vx_size as *mut c_void,
+                std::mem::size_of::<vx_size>() as vx_size,
+            );
+            if est_status == VX_SUCCESS && est_num > 0 {
+                let mut map_id: vx_map_id = 0;
+                let mut stride: vx_size = 0;
+                let mut data_ptr: *mut c_void = std::ptr::null_mut();
+                let map_status = vxMapArrayRange(
+                    new_points_estimates,
+                    0,
+                    est_num,
+                    &mut map_id,
+                    &mut stride,
+                    &mut data_ptr,
+                    VX_READ_ONLY_USAGE,
+                    VX_MEMORY_TYPE_HOST_C,
+                    0,
+                );
+                if map_status == VX_SUCCESS && !data_ptr.is_null() {
+                    let stride = if stride == 0 { kp_size } else { stride };
+                    initial_keys.resize(est_num.min(num_items), std::mem::zeroed());
+                    for i in 0..initial_keys.len() {
+                        let kp_ptr =
+                            (data_ptr as *const u8).add(i * stride) as *const vx_keypoint_t;
+                        initial_keys[i] = *kp_ptr;
+                    }
+                    let _ = vxUnmapArrayRange(new_points_estimates, map_id);
+                }
             }
         }
 
-        // Read initial estimates if provided
-        let mut initial_flow: Vec<(f32, f32)> = Vec::new();
-        if use_initial_estimate != 0 && !new_points_estimates.is_null() {
-            let est_arr = &*(new_points_estimates as *const crate::unified_c_api::VxCArray);
-            let est_data = match est_arr.items.read() {
-                Ok(d) => d,
-                Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+        // 4) Load every pyramid level as Vec<u8> (U8 only - CTS pyramids are U8).
+        let old_pyr = &*(old_images as *const VxCPyramid);
+        let new_pyr = &*(new_images as *const VxCPyramid);
+        let levels = old_pyr.num_levels.min(new_pyr.num_levels);
+        if levels == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let mut old_levels: Vec<(usize, usize, Vec<u8>)> = Vec::with_capacity(levels);
+        let mut new_levels: Vec<(usize, usize, Vec<u8>)> = Vec::with_capacity(levels);
+        for li in 0..levels {
+            let load = |pyr: &VxCPyramid, idx: usize| -> Option<(usize, usize, Vec<u8>)> {
+                let img_addr = *pyr.levels.get(idx)?;
+                if img_addr == 0 {
+                    return None;
+                }
+                let img = &*(img_addr as *const VxCImage);
+                let w = img.width as usize;
+                let h = img.height as usize;
+                let data = img.data.read().ok()?.clone();
+                if data.len() < w * h {
+                    return None;
+                }
+                Some((w, h, data))
             };
-            for i in 0..num_points.min(est_arr.capacity) {
-                let offset = i * keypoint_size;
-                if offset + keypoint_size <= est_data.len() {
-                    let kp_ptr = est_data.as_ptr().add(offset) as *const vx_keypoint_t;
-                    let kp = &*kp_ptr;
-                    initial_flow.push((kp.x as f32, kp.y as f32));
-                }
-            }
+            let old_l = match load(old_pyr, li) {
+                Some(v) => v,
+                None => return VX_ERROR_INVALID_PARAMETERS,
+            };
+            let new_l = match load(new_pyr, li) {
+                Some(v) => v,
+                None => return VX_ERROR_INVALID_PARAMETERS,
+            };
+            old_levels.push(old_l);
+            new_levels.push(new_l);
         }
 
-        // Create placeholder for output keypoints
-        let mut output_keypoints: Vec<vx_keypoint_t> = Vec::with_capacity(num_points);
-
-        let _half_window = (window_size / 2) as isize;
-
-        // Simple optical flow implementation
-        // In a full implementation, this would use pyramid levels
-        for (i, &(px, py)) in keypoints.iter().enumerate() {
-            let mut u: f32 = 0.0;
-            let mut v: f32 = 0.0;
-
-            // Use initial estimate if available
-            if use_initial_estimate != 0 && i < initial_flow.len() {
-                let (ex, ey) = initial_flow[i];
-                u = ex - px;
-                v = ey - py;
+        // 5) Run pyramidal Lucas-Kanade per keypoint (coarse to fine).
+        let eps_sq = epsilon * epsilon;
+        let mut output_keys: Vec<vx_keypoint_t> = Vec::with_capacity(num_items);
+        for (i, kp_in) in input_keys.iter().enumerate() {
+            // Per OpenVX, an input keypoint with tracking_status==0 is dropped.
+            if kp_in.tracking_status == 0 {
+                let mut out = *kp_in;
+                out.tracking_status = 0;
+                output_keys.push(out);
+                continue;
             }
 
-            let mut converged = false;
-            let mut valid = true;
+            let px0 = kp_in.x as f32;
+            let py0 = kp_in.y as f32;
 
-            // Iterative refinement (simplified - without actual image data access)
-            // In a full implementation, this would compute gradients from images
-            for _ in 0..max_iter {
-                let sum_ix2: f32 = 1.0; // Placeholder
-                let sum_iy2: f32 = 1.0; // Placeholder
-                let sum_ixiy: f32 = 0.0; // Placeholder
-                let sum_ixit: f32 = 0.0; // Placeholder
-                let sum_iyit: f32 = 0.0; // Placeholder
+            // Initial flow at full resolution.
+            let (mut u, mut v) = if use_initial_estimate && i < initial_keys.len() {
+                let est = &initial_keys[i];
+                (est.x as f32 - px0, est.y as f32 - py0)
+            } else {
+                (0.0, 0.0)
+            };
 
-                // Solve 2x2 system using Cramer's rule
-                let det = sum_ix2 * sum_iy2 - sum_ixiy * sum_ixiy;
-                if det.abs() < 1e-6 {
-                    valid = false;
+            let mut tracked = true;
+
+            // Iterate from coarsest level (levels-1) down to finest (0).
+            for li in (0..levels).rev() {
+                let scale = (1u32 << li) as f32;
+                let (lw, lh, ref old_data) = old_levels[li];
+                let (_, _, ref new_data) = new_levels[li];
+
+                // Coordinates and current flow estimate at this level.
+                let px = px0 / scale;
+                let py = py0 / scale;
+                let mut lu = u / scale;
+                let mut lv = v / scale;
+
+                for _iter in 0..max_iterations {
+                    let mut sum_ix2: f32 = 0.0;
+                    let mut sum_iy2: f32 = 0.0;
+                    let mut sum_ixiy: f32 = 0.0;
+                    let mut sum_ixit: f32 = 0.0;
+                    let mut sum_iyit: f32 = 0.0;
+                    let mut valid_pixels = 0i32;
+
+                    for wy in -half_window..=half_window {
+                        for wx in -half_window..=half_window {
+                            let xi = px as i32 + wx;
+                            let yi = py as i32 + wy;
+                            if xi < 1 || xi >= lw as i32 - 1 || yi < 1 || yi >= lh as i32 - 1 {
+                                continue;
+                            }
+                            let xs = xi as usize;
+                            let ys = yi as usize;
+                            // Spatial gradients (central difference) on the previous frame.
+                            let gx = (old_data[ys * lw + (xs + 1)] as f32
+                                - old_data[ys * lw + (xs - 1)] as f32)
+                                * 0.5;
+                            let gy = (old_data[(ys + 1) * lw + xs] as f32
+                                - old_data[(ys - 1) * lw + xs] as f32)
+                                * 0.5;
+                            // Temporal gradient: bilinearly-sampled new frame at (x+lu, y+lv) minus old frame.
+                            let nx = xi as f32 + lu;
+                            let ny = yi as f32 + lv;
+                            let ix0 = nx.floor() as i32;
+                            let iy0 = ny.floor() as i32;
+                            if ix0 < 0
+                                || ix0 + 1 >= lw as i32
+                                || iy0 < 0
+                                || iy0 + 1 >= lh as i32
+                            {
+                                continue;
+                            }
+                            let fx = nx - ix0 as f32;
+                            let fy = ny - iy0 as f32;
+                            let ix0u = ix0 as usize;
+                            let iy0u = iy0 as usize;
+                            let p00 = new_data[iy0u * lw + ix0u] as f32;
+                            let p10 = new_data[iy0u * lw + (ix0u + 1)] as f32;
+                            let p01 = new_data[(iy0u + 1) * lw + ix0u] as f32;
+                            let p11 = new_data[(iy0u + 1) * lw + (ix0u + 1)] as f32;
+                            let new_val = (1.0 - fx) * (1.0 - fy) * p00
+                                + fx * (1.0 - fy) * p10
+                                + (1.0 - fx) * fy * p01
+                                + fx * fy * p11;
+                            let it = new_val - old_data[ys * lw + xs] as f32;
+
+                            sum_ix2 += gx * gx;
+                            sum_iy2 += gy * gy;
+                            sum_ixiy += gx * gy;
+                            sum_ixit += gx * it;
+                            sum_iyit += gy * it;
+                            valid_pixels += 1;
+                        }
+                    }
+
+                    let need_pixels = (window_size as i32 * window_size as i32) / 2;
+                    if valid_pixels < need_pixels {
+                        tracked = false;
+                        break;
+                    }
+
+                    let det = sum_ix2 * sum_iy2 - sum_ixiy * sum_ixiy;
+                    if det.abs() < 1e-6 {
+                        tracked = false;
+                        break;
+                    }
+
+                    let du = (sum_iy2 * sum_ixit - sum_ixiy * sum_iyit) / det;
+                    let dv = (sum_ix2 * sum_iyit - sum_ixiy * sum_ixit) / det;
+                    lu -= du;
+                    lv -= dv;
+
+                    if du * du + dv * dv < eps_sq {
+                        break;
+                    }
+                }
+
+                if !tracked {
                     break;
                 }
-
-                let du = (sum_iy2 * sum_ixit - sum_ixiy * sum_iyit) / det;
-                let dv = (sum_ix2 * sum_iyit - sum_ixiy * sum_ixit) / det;
-
-                u -= du;
-                v -= dv;
-
-                // Check convergence
-                if du * du + dv * dv < eps * eps {
-                    converged = true;
-                    break;
-                }
+                u = lu * scale;
+                v = lv * scale;
             }
 
-            // Create output keypoint
-            output_keypoints.push(vx_keypoint_t {
-                x: (px + u) as i32,
-                y: (py + v) as i32,
-                strength: if valid { 1.0 } else { 0.0 },
-                scale: 1.0,
-                orientation: 0.0,
-                tracking_status: if valid { 1 } else { 0 },
-                error: if valid { 0.0 } else { f32::MAX },
-            });
+            let nx = px0 + u;
+            let ny = py0 + v;
+            let mut out = *kp_in;
+            out.x = nx.round() as i32;
+            out.y = ny.round() as i32;
+            out.tracking_status = if tracked { 1 } else { 0 };
+            out.error = if tracked { 0.0 } else { f32::MAX };
+            output_keys.push(out);
         }
 
-        // Write output keypoints to new_points array
-        let new_pts_arr = &*(new_points as *const crate::unified_c_api::VxCArray);
-        let mut new_pts_data = match new_pts_arr.items.write() {
-            Ok(d) => d,
-            Err(_) => return VX_ERROR_INVALID_PARAMETERS,
-        };
-
-        // Resize output array if needed
-        let output_size = output_keypoints.len() * keypoint_size;
-        if new_pts_data.len() < output_size {
-            new_pts_data.resize(output_size, 0);
+        // 6) Write results back via the public array API.
+        let _ = vxTruncateArray(new_points, 0);
+        let add_status = vxAddArrayItems(
+            new_points,
+            output_keys.len() as vx_size,
+            output_keys.as_ptr() as *const c_void,
+            kp_size,
+        );
+        if add_status != VX_SUCCESS {
+            return add_status;
         }
-
-        // Copy output keypoints
-        for (i, kp) in output_keypoints.iter().enumerate() {
-            let offset = i * keypoint_size;
-            if offset + keypoint_size <= new_pts_data.len() {
-                let kp_ptr = new_pts_data.as_mut_ptr().add(offset) as *mut vx_keypoint_t;
-                *kp_ptr = *kp;
-            }
-        }
-
-        VX_SUCCESS
     }
+
+    VX_SUCCESS
 }
 
 /// VXU Convert Depth Implementation
