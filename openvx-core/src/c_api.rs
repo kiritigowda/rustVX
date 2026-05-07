@@ -162,6 +162,18 @@ pub struct NodeData {
     pub border_mode: Mutex<crate::unified_c_api::vx_border_t>,
     /// Number of times this node has been executed (for VX_NODE_PERFORMANCE)
     pub run_count: std::sync::atomic::AtomicU64,
+    /// Whether the user-kernel `init` callback has been called for this node.
+    /// Used by `vxVerifyGraph` to know when to call `deinit` before re-init.
+    /// Always `false` for built-in kernels; only meaningful for user kernels.
+    pub user_kernel_initialized: std::sync::atomic::AtomicBool,
+    /// Local data size requested by the user kernel during init (VX_NODE_LOCAL_DATA_SIZE).
+    pub local_data_size: std::sync::atomic::AtomicUsize,
+    /// Local data pointer requested/owned by the user kernel (VX_NODE_LOCAL_DATA_PTR).
+    pub local_data_ptr: std::sync::atomic::AtomicPtr<std::ffi::c_void>,
+    /// Whether the user kernel auto-allocates local data (kernel attr LOCAL_DATA_SIZE > 0
+    /// at registration). When auto-allocated, `vxQueryNode`/`vxSetNodeAttribute`
+    /// behave differently for the local-data attributes.
+    pub local_data_auto_alloc: std::sync::atomic::AtomicBool,
 }
 
 /// Internal kernel data (stored in Arc)
@@ -755,6 +767,31 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             // Collect non-scalar params that reached ref count 0 for type-specific release
             let non_scalar_last_refs: Vec<usize> = Vec::new();
 
+            // Snapshot the graph's node ids and run the user-kernel `deinit`
+            // callbacks BEFORE we re-enter the GRAPHS_DATA lock for the
+            // teardown loop below. The user `deinit` callback can call back
+            // into the OpenVX API (vxQueryNode, etc.) which itself takes
+            // GRAPHS_DATA, so we MUST not hold that lock while the callback
+            // runs or we will deadlock.
+            let graph_nodes_pre: Vec<u64> = {
+                if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                    if let Some(g) = graphs_data.get(&id) {
+                        if let Ok(nodes) = g.nodes.read() {
+                            nodes.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            };
+            for node_id in &graph_nodes_pre {
+                crate::unified_c_api::deinit_user_kernel_node(*node_id);
+            }
+
             // Free the graph's nodes
             if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
                 if let Some(g) = graphs_data.get(&id) {
@@ -964,6 +1001,27 @@ pub extern "C" fn vxQueryNode(
                         );
                         return VX_SUCCESS;
                     }
+                    VX_NODE_LOCAL_DATA_SIZE => {
+                        if size < std::mem::size_of::<vx_size>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let v = node_data
+                            .local_data_size
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                            as vx_size;
+                        *(ptr as *mut vx_size) = v;
+                        return VX_SUCCESS;
+                    }
+                    VX_NODE_LOCAL_DATA_PTR => {
+                        if size < std::mem::size_of::<*mut c_void>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let p = node_data
+                            .local_data_ptr
+                            .load(std::sync::atomic::Ordering::SeqCst);
+                        *(ptr as *mut *mut c_void) = p;
+                        return VX_SUCCESS;
+                    }
                     _ => {}
                 }
             }
@@ -1001,6 +1059,41 @@ pub extern "C" fn vxSetNodeAttribute(
                             return VX_SUCCESS;
                         }
                         return VX_ERROR_INVALID_REFERENCE;
+                    }
+                    VX_NODE_LOCAL_DATA_SIZE | VX_NODE_LOCAL_DATA_PTR => {
+                        // Per OpenVX 1.3, the local-data size/ptr can only be
+                        // mutated from inside a user-kernel `init`/`deinit`
+                        // callback, AND only when the kernel did not request
+                        // auto-allocation (VX_KERNEL_LOCAL_DATA_SIZE == 0 at
+                        // registration time). Outside of that window, every
+                        // other caller must get an error.
+                        if !crate::unified_c_api::is_user_kernel_in_init(id) {
+                            return VX_ERROR_NOT_SUPPORTED;
+                        }
+                        if node_data
+                            .local_data_auto_alloc
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                        {
+                            return VX_ERROR_NOT_SUPPORTED;
+                        }
+                        if attribute == VX_NODE_LOCAL_DATA_SIZE {
+                            if size < std::mem::size_of::<vx_size>() {
+                                return VX_ERROR_INVALID_PARAMETERS;
+                            }
+                            let v = *(ptr as *const vx_size);
+                            node_data
+                                .local_data_size
+                                .store(v, std::sync::atomic::Ordering::SeqCst);
+                        } else {
+                            if size < std::mem::size_of::<*mut c_void>() {
+                                return VX_ERROR_INVALID_PARAMETERS;
+                            }
+                            let p = *(ptr as *const *mut c_void);
+                            node_data
+                                .local_data_ptr
+                                .store(p, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        return VX_SUCCESS;
                     }
                     _ => {
                         // For other attributes, just validate and return success
@@ -1069,7 +1162,12 @@ pub extern "C" fn vxReleaseNode(node: *mut vx_node) -> vx_status {
                     }
                 }
             } else {
-                // Graph doesn't exist or doesn't own this node - safe to free
+                // Graph doesn't exist or doesn't own this node - safe to free.
+                //
+                // If this node ran a user kernel that was initialised by
+                // vxVerifyGraph, run its `deinit` callback now and release
+                // any auto-allocated local-data buffer.
+                crate::unified_c_api::deinit_user_kernel_node(id);
 
                 // Note: Node does NOT release parameter values - application owns them
                 // The application calls vxReleaseScalar, vxReleaseImage, etc. on its own objects
@@ -1245,24 +1343,26 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
     let graph_id = graph as u64;
     let kernel_id = kernel as u64;
 
-    // Get kernel num_params - check both KERNELS and USER_KERNELS
-    let num_params = if let Ok(kernels) = KERNELS.lock() {
+    // Get kernel num_params and (for user kernels) the auto-allocated local
+    // data size. Built-in kernels have no per-node local data.
+    let (num_params, user_kernel_local_size) = if let Ok(kernels) = KERNELS.lock() {
         if let Some(k) = kernels.get(&kernel_id) {
-            k.num_params
-        } else {
-            // Check user kernels
-            if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
-                if let Some(uk) = user_kernels.get(&(kernel_id as i32)) {
-                    uk.num_params
-                } else {
-                    4 // Default
-                }
+            (k.num_params, 0usize)
+        } else if let Ok(user_kernels) = crate::unified_c_api::USER_KERNELS.lock() {
+            if let Some(uk) = user_kernels.get(&(kernel_id as i32)) {
+                (
+                    uk.num_params,
+                    uk.local_data_size
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                )
             } else {
-                4 // Default
+                (4, 0)
             }
+        } else {
+            (4, 0)
         }
     } else {
-        4 // Default
+        (4, 0)
     };
 
     // Get context_id from graph
@@ -1291,6 +1391,10 @@ pub extern "C" fn vxCreateGenericNode(graph: vx_graph, kernel: vx_kernel) -> vx_
             constant_value: crate::c_api_data::vx_pixel_value_t { U32: 0 },
         }),
         run_count: std::sync::atomic::AtomicU64::new(0),
+        user_kernel_initialized: std::sync::atomic::AtomicBool::new(false),
+        local_data_size: std::sync::atomic::AtomicUsize::new(user_kernel_local_size),
+        local_data_ptr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+        local_data_auto_alloc: std::sync::atomic::AtomicBool::new(user_kernel_local_size > 0),
     });
 
     if let Ok(mut nodes) = NODES.lock() {

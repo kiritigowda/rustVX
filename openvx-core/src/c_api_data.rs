@@ -770,15 +770,40 @@ pub extern "C" fn vxReleaseLUT(lut: *mut vx_lut) -> vx_status {
         if !(*lut).is_null() {
             let addr = *lut as usize;
 
-            // Remove from reference counts and types
-            if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
-                counts.remove(&addr);
-            }
-            if let Ok(mut types) = REFERENCE_TYPES.lock() {
-                types.remove(&addr);
-            }
+            // Honor reference counting: only the *last* release frees the
+            // underlying VxCLUTData. Object arrays, retained handles from
+            // `vxGetObjectArrayItem`, etc. all bump REFERENCE_COUNTS, and
+            // releasing the handle prematurely (as the previous version did)
+            // turned every other holder's pointer into use-after-free memory.
+            let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                if let Some(cnt) = counts.get(&addr) {
+                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                    if current > 1 {
+                        cnt.store(
+                            current - 1,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    // No tracking entry — treat as last reference.
+                    true
+                }
+            } else {
+                false
+            };
 
-            let _ = Box::from_raw(*lut as *mut VxCLUTData);
+            if should_free {
+                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                    counts.remove(&addr);
+                }
+                if let Ok(mut types) = REFERENCE_TYPES.lock() {
+                    types.remove(&addr);
+                }
+                let _ = Box::from_raw(*lut as *mut VxCLUTData);
+            }
             *lut = std::ptr::null_mut();
         }
     }
