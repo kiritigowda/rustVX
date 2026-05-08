@@ -8128,6 +8128,49 @@ pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
     0
 }
 
+/// `vxCopyTensorPatch` — copy a patch of tensor data to/from user memory.
+///
+/// rustVX does not (yet) implement the OpenVX tensor object beyond the
+/// minimal stubs required by the conformance test suite. This entry point
+/// exists so that downstream consumers (for example `openvx-mark`) can
+/// link against `libopenvx_ffi.so` without missing symbols. Calls return
+/// `VX_ERROR_NOT_IMPLEMENTED`, allowing tensor-using benchmarks to report
+/// graceful unsupported status rather than aborting at link time.
+#[no_mangle]
+pub extern "C" fn vxCopyTensorPatch(
+    tensor: vx_tensor,
+    _number_of_dims: vx_size,
+    _view_start: *const vx_size,
+    _view_end: *const vx_size,
+    _user_stride: *const vx_size,
+    _user_ptr: *mut c_void,
+    _usage: vx_enum,
+    _user_memory_type: vx_enum,
+) -> vx_status {
+    if tensor.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    VX_ERROR_NOT_IMPLEMENTED
+}
+
+/// `vxCopyNode` — create a node that copies one OpenVX object to another.
+///
+/// The OpenVX 1.3 spec provides this as a generic data-copy node usable in
+/// graph mode. rustVX does not implement it yet, but we expose a stub so
+/// downstream tools that reference the symbol (e.g. `openvx-mark`) can
+/// still link. The stub returns `NULL` and sets the spec-defined error
+/// behaviour: callers should check the result with `vxGetStatus` and will
+/// observe `VX_ERROR_NOT_IMPLEMENTED`.
+#[no_mangle]
+pub extern "C" fn vxCopyNode(
+    graph: vx_graph,
+    input: vx_reference,
+    output: vx_reference,
+) -> vx_node {
+    let _ = (graph, input, output);
+    std::ptr::null_mut()
+}
+
 #[no_mangle]
 pub extern "C" fn vxReleaseTensor(tensor: *mut vx_tensor) -> i32 {
     if tensor.is_null() {
