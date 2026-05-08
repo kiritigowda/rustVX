@@ -14,13 +14,16 @@ An [OpenVX 1.3.1](https://www.khronos.org/openvx/) implementation written in Rus
 
 ## Conformance Status
 
-rustVX passes the full [Khronos OpenVX 1.3 Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) for both required profiles:
+rustVX passes the full [Khronos OpenVX 1.3 Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) for both required profiles, plus an opt-in slice of the Enhanced Vision profile:
 
 | Profile | Required tests | Passing |
 |---------|----------------|---------|
 | OpenVX baseline | 863 | **863 / 863** |
 | Vision conformance profile | 4957 | **4957 / 4957** |
-| **Total enabled** | **5820** | **5820 / 5820** |
+| Enhanced Vision (`vxMin`, `vxMax`) | 8 | **8 / 8** |
+| **Total enabled** | **5828** | **5828 / 5828** |
+
+The remaining Enhanced Vision kernels (`Copy`, `Houghlinesp`, `BilateralFilter`, `NonMaxSuppression`, `MatchTemplate`, `LBP`, `HogCells`, `HogFeatures`, `ControlFlow`/`Select`, `Tensor*`) are tracked as follow-up phases; rustVX currently exposes them as link-only stubs so the CTS binary can be built with `-DOPENVX_USE_ENHANCED_VISION=ON`. The Phase-1 CI job filters strictly to `Min.*:Max.*`.
 
 Latest CTS run results are published on each push and pull request via the [Actions tab](https://github.com/kiritigowda/rustVX/actions).
 
@@ -231,6 +234,7 @@ GitHub Actions builds and runs the full CTS on every push and pull request. The 
 | **vision-features** | HarrisCorners, FastCorners, Canny | [![vision-features](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-features&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [![vision-statistics](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-statistics&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [![vision-pyramid](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-pyramid&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **enhanced-vision** (Phase 1) | Min, Max (Enhanced Vision feature set) | [![enhanced-vision](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=enhanced-vision&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 
 See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for full run history.
 

@@ -333,6 +333,140 @@ pub fn xor(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
     Ok(())
 }
 
+/// Pixel-wise minimum (Enhanced Vision: `vxMin`).
+///
+/// `src1`, `src2`, and `dst` must share dimensions; per the OpenVX 1.3 spec
+/// the format must also match (`VX_DF_IMAGE_U8` only is supported by this
+/// path — the immediate-mode `vxuMin` handles `VX_DF_IMAGE_S16` directly via
+/// `openvx_core::vxu_impl::vxu_min_impl`).
+pub fn min_image(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
+    if src1.width() != src2.width() || src1.height() != src2.height() {
+        return Err(openvx_core::VxStatus::ErrorInvalidDimension);
+    }
+
+    let width = src1.width();
+    let height = src1.height();
+    let mut dst_data = dst.data_mut();
+
+    for y in 0..height {
+        for x in 0..width {
+            let a = src1.get_pixel(x, y);
+            let b = src2.get_pixel(x, y);
+            dst_data[y * width + x] = a.min(b);
+        }
+    }
+
+    Ok(())
+}
+
+/// Pixel-wise maximum (Enhanced Vision: `vxMax`). See `min_image` for the
+/// dimension/format contract.
+pub fn max_image(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
+    if src1.width() != src2.width() || src1.height() != src2.height() {
+        return Err(openvx_core::VxStatus::ErrorInvalidDimension);
+    }
+
+    let width = src1.width();
+    let height = src1.height();
+    let mut dst_data = dst.data_mut();
+
+    for y in 0..height {
+        for x in 0..width {
+            let a = src1.get_pixel(x, y);
+            let b = src2.get_pixel(x, y);
+            dst_data[y * width + x] = a.max(b);
+        }
+    }
+
+    Ok(())
+}
+
+/// `MinKernel` — Enhanced Vision pixel-wise minimum kernel.
+pub struct MinKernel;
+
+impl MinKernel {
+    pub fn new() -> Self {
+        MinKernel
+    }
+}
+
+impl KernelTrait for MinKernel {
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.min"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Min
+    }
+
+    fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
+        if params.len() < 3 {
+            return Err(openvx_core::VxStatus::ErrorInvalidParameters);
+        }
+        Ok(())
+    }
+
+    fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
+        let src1 = params
+            .get(0)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let src2 = params
+            .get(1)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let dst = params
+            .get(2)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+
+        min_image(src1, src2, dst)?;
+        Ok(())
+    }
+}
+
+/// `MaxKernel` — Enhanced Vision pixel-wise maximum kernel.
+pub struct MaxKernel;
+
+impl MaxKernel {
+    pub fn new() -> Self {
+        MaxKernel
+    }
+}
+
+impl KernelTrait for MaxKernel {
+    fn get_name(&self) -> &str {
+        "org.khronos.openvx.max"
+    }
+    fn get_enum(&self) -> VxKernel {
+        VxKernel::Max
+    }
+
+    fn validate(&self, params: &[&dyn Referenceable]) -> VxResult<()> {
+        if params.len() < 3 {
+            return Err(openvx_core::VxStatus::ErrorInvalidParameters);
+        }
+        Ok(())
+    }
+
+    fn execute(&self, params: &[&dyn Referenceable], _context: &Context) -> VxResult<()> {
+        let src1 = params
+            .get(0)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let src2 = params
+            .get(1)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+        let dst = params
+            .get(2)
+            .and_then(|p| p.as_any().downcast_ref::<Image>())
+            .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
+
+        max_image(src1, src2, dst)?;
+        Ok(())
+    }
+}
+
 /// Bitwise NOT (complement) of an image
 pub fn not(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();

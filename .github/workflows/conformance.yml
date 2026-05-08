@@ -55,7 +55,8 @@ jobs:
             -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
             -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
             -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
-            -DOPENVX_CONFORMANCE_VISION=ON
+            -DOPENVX_CONFORMANCE_VISION=ON \
+            -DOPENVX_USE_ENHANCED_VISION=ON
           make -j$(nproc)
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -324,6 +325,33 @@ jobs:
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="GaussianPyramid.*:LaplacianPyramid.*:LaplacianReconstruct.*:OptFlowPyrLK.*"
+
+  # Enhanced Vision Phase 1 — only the kernels rustVX has actually
+  # implemented from the OpenVX 1.3 Enhanced Vision feature set. The CTS
+  # binary is built with `OPENVX_USE_ENHANCED_VISION=ON`, but this job
+  # filters strictly to the kernels Phase 1 ships (vxMin / vxMax). The
+  # remaining Enhanced Vision symbols are exposed as link stubs in
+  # rustVX so the binary can build; they are not exercised here and will
+  # be replaced by real kernels in subsequent phases.
+  enhanced-vision:
+    name: enhanced-vision (Phase 1: Min/Max)
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run Enhanced Vision Phase 1 tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 120 ./bin/vx_test_conformance --filter="Min.*:Max.*"
 
   # Performance benchmark using openvx-mark, comparing rustVX against the
   # Khronos OpenVX sample implementation on the SAME runner so the two

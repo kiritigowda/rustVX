@@ -83,6 +83,10 @@ pub fn register_all_kernels(context: &Context) -> VxResult<()> {
     context.register_kernel(Box::new(arithmetic::MultiplyKernel))?;
     context.register_kernel(Box::new(arithmetic::WeightedAverageKernel))?;
 
+    // Enhanced Vision: pixel-wise min/max
+    context.register_kernel(Box::new(arithmetic::MinKernel))?;
+    context.register_kernel(Box::new(arithmetic::MaxKernel))?;
+
     // Bitwise logical operations
     context.register_kernel(Box::new(arithmetic::AndKernel))?;
     context.register_kernel(Box::new(arithmetic::OrKernel))?;
@@ -117,8 +121,8 @@ pub fn register_all_kernels(context: &Context) -> VxResult<()> {
 }
 
 pub use arithmetic::{
-    AddKernel, AndKernel, MultiplyKernel, NotKernel, OrKernel, SubtractKernel,
-    WeightedAverageKernel, XorKernel,
+    AddKernel, AndKernel, MaxKernel, MinKernel, MultiplyKernel, NotKernel, OrKernel,
+    SubtractKernel, WeightedAverageKernel, XorKernel,
 };
 pub use color::{ChannelCombineKernel, ChannelExtractKernel, ColorConvertKernel};
 pub use features::{FASTCornersKernel, HarrisCornersKernel};

@@ -257,3 +257,88 @@ fn test_weighted_full_alpha() {
         }
     }
 }
+
+#[test]
+fn test_min_image_basic() {
+    let width = 4;
+    let height = 4;
+
+    let src1 = Image::new(width, height, ImageFormat::Gray);
+    let src2 = Image::new(width, height, ImageFormat::Gray);
+    let dst = Image::new(width, height, ImageFormat::Gray);
+
+    // src1: lower at (x>=y), src2: lower at (x<y)
+    for y in 0..height {
+        for x in 0..width {
+            if x >= y {
+                src1.set_pixel(x, y, 0x10);
+                src2.set_pixel(x, y, 0x11);
+            } else {
+                src1.set_pixel(x, y, 0x11);
+                src2.set_pixel(x, y, 0x10);
+            }
+        }
+    }
+
+    min_image(&src1, &src2, &dst).unwrap();
+
+    let dst_data = dst.data();
+    for y in 0..height {
+        for x in 0..width {
+            assert_eq!(
+                dst_data[y * width + x],
+                0x10,
+                "Min should be 0x10 at ({}, {})",
+                x,
+                y
+            );
+        }
+    }
+}
+
+#[test]
+fn test_max_image_basic() {
+    let width = 4;
+    let height = 4;
+
+    let src1 = Image::new(width, height, ImageFormat::Gray);
+    let src2 = Image::new(width, height, ImageFormat::Gray);
+    let dst = Image::new(width, height, ImageFormat::Gray);
+
+    for y in 0..height {
+        for x in 0..width {
+            if x >= y {
+                src1.set_pixel(x, y, 0x10);
+                src2.set_pixel(x, y, 0x11);
+            } else {
+                src1.set_pixel(x, y, 0x11);
+                src2.set_pixel(x, y, 0x10);
+            }
+        }
+    }
+
+    max_image(&src1, &src2, &dst).unwrap();
+
+    let dst_data = dst.data();
+    for y in 0..height {
+        for x in 0..width {
+            assert_eq!(
+                dst_data[y * width + x],
+                0x11,
+                "Max should be 0x11 at ({}, {})",
+                x,
+                y
+            );
+        }
+    }
+}
+
+#[test]
+fn test_min_max_image_dim_mismatch() {
+    let a = Image::new(4, 4, ImageFormat::Gray);
+    let b = Image::new(8, 8, ImageFormat::Gray);
+    let dst = Image::new(4, 4, ImageFormat::Gray);
+
+    assert!(min_image(&a, &b, &dst).is_err());
+    assert!(max_image(&a, &b, &dst).is_err());
+}

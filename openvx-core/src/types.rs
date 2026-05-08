@@ -114,6 +114,9 @@ pub enum VxKernel {
     Or = 40,
     Xor = 41,
     Not = 42,
+    // Enhanced Vision (OpenVX 1.2+)
+    Min = 43,
+    Max = 44,
 }
 
 /// Reference type

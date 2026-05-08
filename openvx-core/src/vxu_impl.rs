@@ -6025,6 +6025,171 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
     Ok(())
 }
 
+/// Pixel-wise minimum (Enhanced Vision: `vxMin`).
+///
+/// Per the OpenVX 1.3 spec the input and output images must have the same
+/// dimensions and a matching `VX_DF_IMAGE_U8` *or* `VX_DF_IMAGE_S16` format.
+/// The output pixel is `min(src1, src2)`, no policy is involved.
+fn min_image(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
+    if src1.width != src2.width || src1.height != src2.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+    if dst.width != src1.width || dst.height != src1.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+
+    let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
+    let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
+    let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    // Min/Max require src and dst formats to match per spec.
+    if dst_is_s16 != src1_is_s16 || dst_is_s16 != src2_is_s16 {
+        return Err(VxStatus::ErrorInvalidFormat);
+    }
+
+    let width = src1.width;
+    let height = src1.height;
+
+    if dst_is_s16 {
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel_s16(x, y);
+                let b = src2.get_pixel_s16(x, y);
+                dst.set_pixel_s16(x, y, a.min(b));
+            }
+        }
+    } else {
+        let dst_data = dst.data_mut();
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel(x, y);
+                let b = src2.get_pixel(x, y);
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = a.min(b);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Pixel-wise maximum (Enhanced Vision: `vxMax`). See `min_image` for the
+/// format/dimension contract; identical except the per-pixel reduction is
+/// `max(src1, src2)`.
+fn max_image(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
+    if src1.width != src2.width || src1.height != src2.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+    if dst.width != src1.width || dst.height != src1.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+
+    let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
+    let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
+    let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    if dst_is_s16 != src1_is_s16 || dst_is_s16 != src2_is_s16 {
+        return Err(VxStatus::ErrorInvalidFormat);
+    }
+
+    let width = src1.width;
+    let height = src1.height;
+
+    if dst_is_s16 {
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel_s16(x, y);
+                let b = src2.get_pixel_s16(x, y);
+                dst.set_pixel_s16(x, y, a.max(b));
+            }
+        }
+    } else {
+        let dst_data = dst.data_mut();
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel(x, y);
+                let b = src2.get_pixel(x, y);
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = a.max(b);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Immediate-mode entry point for `vxuMin`. Also used by the graph kernel
+/// dispatcher when `vxMinNode` is processed via `vxProcessGraph`.
+pub fn vxu_min_impl(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        match min_image(&src1, &src2, &mut dst) {
+            Ok(_) => copy_rust_to_c_image(&dst, output),
+            Err(VxStatus::ErrorInvalidFormat) => VX_ERROR_INVALID_FORMAT,
+            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+}
+
+/// Immediate-mode entry point for `vxuMax`. Also used by the graph kernel
+/// dispatcher when `vxMaxNode` is processed via `vxProcessGraph`.
+pub fn vxu_max_impl(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        match max_image(&src1, &src2, &mut dst) {
+            Ok(_) => copy_rust_to_c_image(&dst, output),
+            Err(VxStatus::ErrorInvalidFormat) => VX_ERROR_INVALID_FORMAT,
+            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+}
+
 /// Pixel-wise multiplication with scale, overflow and rounding policies
 /// overflow_policy: 0 = WRAP, 1 = SATURATE
 /// rounding_policy: 1 = TO_ZERO, 2 = TO_NEAREST_EVEN
