@@ -486,17 +486,90 @@ jobs:
             exit 0
           fi
 
-          # First report is the "candidate" (rustVX); second is the "baseline"
-          # (Khronos). The Speedup column shows how much faster the candidate
-          # is than the baseline (>1.0x = rustVX wins).
+          # `compare_reports.py` defines Speedup as
+          #   speedup = throughput(report_b) / throughput(report_a)
+          # i.e. ">1.00 means report_b is faster". To make the Speedup
+          # column read as "rustVX over Khronos" (>1.00x = rustVX wins),
+          # pass Khronos first (baseline / report_a) and rustVX second
+          # (candidate / report_b).
           python3 ${{ github.workspace }}/openvx-mark/scripts/compare_reports.py \
-            "$RUSTVX" "$KHRONOS" \
+            "$KHRONOS" "$RUSTVX" \
             --output ${{ github.workspace }}/openvx-mark/comparison
 
       - name: Post comparison to job summary
         if: always()
         run: |
           COMPARISON=${{ github.workspace }}/openvx-mark/comparison.md
+          RUSTVX=${{ github.workspace }}/openvx-mark/build-rustvx/benchmark_results/benchmark_results.json
+          KHRONOS=${{ github.workspace }}/openvx-mark/build-khronos/benchmark_results/benchmark_results.json
+
+          # ----- Headline: aggregate speedup of rustVX over Khronos sample -----
+          if [ -f "$RUSTVX" ] && [ -f "$KHRONOS" ]; then
+            python3 - "$RUSTVX" "$KHRONOS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, math, sys
+
+          rustvx_path, khronos_path = sys.argv[1], sys.argv[2]
+          with open(rustvx_path) as f: rustvx = json.load(f)
+          with open(khronos_path) as f: khronos = json.load(f)
+
+          def by_key(report):
+              return {(r['name'], r['mode'], r['resolution']): r
+                      for r in report.get('results', [])}
+
+          a = by_key(rustvx)
+          b = by_key(khronos)
+          shared = sorted(set(a) & set(b))
+
+          speedups = []
+          wins, losses = 0, 0
+          best = (None, 0.0)
+          worst = (None, math.inf)
+
+          for key in shared:
+              ra, rb = a[key], b[key]
+              if not (ra.get('verified', True) and rb.get('verified', True)):
+                  continue
+              mps_r = ra.get('megapixels_per_sec', 0)
+              mps_k = rb.get('megapixels_per_sec', 0)
+              if mps_r <= 0 or mps_k <= 0:
+                  continue
+              s = mps_r / mps_k  # >1.0 = rustVX faster than Khronos
+              speedups.append(s)
+              if s > 1.0: wins += 1
+              elif s < 1.0: losses += 1
+              if s > best[1]:  best  = (key, s)
+              if s < worst[1]: worst = (key, s)
+
+          print('# rustVX vs Khronos sample — headline')
+          print()
+          if not speedups:
+              print('_No verified benchmarks were directly comparable._')
+          else:
+              geomean = math.exp(sum(math.log(s) for s in speedups) / len(speedups))
+              median  = sorted(speedups)[len(speedups) // 2]
+              print('| Metric | Value |')
+              print('|:---|---:|')
+              print(f'| Geomean speedup (rustVX / Khronos) | **{geomean:.2f}x** |')
+              print(f'| Median speedup (rustVX / Khronos)  | {median:.2f}x |')
+              print(f'| Benchmarks compared                | {len(speedups)} |')
+              print(f'| rustVX faster                       | {wins} |')
+              print(f'| Khronos sample faster               | {losses} |')
+              if best[0]:
+                  bk, bv = best
+                  print(f'| Best  rustVX speedup                | {bv:.2f}x ({bk[0]} / {bk[1]} / {bk[2]}) |')
+              if worst[0] and worst[1] != math.inf:
+                  wk, wv = worst
+                  print(f'| Worst rustVX speedup                | {wv:.2f}x ({wk[0]} / {wk[1]} / {wk[2]}) |')
+              print()
+              if geomean >= 1.0:
+                  print(f'> rustVX is **{geomean:.2f}x** faster than the Khronos sample on average (geomean across {len(speedups)} verified benchmarks).')
+              else:
+                  print(f'> rustVX is **{1.0/geomean:.2f}x slower** than the Khronos sample on average (geomean across {len(speedups)} verified benchmarks).')
+              print()
+          PY
+          fi
+
+          # ----- Detailed comparison table from compare_reports.py -----
           if [ -f "$COMPARISON" ]; then
             cat "$COMPARISON" >> "$GITHUB_STEP_SUMMARY"
           else
