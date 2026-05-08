@@ -53,10 +53,49 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-artifacts
+          # `include/` is bundled so the downstream benchmark job can build
+          # openvx-mark against rustVX without needing to check out the
+          # rustVX source tree.
           path: |
             target/release/libopenvx_ffi.so
             OpenVX-cts/build/bin/vx_test_conformance
             OpenVX-cts/test_data/
+            include/
+          retention-days: 1
+
+  # Build the Khronos OpenVX sample implementation in its own phase, in
+  # parallel with the rustVX `build` job, and upload the resulting library
+  # + headers as a self-contained archive. The benchmark job below pulls
+  # both archives down onto a single runner so rustVX and the Khronos
+  # sample are exercised on identical hardware.
+  build-khronos-sample:
+    name: Build Khronos OpenVX sample
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3
+      - name: Build Khronos OpenVX sample
+        run: |
+          git clone --recursive --depth 1 \
+            https://github.com/KhronosGroup/OpenVX-sample-impl.git khronos-sample
+          cd khronos-sample
+          python3 Build.py --os=Linux --arch=64 --conf=Release
+      - name: Stage Khronos sample archive
+        run: |
+          set -euo pipefail
+          LIB_SRC=$(dirname $(find khronos-sample -name "libopenvx.so" -not -path "*/build/*" | head -1))
+          echo "Khronos libraries discovered in: $LIB_SRC"
+          mkdir -p khronos-stage/lib
+          cp "$LIB_SRC"/libopenvx*.so "$LIB_SRC"/libvxu*.so khronos-stage/lib/
+          cp -r khronos-sample/api-docs/include khronos-stage/include
+          ls -R khronos-stage
+      - name: Upload Khronos sample artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: khronos-sample-artifacts
+          path: khronos-stage/
           retention-days: 1
 
   baseline:
@@ -277,3 +316,177 @@ jobs:
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="GaussianPyramid.*:LaplacianPyramid.*:LaplacianReconstruct.*:OptFlowPyrLK.*"
+
+  # Performance benchmark using openvx-mark, comparing rustVX against the
+  # Khronos OpenVX sample implementation on the SAME runner so the two
+  # numbers come from identical hardware. This job does NOT rebuild either
+  # implementation — it just downloads the archives produced by the
+  # `build` and `build-khronos-sample` phases above, builds the openvx-mark
+  # tool against each, runs the same workload, and compares the JSON
+  # reports. The CTS jobs above use `continue-on-error: true`, so this
+  # job effectively gates on `build`, `build-khronos-sample`, and
+  # `baseline` succeeding (matching the existing CTS gate).
+  benchmark:
+    name: Benchmark & compare (rustVX vs Khronos sample)
+    runs-on: ubuntu-22.04
+    needs:
+      - build
+      - build-khronos-sample
+      - baseline
+      - graph
+      - data-objects
+      - image-ops
+      - vision-color
+      - vision-filters
+      - vision-arithmetic
+      - vision-geometric
+      - vision-features
+      - vision-statistics
+      - vision-pyramid
+    continue-on-error: true
+    steps:
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3
+
+      - name: Download rustVX archive
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ${{ github.workspace }}/rustvx-pkg
+
+      - name: Download Khronos sample archive
+        uses: actions/download-artifact@v4
+        with:
+          name: khronos-sample-artifacts
+          path: ${{ github.workspace }}/khronos-pkg
+
+      - name: Expose rustVX as libopenvx / libvxu
+        id: rustvx
+        # openvx-mark uses `find_library(NAMES openvx)` and
+        # `find_library(NAMES vxu)`. rustVX ships a single
+        # `libopenvx_ffi.so` that exports the full set of `vx*`/`vxu*`
+        # symbols, so symlink the two classic Khronos library names to
+        # it without changing rustVX's own build output.
+        run: |
+          set -euo pipefail
+          LIB_DIR=${{ github.workspace }}/rustvx-pkg/target/release
+          chmod -R u+rwX "$LIB_DIR"
+          cd "$LIB_DIR"
+          ln -sf libopenvx_ffi.so libopenvx.so
+          ln -sf libopenvx_ffi.so libvxu.so
+          ls -la libopenvx*.so libvxu*.so
+          echo "lib_dir=$LIB_DIR" >> "$GITHUB_OUTPUT"
+          echo "include_dir=${{ github.workspace }}/rustvx-pkg/include" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect Khronos sample archive
+        id: khronos
+        run: |
+          set -euo pipefail
+          LIB_DIR=${{ github.workspace }}/khronos-pkg/lib
+          INCLUDE_DIR=${{ github.workspace }}/khronos-pkg/include
+          ls -la "$LIB_DIR"
+          echo "lib_dir=$LIB_DIR" >> "$GITHUB_OUTPUT"
+          echo "include_dir=$INCLUDE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Clone openvx-mark
+        run: |
+          git clone --depth 1 https://github.com/kiritigowda/openvx-mark.git \
+            ${{ github.workspace }}/openvx-mark
+
+      # ---------------------------------------------------------------------
+      # rustVX benchmark
+      # ---------------------------------------------------------------------
+      - name: Build openvx-mark against rustVX
+        run: |
+          mkdir -p ${{ github.workspace }}/openvx-mark/build-rustvx
+          cd ${{ github.workspace }}/openvx-mark/build-rustvx
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ steps.rustvx.outputs.include_dir }} \
+            -DOPENVX_LIB_DIR=${{ steps.rustvx.outputs.lib_dir }} \
+            ..
+          cmake --build . -j$(nproc)
+
+      - name: Run benchmark (rustVX)
+        run: |
+          cd ${{ github.workspace }}/openvx-mark/build-rustvx
+          export LD_LIBRARY_PATH=${{ steps.rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution VGA --iterations 10 --warmup 3
+
+      # ---------------------------------------------------------------------
+      # Khronos sample benchmark
+      # ---------------------------------------------------------------------
+      - name: Build openvx-mark against Khronos sample
+        run: |
+          mkdir -p ${{ github.workspace }}/openvx-mark/build-khronos
+          cd ${{ github.workspace }}/openvx-mark/build-khronos
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ steps.khronos.outputs.include_dir }} \
+            -DOPENVX_LIB_DIR=${{ steps.khronos.outputs.lib_dir }} \
+            ..
+          cmake --build . -j$(nproc)
+
+      - name: Run benchmark (Khronos sample)
+        run: |
+          cd ${{ github.workspace }}/openvx-mark/build-khronos
+          export LD_LIBRARY_PATH=${{ steps.khronos.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution VGA --iterations 10 --warmup 3
+
+      # ---------------------------------------------------------------------
+      # Compare results
+      # ---------------------------------------------------------------------
+      - name: Compare benchmark results (rustVX vs Khronos)
+        run: |
+          RUSTVX=${{ github.workspace }}/openvx-mark/build-rustvx/benchmark_results/benchmark_results.json
+          KHRONOS=${{ github.workspace }}/openvx-mark/build-khronos/benchmark_results/benchmark_results.json
+
+          if [ ! -f "$RUSTVX" ] || [ ! -f "$KHRONOS" ]; then
+            echo "Skipping comparison — one or both benchmark results missing"
+            ls -la "$(dirname $RUSTVX)" 2>/dev/null || true
+            ls -la "$(dirname $KHRONOS)" 2>/dev/null || true
+            exit 0
+          fi
+
+          # First report is the "candidate" (rustVX); second is the "baseline"
+          # (Khronos). The Speedup column shows how much faster the candidate
+          # is than the baseline (>1.0x = rustVX wins).
+          python3 ${{ github.workspace }}/openvx-mark/scripts/compare_reports.py \
+            "$RUSTVX" "$KHRONOS" \
+            --output ${{ github.workspace }}/openvx-mark/comparison
+
+      - name: Post comparison to job summary
+        if: always()
+        run: |
+          COMPARISON=${{ github.workspace }}/openvx-mark/comparison.md
+          if [ -f "$COMPARISON" ]; then
+            cat "$COMPARISON" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_No comparison report was produced._" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload rustVX benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-rustvx
+          path: ${{ github.workspace }}/openvx-mark/build-rustvx/benchmark_results/
+          if-no-files-found: ignore
+
+      - name: Upload Khronos sample benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-khronos-sample
+          path: ${{ github.workspace }}/openvx-mark/build-khronos/benchmark_results/
+          if-no-files-found: ignore
+
+      - name: Upload comparison report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-comparison
+          path: ${{ github.workspace }}/openvx-mark/comparison.*
+          if-no-files-found: ignore

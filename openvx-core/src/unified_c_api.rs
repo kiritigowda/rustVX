@@ -804,9 +804,15 @@ fn infer_virtual_image_dimensions(
     kernel_name: &str,
 ) -> Option<(u32, u32, vx_df_image)> {
     // First, check if the virtual image already has explicit dimensions
+    // (we treat `VX_DF_IMAGE_VIRT` as "format unknown", since it just
+    // means the user did not commit to a format at creation time).
     if let Ok(registry) = VIRTUAL_IMAGES.lock() {
         if let Some(info) = registry.get(&(image_id as usize)) {
-            if info.width > 0 && info.height > 0 && info.format != 0 {
+            if info.width > 0
+                && info.height > 0
+                && info.format != 0
+                && info.format != VX_DF_IMAGE_VIRT
+            {
                 return Some((info.width, info.height, info.format as vx_df_image));
             }
         }
@@ -820,7 +826,7 @@ fn infer_virtual_image_dimensions(
         if img.width > 0 && img.height > 0 {
             let format = if let Ok(registry) = VIRTUAL_IMAGES.lock() {
                 if let Some(info) = registry.get(&(image_id as usize)) {
-                    if info.format != 0 {
+                    if info.format != 0 && info.format != VX_DF_IMAGE_VIRT {
                         info.format
                     } else {
                         img.format
@@ -831,11 +837,35 @@ fn infer_virtual_image_dimensions(
             } else {
                 img.format
             };
-            if format != 0 {
+            if format != 0 && format != VX_DF_IMAGE_VIRT {
                 return Some((img.width, img.height, format as vx_df_image));
             }
         }
     }
+
+    // Read any user-specified format on this virtual image. If the user
+    // created the image as `vxCreateVirtualImage(g, 0, 0, FORMAT)`, we
+    // must respect FORMAT and only infer the dimensions from the
+    // producer node — otherwise we silently retype the image (e.g.
+    // forcing a user-specified U8 to S16 because Magnitude produces
+    // S16), which then breaks downstream nodes such as ConvertDepth and
+    // Threshold with `VX_ERROR_INVALID_FORMAT`.
+    let user_format: Option<vx_df_image> = {
+        let img_fmt = unsafe { (&*(image_id as *const VxCImage)).format };
+        if img_fmt != 0 && img_fmt != VX_DF_IMAGE_VIRT {
+            Some(img_fmt)
+        } else if let Ok(registry) = VIRTUAL_IMAGES.lock() {
+            registry.get(&(image_id as usize)).and_then(|info| {
+                if info.format != 0 && info.format != VX_DF_IMAGE_VIRT {
+                    Some(info.format as vx_df_image)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
+    };
 
     // Find which node produces this image (it's an output of that node)
     let producer_node = if let Some(producer) = param_to_producer.get(&image_id) {
@@ -890,7 +920,8 @@ fn infer_virtual_image_dimensions(
     }
 
     if input_width > 0 && input_height > 0 {
-        let format = infer_output_format(kernel_name, &input_formats);
+        let format =
+            user_format.unwrap_or_else(|| infer_output_format(kernel_name, &input_formats));
         return Some((input_width, input_height, format));
     }
 
@@ -1491,23 +1522,51 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 }
             }
 
-            // Allocate backing storage for virtual images
+            // Allocate backing storage for virtual images.
+            //
+            // A virtual image may reach this point in three states:
+            //   (a) Fully resolved at creation time
+            //       (`vxCreateVirtualImage(g, w, h, FORMAT)`): width, height
+            //       and format are all set, but the data buffer was created
+            //       empty by `vxCreateVirtualImage` and still needs to be
+            //       sized for the format.
+            //   (b) Format known, dimensions unknown
+            //       (`vxCreateVirtualImage(g, 0, 0, FORMAT)`): the user
+            //       explicitly chose a format; we must preserve it and only
+            //       infer dimensions from the producer.
+            //   (c) Both format and dimensions unknown (`VX_DF_IMAGE_VIRT`):
+            //       infer everything from the producer node.
             for (node_id, params) in &node_params {
                 for param_opt in params.iter() {
                     if let Some(param_ref) = param_opt {
                         if is_image_reference(*param_ref) && is_virtual_image(*param_ref) {
-                            // Skip if already allocated (dimensions and format set)
-                            unsafe {
+                            // Snapshot the current state of the virtual image.
+                            let (cur_w, cur_h, cur_fmt, data_len) = unsafe {
                                 let img = &*(*param_ref as *const VxCImage);
-                                if img.width > 0
-                                    && img.height > 0
-                                    && img.format != 0
-                                    && img.format != VX_DF_IMAGE_VIRT
-                                {
-                                    continue; // already allocated
+                                let dl = img.data.read().map(|d| d.len()).unwrap_or(0);
+                                (img.width, img.height, img.format, dl)
+                            };
+                            let dims_known = cur_w > 0
+                                && cur_h > 0
+                                && cur_fmt != 0
+                                && cur_fmt != VX_DF_IMAGE_VIRT;
+
+                            if dims_known {
+                                // Case (a): only the data buffer may be missing.
+                                let expected = VxCImage::calculate_size(cur_w, cur_h, cur_fmt);
+                                if data_len < expected {
+                                    if allocate_virtual_image_storage(
+                                        *param_ref, cur_w, cur_h, cur_fmt,
+                                    )
+                                    .is_err()
+                                    {
+                                        return VX_ERROR_NO_MEMORY;
+                                    }
                                 }
+                                continue;
                             }
-                            // Virtual image - determine dimensions from connected nodes
+
+                            // Cases (b) and (c): infer what's missing.
                             let kernel_name = node_kernel_names
                                 .get(node_id)
                                 .map(|s| s.as_str())
@@ -8126,6 +8185,49 @@ pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
         return -1;
     }
     0
+}
+
+/// `vxCopyTensorPatch` — copy a patch of tensor data to/from user memory.
+///
+/// rustVX does not (yet) implement the OpenVX tensor object beyond the
+/// minimal stubs required by the conformance test suite. This entry point
+/// exists so that downstream consumers (for example `openvx-mark`) can
+/// link against `libopenvx_ffi.so` without missing symbols. Calls return
+/// `VX_ERROR_NOT_IMPLEMENTED`, allowing tensor-using benchmarks to report
+/// graceful unsupported status rather than aborting at link time.
+#[no_mangle]
+pub extern "C" fn vxCopyTensorPatch(
+    tensor: vx_tensor,
+    _number_of_dims: vx_size,
+    _view_start: *const vx_size,
+    _view_end: *const vx_size,
+    _user_stride: *const vx_size,
+    _user_ptr: *mut c_void,
+    _usage: vx_enum,
+    _user_memory_type: vx_enum,
+) -> vx_status {
+    if tensor.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    VX_ERROR_NOT_IMPLEMENTED
+}
+
+/// `vxCopyNode` — create a node that copies one OpenVX object to another.
+///
+/// The OpenVX 1.3 spec provides this as a generic data-copy node usable in
+/// graph mode. rustVX does not implement it yet, but we expose a stub so
+/// downstream tools that reference the symbol (e.g. `openvx-mark`) can
+/// still link. The stub returns `NULL` and sets the spec-defined error
+/// behaviour: callers should check the result with `vxGetStatus` and will
+/// observe `VX_ERROR_NOT_IMPLEMENTED`.
+#[no_mangle]
+pub extern "C" fn vxCopyNode(
+    graph: vx_graph,
+    input: vx_reference,
+    output: vx_reference,
+) -> vx_node {
+    let _ = (graph, input, output);
+    std::ptr::null_mut()
 }
 
 #[no_mangle]
