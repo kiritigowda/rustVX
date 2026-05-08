@@ -211,6 +211,9 @@ cargo bench -p openvx-vision
 
 End-to-end performance is also tracked against the [Khronos OpenVX sample implementation](https://github.com/KhronosGroup/OpenVX-sample-impl) on every CI run via [openvx-mark](https://github.com/kiritigowda/openvx-mark); see the *Benchmark & compare* job in the [Actions tab](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) for the latest comparison report.
 
+> [!TIP]
+> The *Benchmark & compare* job renders the rustVX-vs-Khronos comparison table directly into the GitHub Actions **job summary** for each run — no need to dig into logs. The raw JSON reports are also published as downloadable workflow artifacts (`benchmark-results-rustvx`, `benchmark-results-khronos-sample`, and `benchmark-comparison`) on every push and pull request.
+
 ## Continuous Integration
 
 GitHub Actions builds and runs the full CTS on every push and pull request. The workflow splits the suite into parallel jobs for faster feedback:
