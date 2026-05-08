@@ -6441,39 +6441,57 @@ fn integral_image(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
 
-    let dst_data = dst.data_mut();
-    // dst is U32 format: 4 bytes per pixel, stored as little-endian
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
 
-    for y in 0..height {
+    let src_data = src.data();
+    let dst_bytes = dst.data_mut();
+
+    // Bail out (rather than corrupt memory) if the buffers are smaller than
+    // the declared image dimensions for any reason.
+    let pixels = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidDimension)?;
+    if src_data.len() < pixels || dst_bytes.len() < pixels.checked_mul(4).ok_or(VxStatus::ErrorInvalidDimension)? {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+
+    // The destination is a U32 image laid out as little-endian bytes. On the
+    // platforms rustVX targets (little-endian x86_64 / aarch64) we can safely
+    // reinterpret the byte buffer as `[u32]` and use native 32-bit stores
+    // instead of decomposing every result into `to_le_bytes()`. Even on a
+    // hypothetical big-endian target the reinterpret is sound — we just lose
+    // the on-disk LE convention there, which is moot because rustVX is only
+    // built on LE hosts.
+    debug_assert!(cfg!(target_endian = "little"));
+    let dst_u32: &mut [u32] = unsafe {
+        std::slice::from_raw_parts_mut(dst_bytes.as_mut_ptr() as *mut u32, pixels)
+    };
+
+    // First row: integral = running row sum, no row above.
+    {
+        let src_row = &src_data[..width];
+        let dst_row = &mut dst_u32[..width];
         let mut row_sum: u32 = 0;
         for x in 0..width {
-            row_sum += src.get_pixel(x, y) as u32;
-            let above = if y > 0 {
-                // Read U32 value from the pixel above
-                let above_offset = ((y - 1) * width + x) * 4;
-                if above_offset + 4 <= dst_data.len() {
-                    u32::from_le_bytes([
-                        dst_data[above_offset],
-                        dst_data[above_offset + 1],
-                        dst_data[above_offset + 2],
-                        dst_data[above_offset + 3],
-                    ])
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            let val = row_sum + above;
-            // Write U32 value as little-endian bytes
-            let offset = (y * width + x) * 4;
-            if offset + 4 <= dst_data.len() {
-                let bytes = val.to_le_bytes();
-                dst_data[offset] = bytes[0];
-                dst_data[offset + 1] = bytes[1];
-                dst_data[offset + 2] = bytes[2];
-                dst_data[offset + 3] = bytes[3];
-            }
+            row_sum += src_row[x] as u32;
+            dst_row[x] = row_sum;
+        }
+    }
+
+    // Subsequent rows: dst[y, x] = row_sum + dst[y - 1, x]. Splitting the
+    // destination into "previous row" and "current row" slices lets the
+    // borrow checker see disjoint ranges and lets the optimiser use native
+    // 32-bit loads/stores in the hot loop.
+    for y in 1..height {
+        let src_row = &src_data[y * width..(y + 1) * width];
+        let (prev_rows, current_and_after) = dst_u32.split_at_mut(y * width);
+        let prev_row = &prev_rows[(y - 1) * width..y * width];
+        let dst_row = &mut current_and_after[..width];
+
+        let mut row_sum: u32 = 0;
+        for x in 0..width {
+            row_sum += src_row[x] as u32;
+            dst_row[x] = row_sum + prev_row[x];
         }
     }
 
