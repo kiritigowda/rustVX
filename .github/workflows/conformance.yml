@@ -334,7 +334,7 @@ jobs:
   # rustVX so the binary can build; they are not exercised here and will
   # be replaced by real kernels in subsequent phases.
   enhanced-vision:
-    name: enhanced-vision (Phase 1: Min/Max)
+    name: "enhanced-vision (Phase 1 — Min/Max)"
     runs-on: ubuntu-22.04
     needs: build
     steps:
