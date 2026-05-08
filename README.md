@@ -6,7 +6,7 @@
 
 # rustVX
 
-[![OpenVX Conformance](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml)
+[![OpenVX Conformance](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml/badge.svg?branch=main)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
 
@@ -66,6 +66,55 @@ The shared library is produced at:
 | Linux | `target/release/libopenvx_ffi.so` |
 | macOS | `target/release/libopenvx_ffi.dylib` |
 | Windows | `target/release/openvx_ffi.dll` |
+
+The standard OpenVX 1.3 C headers are bundled in [`include/VX/`](include/VX/) and can be passed to your C/C++ build directly.
+
+### Cargo features
+
+The vision kernel crate exposes opt-in performance features:
+
+| Feature | Effect |
+|---------|--------|
+| `simd` | Enables architecture-neutral SIMD code paths |
+| `sse2` / `avx2` | x86_64 SIMD back-ends (imply `simd`) |
+| `neon` | AArch64 SIMD back-end (implies `simd`) |
+| `parallel` | Enables Rayon-based multi-threaded kernels |
+
+Build with one or more features, e.g.:
+
+```bash
+cargo build --release -p openvx-ffi --features "openvx-vision/avx2 openvx-vision/parallel"
+```
+
+## Using rustVX from a C application
+
+`libopenvx_ffi` exports the full `vx*` / `vxu*` symbol set defined by the standard OpenVX headers, so existing OpenVX code links against it with no source changes. A minimal example:
+
+```c
+#include <VX/vx.h>
+
+int main(void) {
+    vx_context ctx = vxCreateContext();
+    vx_graph   g   = vxCreateGraph(ctx);
+    /* ... build graph, call vxVerifyGraph / vxProcessGraph ... */
+    vxReleaseGraph(&g);
+    vxReleaseContext(&ctx);
+    return 0;
+}
+```
+
+```bash
+# Linux
+gcc app.c -I rustVX/include -L rustVX/target/release -lopenvx_ffi -o app
+LD_LIBRARY_PATH=rustVX/target/release ./app
+```
+
+For drop-in compatibility with build systems that look for `libopenvx` / `libvxu` (e.g. `find_library(NAMES openvx vxu)`), symlink the rustVX library to those names:
+
+```bash
+ln -s libopenvx_ffi.so target/release/libopenvx.so
+ln -s libopenvx_ffi.so target/release/libvxu.so
+```
 
 ## Running Conformance Tests
 
@@ -148,25 +197,47 @@ Use the `--filter` flag to run a subset of tests:
 ./bin/vx_test_conformance --filter="HarrisCorners.*:FastCorners.*:vxCanny.*"
 ```
 
+## Unit Tests and Benchmarks
+
+Beyond the Khronos CTS, rustVX has its own Rust-side test and benchmark suites:
+
+```bash
+# Run all unit and integration tests
+cargo test --workspace --release
+
+# Run the Criterion micro-benchmarks for vision kernels
+cargo bench -p openvx-vision
+```
+
+End-to-end performance is also tracked against the [Khronos OpenVX sample implementation](https://github.com/KhronosGroup/OpenVX-sample-impl) on every CI run via [openvx-mark](https://github.com/kiritigowda/openvx-mark); see the *Benchmark & compare* job in the [Actions tab](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) for the latest comparison report.
+
 ## Continuous Integration
 
 GitHub Actions builds and runs the full CTS on every push and pull request. The workflow splits the suite into parallel jobs for faster feedback:
 
 | Job | Test categories | Pipeline status |
 |-----|-----------------|-----------------|
-| **baseline** | GraphBase, Logging, SmokeTest, Target | [![baseline](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=baseline&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **graph** | Graph framework (cycles, virtual data, multi-run, replicate node), GraphCallback, GraphDelay, GraphROI, UserNode | [![graph](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=graph&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **data-objects** | Scalar, Array, ObjectArray, Matrix, Convolution, Distribution, LUT, Histogram | [![data-objects](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=data-objects&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **image-ops** | Image, CopyImagePatch, MapImagePatch, CreateImageFromChannel, Remap | [![image-ops](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=image-ops&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **vision-color** | ColorConvert, ChannelExtract, ChannelCombine, ConvertDepth | [![vision-color](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-color&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **vision-filters** | Box, Gaussian, Median, Dilate, Erode, Sobel, Magnitude, Phase, NonLinearFilter, Convolve, EqualizeHistogram | [![vision-filters](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-filters&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **vision-arithmetic** | Add, Subtract, Multiply, Bitwise (And/Or/Xor/Not), WeightedAverage, Threshold | [![vision-arithmetic](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-arithmetic&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **vision-geometric** | Scale, WarpAffine, WarpPerspective, Remap, HalfScaleGaussian | [![vision-geometric](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-geometric&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **vision-features** | HarrisCorners, FastCorners, Canny | [![vision-features](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-features&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [![vision-statistics](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-statistics&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
-| **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [![vision-pyramid](https://img.shields.io/github/check-runs/kiritigowda/rustVX/develop?nameFilter=vision-pyramid&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Adevelop) |
+| **baseline** | GraphBase, Logging, SmokeTest, Target | [![baseline](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=baseline&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **graph** | Graph framework (cycles, virtual data, multi-run, replicate node), GraphCallback, GraphDelay, GraphROI, UserNode | [![graph](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=graph&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **data-objects** | Scalar, Array, ObjectArray, Matrix, Convolution, Distribution, LUT, Histogram | [![data-objects](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=data-objects&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **image-ops** | Image, CopyImagePatch, MapImagePatch, CreateImageFromChannel, Remap | [![image-ops](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=image-ops&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **vision-color** | ColorConvert, ChannelExtract, ChannelCombine, ConvertDepth | [![vision-color](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-color&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **vision-filters** | Box, Gaussian, Median, Dilate, Erode, Sobel, Magnitude, Phase, NonLinearFilter, Convolve, EqualizeHistogram | [![vision-filters](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-filters&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **vision-arithmetic** | Add, Subtract, Multiply, Bitwise (And/Or/Xor/Not), WeightedAverage, Threshold | [![vision-arithmetic](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-arithmetic&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **vision-geometric** | Scale, WarpAffine, WarpPerspective, Remap, HalfScaleGaussian | [![vision-geometric](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-geometric&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **vision-features** | HarrisCorners, FastCorners, Canny | [![vision-features](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-features&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [![vision-statistics](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-statistics&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [![vision-pyramid](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-pyramid&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 
 See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for full run history.
+
+## Contributing
+
+Contributions, bug reports, and feature requests are welcome.
+
+- Found a bug or have a question? [Open an issue](https://github.com/kiritigowda/rustVX/issues).
+- Want to contribute a fix or new kernel? Fork the repo, create a topic branch, and open a pull request against `main`. CI must pass — both the Khronos CTS jobs and the rustVX-vs-Khronos benchmark comparison run on every PR.
+- Please make sure `cargo fmt`, `cargo clippy --workspace --all-targets`, and `cargo test --workspace` pass locally before submitting.
 
 ## License
 
