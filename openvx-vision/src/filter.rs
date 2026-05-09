@@ -417,24 +417,78 @@ pub fn box3x3(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
 
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+
+    let src_data = src.data();
     let mut dst_data = dst.data_mut();
-    let border = BorderMode::Replicate;
 
+    // u16 temp buffer stores horizontal sums (3 pixels per position)
+    let mut temp = vec![0u16; width * height];
+
+    // Horizontal pass: temp[y][x] = sum of 3 pixels in row y with replicate border
     for y in 0..height {
-        for x in 0..width {
-            let mut sum: i32 = 0;
+        let row = y * width;
 
-            // Apply 3x3 box filter with border handling
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let px = x as isize + dx;
-                    let py = y as isize + dy;
-                    sum += get_pixel_bordered(src, px, py, border) as i32;
+        if width == 1 {
+            temp[row] = src_data[row] as u16 * 3;
+        } else {
+            // x = 0: replicate left border (p0 + p0 + p1)
+            temp[row] = src_data[row] as u16 * 2 + src_data[row + 1] as u16;
+
+            if width == 2 {
+                // x = 1: replicate right border (p0 + p1 + p1)
+                temp[row + 1] = src_data[row] as u16 + src_data[row + 1] as u16 * 2;
+            } else {
+                // Initialize sliding window for x = 1
+                let mut sum = src_data[row] as u16
+                    + src_data[row + 1] as u16
+                    + src_data[row + 2] as u16;
+                temp[row + 1] = sum;
+
+                // Sliding window for x = 2 .. width-2
+                for x in 2..width - 1 {
+                    sum = sum + src_data[row + x + 1] as u16 - src_data[row + x - 2] as u16;
+                    temp[row + x] = sum;
                 }
-            }
 
-            // Normalize by dividing by 9 and clamp to valid range
-            dst_data[y * width + x] = clamp_u8(sum / 9);
+                // x = width-1: replicate right border (p_{w-2} + p_{w-1} + p_{w-1})
+                temp[row + width - 1] = src_data[row + width - 2] as u16
+                    + src_data[row + width - 1] as u16 * 2;
+            }
+        }
+    }
+
+    // Vertical pass: dst[y][x] = (temp[y-1][x] + temp[y][x] + temp[y+1][x]) / 9
+    for x in 0..width {
+        if height == 1 {
+            dst_data[x] = (temp[x] / 9) as u8;
+        } else {
+            // y = 0: replicate top border
+            let mut sum = temp[x] * 2 + temp[width + x];
+            dst_data[x] = (sum / 9) as u8;
+
+            if height == 2 {
+                // y = 1: replicate bottom border
+                sum = temp[x] + temp[width + x] * 2;
+                dst_data[width + x] = (sum / 9) as u8;
+            } else {
+                // Initialize sliding window for y = 1
+                sum = temp[x] + temp[width + x] + temp[2 * width + x];
+                dst_data[width + x] = (sum / 9) as u8;
+
+                // Sliding window for y = 2 .. height-2
+                for y in 2..height - 1 {
+                    sum = sum + temp[(y + 1) * width + x] - temp[(y - 2) * width + x];
+                    dst_data[y * width + x] = (sum / 9) as u8;
+                }
+
+                // y = height-1: replicate bottom border
+                let last = (height - 1) * width;
+                sum = temp[last - width + x] + temp[last + x] * 2;
+                dst_data[last + x] = (sum / 9) as u8;
+            }
         }
     }
 

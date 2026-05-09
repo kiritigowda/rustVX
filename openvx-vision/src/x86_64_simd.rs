@@ -271,6 +271,80 @@ pub mod sse2 {
     }
 
     /// Box filter 3x3 horizontal (moving average)
+    /// Box filter 3x3 horizontal pass — writes u16 sums (no division)
+    /// dst must be a u16 buffer of length >= width
+    #[target_feature(enable = "sse2")]
+    pub unsafe fn box_h3_sum_sse2(src: *const u8, dst: *mut u16, width: usize) {
+        if width == 0 { return; }
+        *dst.add(0) = (*src.add(0) as u16) * 2 + *src.add(1) as u16;
+        if width == 1 { return; }
+        let mut x = 1;
+        while x + 15 < width - 1 {
+            let prev = _mm_loadu_si128(src.add(x - 1) as *const __m128i);
+            let curr = _mm_loadu_si128(src.add(x) as *const __m128i);
+            let next = _mm_loadu_si128(src.add(x + 1) as *const __m128i);
+            let prev_lo = _mm_unpacklo_epi8(prev, _mm_setzero_si128());
+            let prev_hi = _mm_unpackhi_epi8(prev, _mm_setzero_si128());
+            let curr_lo = _mm_unpacklo_epi8(curr, _mm_setzero_si128());
+            let curr_hi = _mm_unpackhi_epi8(curr, _mm_setzero_si128());
+            let next_lo = _mm_unpacklo_epi8(next, _mm_setzero_si128());
+            let next_hi = _mm_unpackhi_epi8(next, _mm_setzero_si128());
+            let sum_lo = _mm_add_epi16(_mm_add_epi16(prev_lo, curr_lo), next_lo);
+            let sum_hi = _mm_add_epi16(_mm_add_epi16(prev_hi, curr_hi), next_hi);
+            _mm_storeu_si128(dst.add(x) as *mut __m128i, sum_lo);
+            _mm_storeu_si128(dst.add(x + 8) as *mut __m128i, sum_hi);
+            x += 16;
+        }
+        while x < width - 1 {
+            *dst.add(x) = *src.add(x - 1) as u16 + *src.add(x) as u16 + *src.add(x + 1) as u16;
+            x += 1;
+        }
+        *dst.add(width - 1) = *src.add(width - 2) as u16 + *src.add(width - 1) as u16 * 2;
+    }
+
+    /// Box filter 3x3 vertical pass — reads u16 horizontal sums, writes u8 result /9
+    #[target_feature(enable = "sse2")]
+    pub unsafe fn box_v3_sse2(src: *const u16, dst: *mut u8, width: usize, height: usize) {
+        if height == 0 || width == 0 { return; }
+        let recip9 = _mm_set1_epi16(7282);
+        for x in 0..width {
+            let sum = *src.add(x) * 2 + *src.add(width + x);
+            *dst.add(x) = (sum / 9) as u8;
+        }
+        if height == 1 { return; }
+        for y in 1..height - 1 {
+            let prev_row = (y - 1) * width;
+            let curr_row = y * width;
+            let next_row = (y + 1) * width;
+            let mut x = 0;
+            while x + 15 < width {
+                let prev_lo = _mm_loadu_si128(src.add(prev_row + x) as *const __m128i);
+                let prev_hi = _mm_loadu_si128(src.add(prev_row + x + 8) as *const __m128i);
+                let curr_lo = _mm_loadu_si128(src.add(curr_row + x) as *const __m128i);
+                let curr_hi = _mm_loadu_si128(src.add(curr_row + x + 8) as *const __m128i);
+                let next_lo = _mm_loadu_si128(src.add(next_row + x) as *const __m128i);
+                let next_hi = _mm_loadu_si128(src.add(next_row + x + 8) as *const __m128i);
+                let sum_lo = _mm_add_epi16(_mm_add_epi16(prev_lo, curr_lo), next_lo);
+                let sum_hi = _mm_add_epi16(_mm_add_epi16(prev_hi, curr_hi), next_hi);
+                let div_lo = _mm_mulhi_epi16(sum_lo, recip9);
+                let div_hi = _mm_mulhi_epi16(sum_hi, recip9);
+                let result = _mm_packus_epi16(div_lo, div_hi);
+                _mm_storeu_si128(dst.add(curr_row + x) as *mut __m128i, result);
+                x += 16;
+            }
+            while x < width {
+                let sum = *src.add(prev_row + x) + *src.add(curr_row + x) + *src.add(next_row + x);
+                *dst.add(curr_row + x) = (sum / 9) as u8;
+                x += 1;
+            }
+        }
+        let last = (height - 1) * width;
+        for x in 0..width {
+            let sum = *src.add(last - width + x) + *src.add(last + x) * 2;
+            *dst.add(last + x) = (sum / 9) as u8;
+        }
+    }
+
     #[target_feature(enable = "sse2")]
     pub unsafe fn box_h3_sse2(src: *const u8, dst: *mut u8, width: usize) {
         // Process middle pixels in chunks
@@ -549,6 +623,80 @@ pub mod avx2 {
             }
         }
     }
+    /// Box filter 3x3 horizontal pass with AVX2 — writes u16 sums (no division)
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn box_h3_sum_avx2(src: *const u8, dst: *mut u16, width: usize) {
+        if width == 0 { return; }
+        *dst.add(0) = (*src.add(0) as u16) * 2 + *src.add(1) as u16;
+        if width == 1 { return; }
+        let mut x = 1;
+        while x + 31 < width - 1 {
+            let prev = _mm256_loadu_si256(src.add(x - 1) as *const __m256i);
+            let curr = _mm256_loadu_si256(src.add(x) as *const __m256i);
+            let next = _mm256_loadu_si256(src.add(x + 1) as *const __m256i);
+            let prev_lo = _mm256_unpacklo_epi8(prev, _mm256_setzero_si256());
+            let prev_hi = _mm256_unpackhi_epi8(prev, _mm256_setzero_si256());
+            let curr_lo = _mm256_unpacklo_epi8(curr, _mm256_setzero_si256());
+            let curr_hi = _mm256_unpackhi_epi8(curr, _mm256_setzero_si256());
+            let next_lo = _mm256_unpacklo_epi8(next, _mm256_setzero_si256());
+            let next_hi = _mm256_unpackhi_epi8(next, _mm256_setzero_si256());
+            let sum_lo = _mm256_add_epi16(_mm256_add_epi16(prev_lo, curr_lo), next_lo);
+            let sum_hi = _mm256_add_epi16(_mm256_add_epi16(prev_hi, curr_hi), next_hi);
+            _mm256_storeu_si256(dst.add(x) as *mut __m256i, sum_lo);
+            _mm256_storeu_si256(dst.add(x + 16) as *mut __m256i, sum_hi);
+            x += 32;
+        }
+        while x < width - 1 {
+            *dst.add(x) = *src.add(x - 1) as u16 + *src.add(x) as u16 + *src.add(x + 1) as u16;
+            x += 1;
+        }
+        *dst.add(width - 1) = *src.add(width - 2) as u16 + *src.add(width - 1) as u16 * 2;
+    }
+
+    /// Box filter 3x3 vertical pass with AVX2 — reads u16 horizontal sums, writes u8 result /9
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn box_v3_avx2(src: *const u16, dst: *mut u8, width: usize, height: usize) {
+        if height == 0 || width == 0 { return; }
+        let recip9 = _mm256_set1_epi16(7282);
+        for x in 0..width {
+            let sum = *src.add(x) * 2 + *src.add(width + x);
+            *dst.add(x) = (sum / 9) as u8;
+        }
+        if height == 1 { return; }
+        for y in 1..height - 1 {
+            let prev_row = (y - 1) * width;
+            let curr_row = y * width;
+            let next_row = (y + 1) * width;
+            let mut x = 0;
+            while x + 31 < width {
+                let prev_lo = _mm256_loadu_si256(src.add(prev_row + x) as *const __m256i);
+                let prev_hi = _mm256_loadu_si256(src.add(prev_row + x + 16) as *const __m256i);
+                let curr_lo = _mm256_loadu_si256(src.add(curr_row + x) as *const __m256i);
+                let curr_hi = _mm256_loadu_si256(src.add(curr_row + x + 16) as *const __m256i);
+                let next_lo = _mm256_loadu_si256(src.add(next_row + x) as *const __m256i);
+                let next_hi = _mm256_loadu_si256(src.add(next_row + x + 16) as *const __m256i);
+                let sum_lo = _mm256_add_epi16(_mm256_add_epi16(prev_lo, curr_lo), next_lo);
+                let sum_hi = _mm256_add_epi16(_mm256_add_epi16(prev_hi, curr_hi), next_hi);
+                let div_lo = _mm256_mulhi_epi16(sum_lo, recip9);
+                let div_hi = _mm256_mulhi_epi16(sum_hi, recip9);
+                let packed = _mm256_packus_epi16(div_lo, div_hi);
+                let result = _mm256_permute4x64_epi64(packed, mm_shuffle(3, 1, 2, 0));
+                _mm256_storeu_si256(dst.add(curr_row + x) as *mut __m256i, result);
+                x += 32;
+            }
+            while x < width {
+                let sum = *src.add(prev_row + x) + *src.add(curr_row + x) + *src.add(next_row + x);
+                *dst.add(curr_row + x) = (sum / 9) as u8;
+                x += 1;
+            }
+        }
+        let last = (height - 1) * width;
+        for x in 0..width {
+            let sum = *src.add(last - width + x) + *src.add(last + x) * 2;
+            *dst.add(last + x) = (sum / 9) as u8;
+        }
+    }
+
 }
 
 // Re-export commonly used functions based on detected features
@@ -651,6 +799,69 @@ pub unsafe fn gaussian_v3(src: *const u8, dst: *mut u8, width: usize, height: us
             for x in 0..width {
                 *dst.add((height - 1) * width + x) = *src.add((height - 1) * width + x);
             }
+        }
+    }
+}
+
+/// Box filter horizontal 3x3 (auto-selects AVX2/SSE2)
+/// Writes u16 sums into dst; caller must divide by 9 after vertical pass.
+#[inline]
+pub unsafe fn box_h3(src: *const u8, dst: *mut u16, width: usize, height: usize) {
+    if is_x86_feature_detected!("avx2") {
+        for y in 0..height {
+            avx2::box_h3_sum_avx2(src.add(y * width), dst.add(y * width), width);
+        }
+    } else if is_x86_feature_detected!("sse2") {
+        for y in 0..height {
+            sse2::box_h3_sum_sse2(src.add(y * width), dst.add(y * width), width);
+        }
+    } else {
+        for y in 0..height {
+            let row_src = src.add(y * width);
+            let row_dst = dst.add(y * width);
+            if width == 1 {
+                *row_dst.add(0) = *row_src.add(0) as u16 * 3;
+            } else {
+                *row_dst.add(0) = *row_src.add(0) as u16 * 2 + *row_src.add(1) as u16;
+                if width == 2 {
+                    *row_dst.add(1) = *row_src.add(0) as u16 + *row_src.add(1) as u16 * 2;
+                } else {
+                    let mut sum = *row_src.add(0) as u16 + *row_src.add(1) as u16 + *row_src.add(2) as u16;
+                    *row_dst.add(1) = sum;
+                    for x in 2..width - 1 {
+                        sum += *row_src.add(x + 1) as u16 - *row_src.add(x - 2) as u16;
+                        *row_dst.add(x) = sum;
+                    }
+                    *row_dst.add(width - 1) = *row_src.add(width - 2) as u16 + *row_src.add(width - 1) as u16 * 2;
+                }
+            }
+        }
+    }
+}
+
+/// Box filter vertical 3x3 (auto-selects AVX2/SSE2)
+/// Reads u16 horizontal sums, writes u8 result divided by 9.
+#[inline]
+pub unsafe fn box_v3(src: *const u16, dst: *mut u8, width: usize, height: usize) {
+    if is_x86_feature_detected!("avx2") {
+        avx2::box_v3_avx2(src, dst, width, height);
+    } else if is_x86_feature_detected!("sse2") {
+        sse2::box_v3_sse2(src, dst, width, height);
+    } else {
+        for x in 0..width {
+            let mut sum = *src.add(x) * 2 + *src.add(width + x);
+            *dst.add(x) = (sum / 9) as u8;
+        }
+        for y in 1..height - 1 {
+            for x in 0..width {
+                let sum = *src.add((y - 1) * width + x) + *src.add(y * width + x) + *src.add((y + 1) * width + x);
+                *dst.add(y * width + x) = (sum / 9) as u8;
+            }
+        }
+        let last = (height - 1) * width;
+        for x in 0..width {
+            let sum = *src.add(last - width + x) + *src.add(last + x) * 2;
+            *dst.add(last + x) = (sum / 9) as u8;
         }
     }
 }
