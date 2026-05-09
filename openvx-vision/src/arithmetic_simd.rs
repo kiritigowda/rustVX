@@ -160,19 +160,11 @@ pub fn multiply_images_simd(src1: &Image, src2: &Image, dst: &Image, scale: f32)
     let src2_data = src2.data();
     let mut dst_data = dst.data_mut();
 
-    // Multiplication is harder to vectorize with fixed-point scale
-    // For now, use optimized scalar with possible partial SIMD
+    // Multiplication is harder to vectorize with fixed-point scale —
+    // a real SIMD path would use 16-bit widening multiply with the
+    // scale in Q8 fixed-point. Until that lands, fall through to the
+    // scalar loop.
 
-    #[cfg(feature = "simd")]
-    {
-        // Convert scale to fixed-point for faster computation
-        let scale_q8 = (scale * 256.0) as i32;
-
-        // Process in SIMD chunks if available
-        // (implementation would use 16-bit widening multiply)
-    }
-
-    // Scalar fallback
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
