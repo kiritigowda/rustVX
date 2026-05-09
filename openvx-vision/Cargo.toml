@@ -27,3 +27,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "vision_kernels"
 path = "benches/vision_kernels.rs"
 harness = false
+
+[[bench]]
+name = "quick_bench"
+path = "benches/quick_bench.rs"
+harness = false

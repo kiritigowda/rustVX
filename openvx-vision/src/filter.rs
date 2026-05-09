@@ -81,8 +81,16 @@ impl KernelTrait for Gaussian3x3Kernel {
             .and_then(|p| p.as_any().downcast_ref::<Image>())
             .ok_or(openvx_core::VxStatus::ErrorInvalidParameters)?;
 
-        gaussian3x3(src, dst)?;
-        Ok(())
+        #[cfg(feature = "simd")]
+        {
+            crate::filter_simd::gaussian3x3_simd(src, dst)?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            gaussian3x3(src, dst)?;
+            Ok(())
+        }
     }
 }
 
@@ -241,39 +249,114 @@ pub fn gaussian3x3(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
 
+    if width < 2 || height < 2 {
+        // For 1x1 images just copy
+        let src_data = src.data();
+        let mut dst_data = dst.data_mut();
+        dst_data.copy_from_slice(&src_data[..width * height]);
+        return Ok(());
+    }
+
+    let src_data = src.data();
     let mut dst_data = dst.data_mut();
-    let border = BorderMode::Replicate;
 
-    // Separable kernel: [1, 2, 1]
-    // Horizontal pass: temp[y][x] = sum of src[y][x-1]*1 + src[y][x]*2 + src[y][x+1]*1
-    // Vertical pass: dst[y][x] = sum of temp[y-1][x]*1 + temp[y][x]*2 + temp[y+1][x]*1
-    // Combined normalization: 4 * 4 = 16
+    // Use u8 temp buffer with pre-divided horizontal values (/4)
+    // This halves memory bandwidth vs u16 and keeps values in u8 range
+    let mut temp = vec![0u8; width * height];
 
-    // Temporary buffer for horizontal pass
-    let mut temp = vec![0u16; width * height];
+    // Horizontal pass: [1,2,1]/4 with REPLICATE border
+    // Process first row
+    {
+        let row = 0;
+        let src_row = &src_data[row * width..row * width + width];
+        let temp_row = &mut temp[row * width..row * width + width];
 
-    // Horizontal pass
-    for y in 0..height {
+        // First pixel (left border replicates)
+        temp_row[0] = ((src_row[0] as u16 * 3 + src_row[1] as u16) >> 2) as u8;
+
+        // Interior pixels
+        for x in 1..width - 1 {
+            let sum = (src_row[x - 1] as u16 + src_row[x] as u16 * 2 + src_row[x + 1] as u16) >> 2;
+            temp_row[x] = sum as u8;
+        }
+
+        // Last pixel (right border replicates)
+        temp_row[width - 1] =
+            ((src_row[width - 2] as u16 + src_row[width - 1] as u16 * 3) >> 2) as u8;
+    }
+
+    // Process middle rows
+    for y in 1..height - 1 {
+        let src_row = &src_data[y * width..y * width + width];
+        let temp_row = &mut temp[y * width..y * width + width];
+
+        // First pixel (left border replicates)
+        temp_row[0] = ((src_row[0] as u16 * 3 + src_row[1] as u16) >> 2) as u8;
+
+        // Interior pixels
+        for x in 1..width - 1 {
+            let sum = (src_row[x - 1] as u16 + src_row[x] as u16 * 2 + src_row[x + 1] as u16) >> 2;
+            temp_row[x] = sum as u8;
+        }
+
+        // Last pixel (right border replicates)
+        temp_row[width - 1] =
+            ((src_row[width - 2] as u16 + src_row[width - 1] as u16 * 3) >> 2) as u8;
+    }
+
+    // Process last row
+    {
+        let y = height - 1;
+        let src_row = &src_data[y * width..y * width + width];
+        let temp_row = &mut temp[y * width..y * width + width];
+
+        // First pixel (left border replicates)
+        temp_row[0] = ((src_row[0] as u16 * 3 + src_row[1] as u16) >> 2) as u8;
+
+        // Interior pixels
+        for x in 1..width - 1 {
+            let sum = (src_row[x - 1] as u16 + src_row[x] as u16 * 2 + src_row[x + 1] as u16) >> 2;
+            temp_row[x] = sum as u8;
+        }
+
+        // Last pixel (right border replicates)
+        temp_row[width - 1] =
+            ((src_row[width - 2] as u16 + src_row[width - 1] as u16 * 3) >> 2) as u8;
+    }
+
+    // Vertical pass: [1,2,1]/4 with REPLICATE border
+    // Process first row (top border replicates)
+    {
+        let dst_row = &mut dst_data[0..width];
+        let curr = &temp[0..width];
+        let next = &temp[width..width * 2];
         for x in 0..width {
-            let p_left = get_pixel_bordered(src, x as isize - 1, y as isize, border) as u16;
-            let p_center = get_pixel_bordered(src, x as isize, y as isize, border) as u16;
-            let p_right = get_pixel_bordered(src, x as isize + 1, y as isize, border) as u16;
-
-            temp[y * width + x] = p_left + p_center * 2 + p_right;
+            let sum = (curr[x] as u16 * 3 + next[x] as u16) >> 2;
+            dst_row[x] = sum as u8;
         }
     }
 
-    // Vertical pass
-    for y in 0..height {
+    // Process middle rows
+    for y in 1..height - 1 {
+        let dst_row = &mut dst_data[y * width..y * width + width];
+        let prev = &temp[(y - 1) * width..(y - 1) * width + width];
+        let curr = &temp[y * width..y * width + width];
+        let next = &temp[(y + 1) * width..(y + 1) * width + width];
         for x in 0..width {
-            let p_top =
-                temp[((y as isize - 1).max(0).min(height as isize - 1) as usize) * width + x];
-            let p_center = temp[y * width + x];
-            let p_bottom =
-                temp[((y as isize + 1).max(0).min(height as isize - 1) as usize) * width + x];
+            let sum = (prev[x] as u16 + curr[x] as u16 * 2 + next[x] as u16) >> 2;
+            dst_row[x] = sum as u8;
+        }
+    }
 
-            let sum = (p_top + p_center * 2 + p_bottom) >> 4; // Divide by 16
-            dst_data[y * width + x] = sum as u8;
+    // Process last row (bottom border replicates)
+    {
+        let y = height - 1;
+        let dst_row = &mut dst_data[y * width..y * width + width];
+        let prev = &temp[(y - 1) * width..(y - 1) * width + width];
+        let curr = &temp[y * width..y * width + width];
+        for x in 0..width {
+            let sum = (prev[x] as u16 + curr[x] as u16 * 3) >> 2;
+            dst_row[x] = sum as u8;
         }
     }
 
