@@ -92,15 +92,15 @@ cargo build --release -p openvx-ffi \
 
 ### Hardware acceleration
 
-rustVX is **tuned and validated on modern AMD x86_64 silicon** — specifically AMD Ryzen (Zen 2+, *3000-series and newer*) and the matching AMD EPYC (Rome / Milan / Genoa) server parts. CI runs against the AMD EPYC 7763 (Milan) and EPYC 9V74 (Genoa) hosts in GitHub's Linux runner pool, and every published benchmark number in the *Benchmark & compare* job summary comes from those AMD CPUs.
+Performance work targets **AMD Zen (Ryzen / EPYC, Zen 2+)** — that's what CI measures and what the *Benchmark & compare* numbers come from. Intel and ARM aren't penalised; the runtime dispatcher reads CPU **flags**, not vendor strings, so any host whose flags match the same gate runs the same path:
 
-#### Dispatch
+- **AMD Zen 2+** (Ryzen 3000+, Threadripper 3000+, EPYC Rome / Milan / Genoa) → AVX2 kernels + `-C target-cpu=x86-64-v3` auto-vec.
+- **Intel Haswell and later** → same AVX2 path, parity with Zen.
+- **Older x86_64** (pre-AVX2) → SSE2 kernels + `-C target-cpu=x86-64-v2`.
+- **AArch64** (Apple Silicon, AWS Graviton, etc.) → NEON path.
+- **Anything else / no features** → scalar slice loop (still ~50× faster than the original per-pixel kernels).
 
-Runtime SIMD selection happens via `is_x86_feature_detected!` inside `openvx-core::simd_kernels` (FFI graph path: `vxAdd`, `vxSubtract`, `vxBox3x3`, `vxGaussian3x3`, `vxColorConvert`) and `openvx-vision::x86_64_simd` (direct Rust API). The ordering on x86_64 is **AVX2 → SSE2 → tight scalar slice loop**. Builds without the SIMD features (or non-x86_64 / non-aarch64 targets) compile only the scalar fallback, which is itself slice-iter-based and ~50× faster than naive per-pixel kernel implementations.
-
-#### Recommended build for AMD Ryzen / EPYC
-
-On any Zen 2+ host (Ryzen 3000, 4000, 5000, 7000, 9000; Threadripper 3000+; EPYC Rome, Milan, Genoa), the project's CI workflow auto-detects host CPU flags and emits the right combination, but for a manual build the recipe is:
+Dispatch lives in `openvx-core::simd_kernels` (FFI graph path) and `openvx-vision::x86_64_simd` (Rust API). CI auto-detects host flags; for a manual Zen-targeted build:
 
 ```bash
 RUSTFLAGS="-C target-cpu=x86-64-v3" \
@@ -108,11 +108,6 @@ RUSTFLAGS="-C target-cpu=x86-64-v3" \
     --features "openvx-core/sse2 openvx-core/avx2 \
                 openvx-vision/sse2 openvx-vision/avx2"
 ```
-
-`-C target-cpu=x86-64-v3` is the portable microarch level that matches every Zen 2+ Ryzen / EPYC and every Intel Haswell+ — it gives the compiler licence to auto-vectorize with SSE4.2 / AVX / AVX2 / BMI1+2 / FMA / F16C in the rest of the workspace, on top of the hand-tuned intrinsic kernels gated by the `sse2` / `avx2` Cargo features. This is the exact configuration the `.github/workflows/conformance.yml` build job uses for the published benchmark numbers.
-
-> [!NOTE]
-> The same fast paths run on any AVX2-capable Intel CPU (Haswell and later) at parity — the `is_x86_feature_detected!` dispatch doesn't read the vendor string, only the feature flags. AMD Ryzen / EPYC is called out here because it's the silicon the CI runs on and the silicon every benchmark figure in this README and the *Benchmark & compare* job summary was measured on. On older x86_64 silicon (pre-AVX2), the build automatically selects the SSE2 path and `-C target-cpu=x86-64-v2`. AArch64 hosts (Apple Silicon, AWS Graviton, etc.) take the `openvx-*/neon` path with no `target-cpu` override.
 
 ## Using rustVX from a C application
 
