@@ -75,13 +75,18 @@ jobs:
             x86_64|amd64)
               HAS_SSE2=false
               HAS_AVX2=false
+              # openvx-core hosts the C-API kernel callbacks (vxAdd /
+              # vxSubtract / vxBox3x3 / vxGaussian3x3 / vxColorConvert
+              # → crate::simd_kernels). openvx-vision hosts the public
+              # Rust-API SIMD kernels. Both crates need the matching
+              # feature flag for the SIMD path to actually compile in.
               if echo "$FLAGS" | grep -qw sse2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-vision/sse2"
+                CARGO_FEATURES="$CARGO_FEATURES openvx-core/sse2 openvx-vision/sse2"
                 HAS_SSE2=true
                 echo "  + sse2 detected"
               fi
               if echo "$FLAGS" | grep -qw avx2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-vision/avx2"
+                CARGO_FEATURES="$CARGO_FEATURES openvx-core/avx2 openvx-vision/avx2"
                 HAS_AVX2=true
                 echo "  + avx2 detected"
               fi
@@ -96,7 +101,7 @@ jobs:
               fi
               ;;
             aarch64|arm64)
-              CARGO_FEATURES="$CARGO_FEATURES openvx-vision/neon"
+              CARGO_FEATURES="$CARGO_FEATURES openvx-core/neon openvx-vision/neon"
               echo "  + neon (mandatory on aarch64)"
               ;;
             *)

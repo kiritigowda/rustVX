@@ -18,3 +18,14 @@ once_cell = { workspace = true }
 [features]
 default = []
 c-api = []
+# SIMD acceleration. Mirrors openvx-vision's feature set so the FFI
+# build can pass `openvx-core/sse2 openvx-core/avx2` (or
+# `openvx-core/neon` on aarch64) and have the C-API kernel callbacks
+# (vxAdd, vxSubtract, vxBox3x3, vxGaussian3x3, vxColorConvert) pick
+# up the SIMD-fast paths in `crate::simd_kernels` at runtime via
+# `is_x86_feature_detected!`. When none of these features are set,
+# the kernel callbacks fall back to the existing tight scalar loops.
+simd = []
+sse2 = ["simd"]
+avx2 = ["simd"]
+neon = ["simd"]
