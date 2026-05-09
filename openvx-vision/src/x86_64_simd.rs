@@ -178,7 +178,6 @@ pub mod sse2 {
 
         // Process middle rows
         let chunks = width / 16;
-        let remainder = width % 16;
 
         for y in 1..height - 1 {
             let prev_row = (y - 1) * width;
@@ -238,31 +237,14 @@ pub mod sse2 {
     }
 
     /// RGB to Grayscale conversion using BT.709
-    /// Processes 16 RGB pixels at a time
+    ///
+    /// SSE2 is a poor fit for RGB de-interleaving (proper vectorisation
+    /// wants SSSE3 `_mm_shuffle_epi8` or AVX2). Until the SSSE3/AVX2
+    /// path lands, this stays scalar with Q8 fixed-point coefficients —
+    /// `Y = (54*R + 183*G + 18*B) / 255` per BT.709.
     #[target_feature(enable = "sse2")]
     pub unsafe fn rgb_to_gray_sse2(src: *const u8, dst: *mut u8, num_pixels: usize) {
-        // BT.709 coefficients: Y = 0.2126*R + 0.7152*G + 0.0722*B
-        // Using Q8 fixed-point: Y = (54*R + 183*G + 18*B) / 255
-
-        let r_coeff = _mm_set1_epi16(54);
-        let g_coeff = _mm_set1_epi16(183);
-        let b_coeff = _mm_set1_epi16(18);
-        let div_shift = _mm_set1_epi16(8); // divide by 256 (approximately /255)
-
-        // Process 16 pixels at a time (48 bytes of RGB)
-        let chunks = num_pixels / 16;
-
-        for i in 0..chunks {
-            let offset = i * 16 * 3; // 3 bytes per RGB pixel
-
-            // Load 48 bytes (16 RGB pixels)
-            // We need to extract R, G, B channels and process them
-            // This is complex with SSE2, so we'll use a simpler scalar approach for now
-            // and process 5 pixels at a time (15 bytes) which is easier to shuffle
-        }
-
-        // Scalar fallback for now (SSE2 RGB shuffle is complex, better implemented with SSSE3)
-        for i in (chunks * 16)..num_pixels {
+        for i in 0..num_pixels {
             let r = *src.add(i * 3) as u32;
             let g = *src.add(i * 3 + 1) as u32;
             let b = *src.add(i * 3 + 2) as u32;
@@ -397,7 +379,6 @@ pub mod avx2 {
     #[target_feature(enable = "avx2")]
     pub unsafe fn add_images_sat_avx2(src1: *const u8, src2: *const u8, dst: *mut u8, len: usize) {
         let chunks = len / 32;
-        let remainder = len % 32;
 
         for i in 0..chunks {
             let a = _mm256_loadu_si256(src1.add(i * 32) as *const __m256i);
@@ -417,7 +398,6 @@ pub mod avx2 {
     #[target_feature(enable = "avx2")]
     pub unsafe fn sub_images_sat_avx2(src1: *const u8, src2: *const u8, dst: *mut u8, len: usize) {
         let chunks = len / 32;
-        let remainder = len % 32;
 
         for i in 0..chunks {
             let a = _mm256_loadu_si256(src1.add(i * 32) as *const __m256i);
@@ -447,7 +427,6 @@ pub mod avx2 {
         let beta_u16 = _mm256_set1_epi16(beta as i16);
 
         let chunks = len / 32;
-        let remainder = len % 32;
 
         for i in 0..chunks {
             // Load 32 u8 values from each source
@@ -564,7 +543,6 @@ pub mod avx2 {
         }
 
         let chunks = width / 32;
-        let remainder = width % 32;
 
         // Process middle rows
         for y in 1..height - 1 {
@@ -849,7 +827,7 @@ pub unsafe fn box_v3(src: *const u16, dst: *mut u8, width: usize, height: usize)
         sse2::box_v3_sse2(src, dst, width, height);
     } else {
         for x in 0..width {
-            let mut sum = *src.add(x) * 2 + *src.add(width + x);
+            let sum = *src.add(x) * 2 + *src.add(width + x);
             *dst.add(x) = (sum / 9) as u8;
         }
         for y in 1..height - 1 {

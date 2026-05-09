@@ -164,16 +164,10 @@ pub fn sobel3x3_simd(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxR
     let src_data = src.data();
 
     for y in 1..height - 1 {
+        // Sobel 3x3 currently runs scalar — a real SSE2/AVX2 path needs
+        // shuffle-heavy kernel loads (SSSE3 _mm_shuffle_epi8 makes this
+        // much cleaner) and is tracked as a follow-up.
         let mut x = 1;
-
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            use core::arch::x86_64::*;
-            while x + 7 < width - 1 {
-                x += 1;
-            }
-        }
-
         while x < width - 1 {
             let idx = y * width + x;
             let mut sum_x: i32 = 0;

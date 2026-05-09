@@ -23,36 +23,11 @@ pub fn rgb_to_gray_simd(src: &Image, dst: &Image) -> VxResult<()> {
     // Using fixed-point: Y = (54*R + 183*G + 18*B) / 255
 
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use core::arch::x86_64::*;
-
-        // For SSE2, we can process multiple pixels at once
-        // Each pixel needs 3 bytes (RGB), so we load 48 bytes for 16 pixels
-        let chunks = num_pixels / 8;
-
-        for i in 0..chunks {
-            let offset = i * 8 * 3; // 24 bytes
-
-            // Load 24 bytes (8 RGB pixels)
-            let data0 = _mm_loadu_si128(src_data.as_ptr().add(offset) as *const __m128i);
-            let data1 = _mm_loadu_si128(src_data.as_ptr().add(offset + 8) as *const __m128i);
-
-            // Extract R, G, B components using shuffles
-            // This is complex with SSE2 - simplified version processes fewer pixels
-            // For production, would use SSSE3 _mm_shuffle_epi8
-
-            // Scalar fallback for these pixels
-            for j in 0..8 {
-                let r = src_data[offset + j * 3] as u32;
-                let g = src_data[offset + j * 3 + 1] as u32;
-                let b = src_data[offset + j * 3 + 2] as u32;
-                dst_data[i * 8 + j] = ((54 * r + 183 * g + 18 * b) / 255) as u8;
-            }
-        }
-
-        // Handle remaining pixels
-        let start = chunks * 8;
-        for i in start..num_pixels {
+    {
+        // RGB de-interleave is a poor match for SSE2 (it really wants
+        // SSSE3's _mm_shuffle_epi8); until we add an SSSE3/AVX2 path,
+        // fall through to scalar BT.709.
+        for i in 0..num_pixels {
             let r = src_data[i * 3] as u32;
             let g = src_data[i * 3 + 1] as u32;
             let b = src_data[i * 3 + 2] as u32;
@@ -105,11 +80,14 @@ pub fn gray_to_rgb_simd(src: &Image, dst: &Image) -> VxResult<()> {
             let gray_lo = _mm_unpacklo_epi8(gray, gray); // Duplicate: [G0,G0,G1,G1,...]
             let gray_hi = _mm_unpackhi_epi8(gray, gray);
 
-            // Interleave to create RGB pattern
+            // Interleave to create RGB pattern.
+            // We only emit 3 of the 4 possible 16-byte tiles per chunk:
+            // 16 input pixels expand to 48 output bytes. The fourth
+            // unpack (`gray_hi`-high) would just be discarded, so we
+            // skip the work.
             let rgb0_lo = _mm_unpacklo_epi8(gray_lo, gray_lo); // [R0,G0,R0,G0,...]
             let rgb0_hi = _mm_unpackhi_epi8(gray_lo, gray_lo);
             let rgb1_lo = _mm_unpacklo_epi8(gray_hi, gray_hi);
-            let rgb1_hi = _mm_unpackhi_epi8(gray_hi, gray_hi);
 
             // Store results - this creates duplicates, for proper RGB we'd need more complex shuffle
             // For now, store interleaved data
@@ -195,25 +173,15 @@ pub fn rgba_to_rgb_simd(src: &Image, dst: &Image) -> VxResult<()> {
     let src_data = src.data();
     let mut dst_data = dst.data_mut();
 
-    // Drop alpha channel - can use SIMD for this
+    // Drop alpha channel.
+    // A proper SIMD path needs SSSE3 _mm_shuffle_epi8 to repack
+    // [R,G,B,A,...] -> [R,G,B,...]; on SSE2-only we'd be doing 12
+    // scalar lane copies anyway, so skip the unused vector load and
+    // do the lane copies in one tight loop.
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use core::arch::x86_64::*;
-
-        // Process 4 pixels at a time
-        // Load 16 bytes (4 RGBA), shuffle to 12 bytes (4 RGB)
+    {
         let chunks = num_pixels / 4;
-
         for i in 0..chunks {
-            let rgba = _mm_loadu_si128(src_data.as_ptr().add(i * 16) as *const __m128i);
-
-            // Extract RGB components and pack
-            // Use shuffle: we want [R0,G0,B0,R1,G1,B1,R2,G2,B2,R3,G3,B3]
-            // from [R0,G0,B0,A0,R1,G1,B1,A1,R2,G2,B2,A2,R3,G3,B3,A3]
-
-            // This requires SSSE3 _mm_shuffle_epi8 for efficient implementation
-            // For SSE2, we do it manually
-
             dst_data[i * 12] = src_data[i * 16];
             dst_data[i * 12 + 1] = src_data[i * 16 + 1];
             dst_data[i * 12 + 2] = src_data[i * 16 + 2];
@@ -228,7 +196,6 @@ pub fn rgba_to_rgb_simd(src: &Image, dst: &Image) -> VxResult<()> {
             dst_data[i * 12 + 11] = src_data[i * 16 + 14];
         }
 
-        // Handle remaining pixels
         let start = chunks * 4;
         for i in start..num_pixels {
             dst_data[i * 3] = src_data[i * 4];
