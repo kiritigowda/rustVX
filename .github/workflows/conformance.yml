@@ -7,12 +7,30 @@ on:
       - '**/*.md'
       - 'docs/**'
       - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.editorconfig'
+      - '**/*.svg'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.webp'
   pull_request:
     branches: [master, main, develop]
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
       - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.editorconfig'
+      - '**/*.svg'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.webp'
 
 env:
   CARGO_TERM_COLOR: always
