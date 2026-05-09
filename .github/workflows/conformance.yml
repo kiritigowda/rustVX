@@ -36,10 +36,103 @@ jobs:
           source $HOME/.cargo/env
           rustc --version
           cargo --version
+      - name: Detect host CPU features
+        id: cpu
+        # GitHub-hosted Linux runners can be backed by either Intel or AMD
+        # x86_64 silicon (and ARM-based pools exist too). Rather than
+        # hard-coding a vendor, we read /proc/cpuinfo / uname and turn on
+        # the matching openvx-vision SIMD Cargo features (sse2 / avx2 on
+        # x86_64, neon on aarch64).
+        #
+        # IMPORTANT: do NOT use `-C target-cpu=native` here. The build,
+        # CTS, and benchmark jobs run on independent runner VMs; the build
+        # host may expose ISA extensions (e.g. AVX-512) that a downstream
+        # CTS runner does not, which produces SIGILL ("Illegal instruction")
+        # when the artifact is loaded on a less-capable host. Instead we
+        # pin x86_64 to the portable `x86-64-v3` microarch level (SSE4.2 +
+        # AVX + AVX2 + BMI1/2 + FMA + F16C) which every modern AMD EPYC
+        # and Intel Xeon in GitHub's Azure pool supports, and rely on
+        # `#[target_feature]`-gated intrinsics (already in openvx-vision)
+        # for anything beyond that — those paths dispatch via
+        # `is_x86_feature_detected!` at runtime.
+        run: |
+          set -euo pipefail
+          ARCH=$(uname -m)
+          VENDOR="unknown"
+          FLAGS=""
+          if [ -r /proc/cpuinfo ]; then
+            VENDOR=$(grep -m1 '^vendor_id' /proc/cpuinfo | awk '{print $3}' || true)
+            VENDOR=${VENDOR:-unknown}
+            FLAGS=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 || true)
+          fi
+          echo "Architecture : $ARCH"
+          echo "CPU vendor   : $VENDOR"
+
+          CARGO_FEATURES=""
+          RUSTFLAGS_VAL=""
+
+          case "$ARCH" in
+            x86_64|amd64)
+              HAS_SSE2=false
+              HAS_AVX2=false
+              if echo "$FLAGS" | grep -qw sse2; then
+                CARGO_FEATURES="$CARGO_FEATURES openvx-vision/sse2"
+                HAS_SSE2=true
+                echo "  + sse2 detected"
+              fi
+              if echo "$FLAGS" | grep -qw avx2; then
+                CARGO_FEATURES="$CARGO_FEATURES openvx-vision/avx2"
+                HAS_AVX2=true
+                echo "  + avx2 detected"
+              fi
+              # Pick the most permissive *portable* microarch level that
+              # the build host satisfies. v3 is safe on every GitHub
+              # Linux runner today (AMD EPYC Milan/Genoa, Intel Cascade
+              # Lake / Ice Lake), v2 is universal on x86_64 cloud silicon.
+              if [ "$HAS_AVX2" = true ]; then
+                RUSTFLAGS_VAL="-C target-cpu=x86-64-v3"
+              elif [ "$HAS_SSE2" = true ]; then
+                RUSTFLAGS_VAL="-C target-cpu=x86-64-v2"
+              fi
+              ;;
+            aarch64|arm64)
+              CARGO_FEATURES="$CARGO_FEATURES openvx-vision/neon"
+              echo "  + neon (mandatory on aarch64)"
+              ;;
+            *)
+              echo "  (no SIMD features enabled for $ARCH — scalar build)"
+              ;;
+          esac
+
+          CARGO_FEATURES=$(echo "$CARGO_FEATURES" | xargs)
+          echo "Cargo features: ${CARGO_FEATURES:-<none>}"
+          echo "RUSTFLAGS    : ${RUSTFLAGS_VAL:-<none>}"
+
+          {
+            echo "arch=$ARCH"
+            echo "vendor=$VENDOR"
+            echo "cargo_features=$CARGO_FEATURES"
+            echo "rustflags=$RUSTFLAGS_VAL"
+          } >> "$GITHUB_OUTPUT"
       - name: Build rustVX
+        env:
+          RUSTFLAGS: ${{ steps.cpu.outputs.rustflags }}
         run: |
           source $HOME/.cargo/env
-          cargo build --release
+          FEATURES="${{ steps.cpu.outputs.cargo_features }}"
+          # Build only the FFI cdylib that downstream jobs consume; this
+          # is the artifact that becomes libopenvx_ffi.so. Building this
+          # one package (instead of the whole workspace) keeps the build
+          # tight and lets us forward openvx-vision SIMD features via
+          # the `pkg/feature` syntax without needing a passthrough in
+          # openvx-ffi's Cargo.toml.
+          if [ -n "$FEATURES" ]; then
+            echo "Building openvx-ffi with features: $FEATURES"
+            cargo build --release -p openvx-ffi --features "$FEATURES"
+          else
+            echo "Building openvx-ffi with no extra SIMD features"
+            cargo build --release -p openvx-ffi
+          fi
       - name: Build OpenVX CTS
         run: |
           cd OpenVX-cts
@@ -449,7 +542,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/openvx-mark/build-rustvx
           export LD_LIBRARY_PATH=${{ steps.rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution VGA --iterations 10 --warmup 3
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
 
       # ---------------------------------------------------------------------
       # Khronos sample benchmark
@@ -469,7 +562,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/openvx-mark/build-khronos
           export LD_LIBRARY_PATH=${{ steps.khronos.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution VGA --iterations 10 --warmup 3
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
 
       # ---------------------------------------------------------------------
       # Compare results

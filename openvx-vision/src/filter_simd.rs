@@ -180,26 +180,10 @@ pub fn sobel3x3_simd(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxR
     // For simplicity, we process 8 pixels at a time for i16 output
 
     for y in 1..height - 1 {
+        // Sobel 3x3 currently runs scalar — a real SSE2/AVX2 path needs
+        // shuffle-heavy kernel loads (SSSE3 _mm_shuffle_epi8 makes this
+        // much cleaner) and is tracked as a follow-up.
         let mut x = 1;
-
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            use core::arch::x86_64::*;
-
-            // Process in chunks of 8 for SSE2
-            while x + 7 < width - 1 {
-                let row_offset = y * width + x;
-
-                // Load 3 rows of 10 pixels each (for the 3x3 kernel)
-                // This is a simplified version - full optimization would unroll more
-
-                // For now, use scalar for the complex Sobel kernel
-                // (Full SIMD would need careful shuffling for the kernel pattern)
-                x += 1;
-            }
-        }
-
-        // Scalar processing for remaining pixels
         while x < width - 1 {
             let idx = y * width + x;
 
