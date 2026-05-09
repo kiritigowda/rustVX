@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""
+Perf-regression gate for rustVX pull requests.
+
+Compares two openvx-mark `benchmark_results.json` reports captured on
+the SAME runner VM (so hardware variance is zero) — one from the PR's
+build, one from the merge target's (main's) build — and decides
+whether the PR regresses performance against main.
+
+Exits 0 on pass / acceptable change, exits 1 on regression. Always
+writes a markdown verdict block to stdout, suitable for piping into
+`$GITHUB_STEP_SUMMARY`.
+
+Defaults:
+    --geomean-floor 0.97   (no more than 3% aggregate slowdown)
+    --kernel-floor  0.85   (no kernel may regress more than 15%)
+    --max-cv        5.0    (skip kernels above this run-to-run noise)
+
+Each filter is applied independently; a kernel that doesn't pass the
+filters (unverified, noisy, missing on either side) is reported in a
+"skipped" section but does not contribute to the gate decision.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+from dataclasses import dataclass
+from typing import Iterable
+
+
+# ---------------------------------------------------------------------------
+# Data shape
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Row:
+    name: str
+    mode: str
+    resolution: str
+    mps: float
+    sustained_ms: float
+    cv_percent: float
+    verified: bool
+    stability_warning: bool
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.name, self.mode, self.resolution)
+
+
+def _row_from(d: dict) -> Row:
+    wc = d.get("wall_clock", {}) or {}
+    return Row(
+        name=d.get("name", "<unknown>"),
+        mode=d.get("mode", ""),
+        resolution=d.get("resolution", ""),
+        mps=float(d.get("megapixels_per_sec") or 0.0),
+        sustained_ms=float(d.get("sustained_ms") or 0.0),
+        cv_percent=float(wc.get("cv_percent") or 0.0),
+        verified=bool(d.get("verified", True)),
+        stability_warning=bool(d.get("stability_warning", False)),
+    )
+
+
+def _load(path: str) -> dict[tuple[str, str, str], Row]:
+    with open(path) as f:
+        report = json.load(f)
+    out: dict[tuple[str, str, str], Row] = {}
+    for r in report.get("results", []):
+        row = _row_from(r)
+        out[row.key] = row
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Verdict
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class KernelVerdict:
+    key: tuple[str, str, str]
+    main: Row
+    pr: Row
+    ratio: float  # pr_mps / main_mps
+    status: str  # "ok" | "warn" | "fail"
+    reason: str = ""
+
+
+@dataclass
+class SkipRecord:
+    key: tuple[str, str, str]
+    reason: str
+
+
+def _classify(
+    main: Row,
+    pr: Row,
+    *,
+    kernel_floor: float,
+    warn_floor: float,
+) -> KernelVerdict:
+    if main.mps <= 0 or pr.mps <= 0:
+        return KernelVerdict(
+            key=main.key,
+            main=main,
+            pr=pr,
+            ratio=0.0,
+            status="fail",
+            reason="zero throughput",
+        )
+    ratio = pr.mps / main.mps
+    if ratio < kernel_floor:
+        return KernelVerdict(
+            key=main.key,
+            main=main,
+            pr=pr,
+            ratio=ratio,
+            status="fail",
+            reason=f"PR/main = {ratio:.3f}x < kernel floor {kernel_floor:.3f}x",
+        )
+    if ratio < warn_floor:
+        return KernelVerdict(
+            key=main.key,
+            main=main,
+            pr=pr,
+            ratio=ratio,
+            status="warn",
+            reason=f"PR/main = {ratio:.3f}x < warn floor {warn_floor:.3f}x",
+        )
+    return KernelVerdict(
+        key=main.key,
+        main=main,
+        pr=pr,
+        ratio=ratio,
+        status="ok",
+        reason="",
+    )
+
+
+def _geomean(values: Iterable[float]) -> float:
+    vals = [v for v in values if v > 0]
+    if not vals:
+        return 1.0
+    return math.exp(sum(math.log(v) for v in vals) / len(vals))
+
+
+# ---------------------------------------------------------------------------
+# Markdown rendering
+# ---------------------------------------------------------------------------
+
+
+def _emoji(status: str) -> str:
+    return {"ok": "[ok]", "warn": "[warn]", "fail": "[fail]"}[status]
+
+
+def _render(
+    *,
+    verdicts: list[KernelVerdict],
+    skipped: list[SkipRecord],
+    geomean_ratio: float,
+    geomean_floor: float,
+    kernel_floor: float,
+    warn_floor: float,
+    max_cv: float,
+    overall_pass: bool,
+) -> str:
+    lines: list[str] = []
+    lines.append("## Perf gate (rustVX-PR vs rustVX-main)")
+    lines.append("")
+    lines.append(
+        "Both rustVX builds were benchmarked on the **same runner VM** "
+        "with the same workload, so hardware variance is zero — the "
+        "ratios below are pure software-side deltas attributable to "
+        "this PR."
+    )
+    lines.append("")
+
+    if overall_pass:
+        lines.append(
+            "### **Verdict: PASS** "
+            f"(geomean PR/main = {geomean_ratio:.3f}x, "
+            f"{_count_status(verdicts, 'fail')} hard failures, "
+            f"{_count_status(verdicts, 'warn')} warnings)"
+        )
+    else:
+        lines.append(
+            "### **Verdict: FAIL** "
+            f"(geomean PR/main = {geomean_ratio:.3f}x, "
+            f"floor = {geomean_floor:.3f}x; "
+            f"{_count_status(verdicts, 'fail')} kernel(s) below "
+            f"per-kernel floor of {kernel_floor:.3f}x)"
+        )
+    lines.append("")
+    lines.append("### Thresholds")
+    lines.append("")
+    lines.append("| Knob | Value | Meaning |")
+    lines.append("|---|---:|---|")
+    lines.append(f"| Geomean floor   | {geomean_floor:.3f}x | "
+                 f"PR may not be more than {(1 - geomean_floor) * 100:.1f}% slower in aggregate. |")
+    lines.append(f"| Per-kernel floor | {kernel_floor:.3f}x | "
+                 f"No single kernel may regress more than {(1 - kernel_floor) * 100:.1f}%. |")
+    lines.append(f"| Warn floor      | {warn_floor:.3f}x | "
+                 f"Soft warn for any kernel slower than {(1 - warn_floor) * 100:.1f}%. |")
+    lines.append(f"| Max CV%         | {max_cv:.1f}% | "
+                 f"Kernels with run-to-run CV above this are skipped. |")
+    lines.append("")
+
+    # Failures first, then warnings, then ok rows (sorted by ratio).
+    fails = [v for v in verdicts if v.status == "fail"]
+    warns = [v for v in verdicts if v.status == "warn"]
+    oks = [v for v in verdicts if v.status == "ok"]
+
+    if fails:
+        lines.append("### Hard regressions (block merge)")
+        lines.append("")
+        lines.append(_table([sorted(fails, key=lambda v: v.ratio)]))
+        lines.append("")
+
+    if warns:
+        lines.append("### Soft regressions (warn only)")
+        lines.append("")
+        lines.append(_table([sorted(warns, key=lambda v: v.ratio)]))
+        lines.append("")
+
+    if oks:
+        # Show top regressions among oks (most useful) plus top wins.
+        oks_sorted = sorted(oks, key=lambda v: v.ratio)
+        worst_oks = oks_sorted[:5]
+        best_oks = list(reversed(oks_sorted[-5:]))
+        lines.append(
+            f"### Healthy kernels ({len(oks)} total — showing 5 closest to floor and 5 biggest wins)"
+        )
+        lines.append("")
+        lines.append(_table([worst_oks, best_oks]))
+        lines.append("")
+
+    if skipped:
+        lines.append(f"### Skipped ({len(skipped)})")
+        lines.append("")
+        lines.append("| Kernel | Mode | Resolution | Reason |")
+        lines.append("|---|---|---|---|")
+        for s in sorted(skipped, key=lambda x: x.key):
+            n, m, r = s.key
+            lines.append(f"| `{n}` | {m} | {r} | {s.reason} |")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _count_status(verdicts: list[KernelVerdict], status: str) -> int:
+    return sum(1 for v in verdicts if v.status == status)
+
+
+def _table(groups: list[list[KernelVerdict]]) -> str:
+    rows: list[str] = []
+    rows.append("| Status | Kernel | Mode | Res | main MP/s | PR MP/s | PR/main | main ms | PR ms | Notes |")
+    rows.append("|:---|---|---|---|---:|---:|---:|---:|---:|---|")
+    for group in groups:
+        for v in group:
+            n, m, r = v.key
+            rows.append(
+                f"| {_emoji(v.status)} | `{n}` | {m} | {r} | "
+                f"{v.main.mps:.2f} | {v.pr.mps:.2f} | "
+                f"**{v.ratio:.3f}x** | "
+                f"{v.main.sustained_ms:.3f} | {v.pr.sustained_ms:.3f} | "
+                f"{v.reason} |"
+            )
+    return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    p.add_argument("main_json", help="benchmark_results.json from main's rustVX run")
+    p.add_argument("pr_json", help="benchmark_results.json from PR's rustVX run")
+    p.add_argument("--geomean-floor", type=float, default=0.97,
+                   help="Aggregate geomean floor (default 0.97 = up to 3%% regression)")
+    p.add_argument("--kernel-floor", type=float, default=0.85,
+                   help="Per-kernel floor (default 0.85 = up to 15%% regression)")
+    p.add_argument("--warn-floor", type=float, default=0.97,
+                   help="Soft warn floor (default 0.97 = warn between -3%% and -15%%)")
+    p.add_argument("--max-cv", type=float, default=5.0,
+                   help="Skip kernels whose CV%% exceeds this threshold (default 5.0)")
+    p.add_argument("--summary-out", default=None,
+                   help="Append the markdown verdict to this file (e.g. $GITHUB_STEP_SUMMARY)")
+    p.add_argument("--skip-name", action="append", default=[],
+                   help="Skip a kernel by name (case-sensitive). May be repeated.")
+    args = p.parse_args(argv)
+
+    main_rows = _load(args.main_json)
+    pr_rows = _load(args.pr_json)
+
+    skipped: list[SkipRecord] = []
+    verdicts: list[KernelVerdict] = []
+
+    skip_names = set(args.skip_name)
+
+    for key in sorted(set(main_rows) & set(pr_rows)):
+        m, r = main_rows[key], pr_rows[key]
+        if m.name in skip_names:
+            skipped.append(SkipRecord(key=key, reason="explicitly skipped by --skip-name"))
+            continue
+        if not (m.verified and r.verified):
+            skipped.append(SkipRecord(key=key, reason="unverified on at least one side"))
+            continue
+        if m.stability_warning or r.stability_warning:
+            skipped.append(SkipRecord(key=key, reason="stability_warning on at least one side"))
+            continue
+        if m.cv_percent > args.max_cv or r.cv_percent > args.max_cv:
+            skipped.append(SkipRecord(
+                key=key,
+                reason=f"CV% over {args.max_cv}% (main={m.cv_percent:.2f}% pr={r.cv_percent:.2f}%)",
+            ))
+            continue
+
+        verdicts.append(_classify(
+            m, r,
+            kernel_floor=args.kernel_floor,
+            warn_floor=args.warn_floor,
+        ))
+
+    # Kernels missing on either side are also reported.
+    for key in sorted(set(main_rows) - set(pr_rows)):
+        skipped.append(SkipRecord(key=key, reason="missing in PR run (new on main?)"))
+    for key in sorted(set(pr_rows) - set(main_rows)):
+        skipped.append(SkipRecord(key=key, reason="missing in main run (new in PR — not gated)"))
+
+    geomean_ratio = _geomean(v.ratio for v in verdicts if v.ratio > 0)
+
+    has_hard_fail = any(v.status == "fail" for v in verdicts)
+    geomean_fail = geomean_ratio < args.geomean_floor and len(verdicts) > 0
+    overall_pass = not (has_hard_fail or geomean_fail)
+
+    md = _render(
+        verdicts=verdicts,
+        skipped=skipped,
+        geomean_ratio=geomean_ratio,
+        geomean_floor=args.geomean_floor,
+        kernel_floor=args.kernel_floor,
+        warn_floor=args.warn_floor,
+        max_cv=args.max_cv,
+        overall_pass=overall_pass,
+    )
+
+    sys.stdout.write(md)
+    if args.summary_out:
+        with open(args.summary_out, "a") as f:
+            f.write(md)
+
+    if not overall_pass:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
