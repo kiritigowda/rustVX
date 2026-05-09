@@ -42,10 +42,19 @@ jobs:
         # x86_64 silicon (and ARM-based pools exist too). Rather than
         # hard-coding a vendor, we read /proc/cpuinfo / uname and turn on
         # the matching openvx-vision SIMD Cargo features (sse2 / avx2 on
-        # x86_64, neon on aarch64). RUSTFLAGS=-C target-cpu=native lets
-        # rustc auto-vectorize the rest of the workspace using whatever
-        # the build host actually supports — this is the path AMD EPYC
-        # runners take to pick up AVX2 automatically.
+        # x86_64, neon on aarch64).
+        #
+        # IMPORTANT: do NOT use `-C target-cpu=native` here. The build,
+        # CTS, and benchmark jobs run on independent runner VMs; the build
+        # host may expose ISA extensions (e.g. AVX-512) that a downstream
+        # CTS runner does not, which produces SIGILL ("Illegal instruction")
+        # when the artifact is loaded on a less-capable host. Instead we
+        # pin x86_64 to the portable `x86-64-v3` microarch level (SSE4.2 +
+        # AVX + AVX2 + BMI1/2 + FMA + F16C) which every modern AMD EPYC
+        # and Intel Xeon in GitHub's Azure pool supports, and rely on
+        # `#[target_feature]`-gated intrinsics (already in openvx-vision)
+        # for anything beyond that — those paths dispatch via
+        # `is_x86_feature_detected!` at runtime.
         run: |
           set -euo pipefail
           ARCH=$(uname -m)
@@ -60,17 +69,30 @@ jobs:
           echo "CPU vendor   : $VENDOR"
 
           CARGO_FEATURES=""
-          RUSTFLAGS_VAL="-C target-cpu=native"
+          RUSTFLAGS_VAL=""
 
           case "$ARCH" in
             x86_64|amd64)
+              HAS_SSE2=false
+              HAS_AVX2=false
               if echo "$FLAGS" | grep -qw sse2; then
                 CARGO_FEATURES="$CARGO_FEATURES openvx-vision/sse2"
+                HAS_SSE2=true
                 echo "  + sse2 detected"
               fi
               if echo "$FLAGS" | grep -qw avx2; then
                 CARGO_FEATURES="$CARGO_FEATURES openvx-vision/avx2"
+                HAS_AVX2=true
                 echo "  + avx2 detected"
+              fi
+              # Pick the most permissive *portable* microarch level that
+              # the build host satisfies. v3 is safe on every GitHub
+              # Linux runner today (AMD EPYC Milan/Genoa, Intel Cascade
+              # Lake / Ice Lake), v2 is universal on x86_64 cloud silicon.
+              if [ "$HAS_AVX2" = true ]; then
+                RUSTFLAGS_VAL="-C target-cpu=x86-64-v3"
+              elif [ "$HAS_SSE2" = true ]; then
+                RUSTFLAGS_VAL="-C target-cpu=x86-64-v2"
               fi
               ;;
             aarch64|arm64)
@@ -84,7 +106,7 @@ jobs:
 
           CARGO_FEATURES=$(echo "$CARGO_FEATURES" | xargs)
           echo "Cargo features: ${CARGO_FEATURES:-<none>}"
-          echo "RUSTFLAGS    : $RUSTFLAGS_VAL"
+          echo "RUSTFLAGS    : ${RUSTFLAGS_VAL:-<none>}"
 
           {
             echo "arch=$ARCH"
