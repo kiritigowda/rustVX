@@ -16,7 +16,6 @@ pub fn gaussian3x3_simd(src: &Image, dst: &Image) -> VxResult<()> {
     }
 
     let src_data = src.data();
-    // Use saturating_mul to prevent integer overflow
     let temp_size = width.saturating_mul(height);
     let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
@@ -37,7 +36,6 @@ pub fn gaussian3x3_simd(src: &Image, dst: &Image) -> VxResult<()> {
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        // Scalar fallback for unsupported architectures
         crate::simd_utils::scalar::gaussian_h3_scalar(&src_data, &mut temp_buffer, width, height);
         crate::simd_utils::scalar::gaussian_v3_scalar(&temp_buffer, &mut dst_data, width, height);
     }
@@ -56,13 +54,10 @@ pub fn gaussian5x5_simd(src: &Image, dst: &Image) -> VxResult<()> {
     }
 
     let src_data = src.data();
-    // Use saturating_mul to prevent integer overflow
     let temp_size = width.saturating_mul(height);
     let mut temp_buffer = vec![0u8; temp_size];
     let mut dst_data = dst.data_mut();
 
-    // 5x5 kernel: [1, 4, 6, 4, 1] separable
-    // First pass: horizontal
     for y in 0..height {
         for x in 0..width {
             let mut sum: i32 = 0;
@@ -78,7 +73,6 @@ pub fn gaussian5x5_simd(src: &Image, dst: &Image) -> VxResult<()> {
         }
     }
 
-    // Second pass: vertical
     for y in 0..height {
         for x in 0..width {
             let mut sum: i32 = 0;
@@ -109,56 +103,49 @@ pub fn box3x3_simd(src: &Image, dst: &Image) -> VxResult<()> {
     }
 
     let src_data = src.data();
-    // Use saturating_mul to prevent integer overflow
     let temp_size = width.saturating_mul(height);
-    let mut temp_buffer = vec![0u8; temp_size];
+    let mut temp_buffer = vec![0u16; temp_size];
     let mut dst_data = dst.data_mut();
 
-    // Horizontal box filter (moving average)
-    for y in 0..height {
-        // Initialize sliding window sum
-        let mut window_sum = (src_data[y * width] as u32 + src_data[y * width + 1] as u32) * 2
-            + src_data[y * width + 2] as u32;
-
-        for x in 1..width - 1 {
-            temp_buffer[y * width + x] = (window_sum / 3) as u8;
-
-            // Update window
-            if x + 2 < width {
-                window_sum = window_sum + src_data[y * width + x + 2] as u32
-                    - src_data[y * width + x - 1] as u32;
-            }
-        }
-
-        // Handle edges
-        temp_buffer[y * width] =
-            ((src_data[y * width] as u16 + src_data[y * width + 1] as u16) / 2) as u8;
-        temp_buffer[y * width + width - 1] = ((src_data[y * width + width - 2] as u16
-            + src_data[y * width + width - 1] as u16)
-            / 2) as u8;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use crate::x86_64_simd;
+        x86_64_simd::box_h3(src_data.as_ptr(), temp_buffer.as_mut_ptr(), width, height);
+        x86_64_simd::box_v3(temp_buffer.as_ptr(), dst_data.as_mut_ptr(), width, height);
     }
 
-    // Vertical box filter
-    for x in 0..width {
-        // Initialize sliding window sum
-        let mut window_sum = (temp_buffer[x] as u32 + temp_buffer[width + x] as u32) * 2
-            + temp_buffer[2 * width + x] as u32;
-
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // Scalar fallback using the same algorithm as filter.rs::box3x3
+        for y in 0..height {
+            let row = y * width;
+            temp_buffer[row] = src_data[row] as u16 * 2 + src_data[row + 1] as u16;
+            let mut sum = src_data[row] as u16 + src_data[row + 1] as u16 + src_data[row + 2] as u16;
+            temp_buffer[row + 1] = sum;
+            for x in 2..width - 1 {
+                sum += src_data[row + x + 1] as u16 - src_data[row + x - 2] as u16;
+                temp_buffer[row + x] = sum;
+            }
+            temp_buffer[row + width - 1] =
+                src_data[row + width - 2] as u16 + src_data[row + width - 1] as u16 * 2;
+        }
+        for x in 0..width {
+            let mut sum = temp_buffer[x] * 2 + temp_buffer[width + x];
+            dst_data[x] = (sum / 9) as u8;
+        }
         for y in 1..height - 1 {
-            dst_data[y * width + x] = (window_sum / 3) as u8;
-
-            // Update window
-            if y + 2 < height {
-                window_sum = window_sum + temp_buffer[(y + 2) * width + x] as u32
-                    - temp_buffer[(y - 1) * width + x] as u32;
+            for x in 0..width {
+                let sum = temp_buffer[(y - 1) * width + x]
+                    + temp_buffer[y * width + x]
+                    + temp_buffer[(y + 1) * width + x];
+                dst_data[y * width + x] = (sum / 9) as u8;
             }
         }
-
-        // Handle edges
-        dst_data[x] = ((temp_buffer[x] as u16 + temp_buffer[width + x] as u16) / 2) as u8;
-        dst_data[(height - 1) * width + x] = ((temp_buffer[(height - 2) * width + x] as u16
-            + temp_buffer[(height - 1) * width + x] as u16)
-            / 2) as u8;
+        let last = (height - 1) * width;
+        for x in 0..width {
+            let sum = temp_buffer[last - width + x] + temp_buffer[last + x] * 2;
+            dst_data[last + x] = (sum / 9) as u8;
+        }
     }
 
     Ok(())
@@ -176,9 +163,6 @@ pub fn sobel3x3_simd(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxR
 
     let src_data = src.data();
 
-    // Process gradients using SIMD where possible
-    // For simplicity, we process 8 pixels at a time for i16 output
-
     for y in 1..height - 1 {
         // Sobel 3x3 currently runs scalar — a real SSE2/AVX2 path needs
         // shuffle-heavy kernel loads (SSSE3 _mm_shuffle_epi8 makes this
@@ -186,8 +170,6 @@ pub fn sobel3x3_simd(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxR
         let mut x = 1;
         while x < width - 1 {
             let idx = y * width + x;
-
-            // Sobel X: [-1, 0, 1; -2, 0, 2; -1, 0, 1]
             let mut sum_x: i32 = 0;
             for ky in 0..3 {
                 for kx in 0..3 {
@@ -205,8 +187,6 @@ pub fn sobel3x3_simd(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxR
                 }
             }
             grad_x[idx] = sum_x as i16;
-
-            // Sobel Y: [-1, -2, -1; 0, 0, 0; 1, 2, 1]
             let mut sum_y: i32 = 0;
             for ky in 0..3 {
                 for kx in 0..3 {
@@ -224,7 +204,6 @@ pub fn sobel3x3_simd(src: &Image, grad_x: &mut [i16], grad_y: &mut [i16]) -> VxR
                 }
             }
             grad_y[idx] = sum_y as i16;
-
             x += 1;
         }
     }

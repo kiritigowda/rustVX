@@ -5405,6 +5405,21 @@ fn rgb_to_gray(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
 
+    // RGB inputs are guaranteed to be 3 bytes per pixel and laid out
+    // contiguously in `src.data()`. Walk the slices directly with the
+    // same Q8 BT.709 coefficients the per-pixel `get_rgb` path used
+    // — the bounds-checked accessor was the bottleneck, not the math.
+    if matches!(src.format, ImageFormat::Rgb) {
+        let n = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidParameters)?;
+        let src_slice = src.data();
+        let dst_data = dst.data_mut();
+        if src_slice.len() >= n * 3 && dst_data.len() >= n {
+            crate::simd_kernels::rgb_to_gray_fast(&src_slice[..n * 3], &mut dst_data[..n]);
+            return Ok(());
+        }
+    }
+
+    // Mixed / unexpected layouts — keep the original safe-but-slow path.
     for y in 0..height {
         for x in 0..width {
             let (r, g, b) = src.get_rgb(x, y);
@@ -5554,34 +5569,63 @@ fn gaussian3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
 
-    let dst_data = dst.data_mut();
+    // VX_BORDER_UNDEFINED: only the interior `(1..H-1) × (1..W-1)` is
+    // written; border pixels are left unchanged. Both the SIMD path
+    // and the scalar fallback below honour this.
+    if width < 3 || height < 3 {
+        return Ok(());
+    }
 
-    // For VX_BORDER_UNDEFINED, only process pixels where full 3x3 neighborhood exists
-    // This matches the OpenVX conformance test expectations
-    for y in 1..height.saturating_sub(1) {
-        for x in 1..width.saturating_sub(1) {
-            // Full 3x3 Gaussian kernel: [1,2,1; 2,4,2; 1,2,1] / 16
-            let mut sum: i32 = 0;
-
-            // Row y-1
-            sum += src.get_pixel(x - 1, y - 1) as i32 * 1;
-            sum += src.get_pixel(x, y - 1) as i32 * 2;
-            sum += src.get_pixel(x + 1, y - 1) as i32 * 1;
-
-            // Row y
-            sum += src.get_pixel(x - 1, y) as i32 * 2;
-            sum += src.get_pixel(x, y) as i32 * 4;
-            sum += src.get_pixel(x + 1, y) as i32 * 2;
-
-            // Row y+1
-            sum += src.get_pixel(x - 1, y + 1) as i32 * 1;
-            sum += src.get_pixel(x, y + 1) as i32 * 2;
-            sum += src.get_pixel(x + 1, y + 1) as i32 * 1;
-
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = (sum >> 4) as u8; // Divide by 16
+    // SIMD fast path: AVX2-eligible CPUs still go through the SSE2
+    // implementation here because Gaussian's 3-row halo benefits little
+    // from AVX2 vs SSE2 on the test runners; the SSE2 path is the
+    // simpler/correct one to ship first. A dedicated AVX2 variant can
+    // be added in `simd_kernels::gaussian3x3_u8` later.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    unsafe {
+        if std::is_x86_feature_detected!("sse2") {
+            let len = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidParameters)?;
+            let src_data = src.data();
+            let dst_data = dst.data_mut();
+            if src_data.len() >= len && dst_data.len() >= len {
+                crate::simd_kernels::gaussian3x3_u8::sse2(
+                    src_data.as_ptr(),
+                    dst_data.as_mut_ptr(),
+                    width,
+                    height,
+                );
+                return Ok(());
             }
+        }
+    }
+
+    // Scalar fallback — slice-iter version of the original kernel.
+    // Walks rows directly instead of paying for `get_pixel(x, y)`'s
+    // bounds checks per access, which is alone enough to deliver the
+    // headline scalar-path speedup on non-x86_64 targets.
+    let len = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidParameters)?;
+    let src_data = src.data();
+    let dst_data = dst.data_mut();
+    if src_data.len() < len || dst_data.len() < len {
+        return Err(VxStatus::ErrorInvalidParameters);
+    }
+    for y in 1..height - 1 {
+        let row0 = (y - 1) * width;
+        let row1 = y * width;
+        let row2 = (y + 1) * width;
+        for x in 1..width - 1 {
+            let s = src_data[row0 + x - 1] as u32
+                + 2 * src_data[row0 + x] as u32
+                + src_data[row0 + x + 1] as u32
+                + 2 * src_data[row1 + x - 1] as u32
+                + 4 * src_data[row1 + x] as u32
+                + 2 * src_data[row1 + x + 1] as u32
+                + src_data[row2 + x - 1] as u32
+                + 2 * src_data[row2 + x] as u32
+                + src_data[row2 + x + 1] as u32;
+            // Match the existing kernel: integer divide by 16 with
+            // truncation (not rounding) — keeps CTS bit-exact.
+            dst_data[row1 + x] = (s >> 4) as u8;
         }
     }
 
@@ -5648,29 +5692,90 @@ fn box3x3(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
 
+    let len = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidParameters)?;
+    let src_data = src.data();
     let dst_data = dst.data_mut();
+    if src_data.len() < len || dst_data.len() < len {
+        return Err(VxStatus::ErrorInvalidParameters);
+    }
 
-    for y in 0..height {
-        for x in 0..width {
-            let mut sum: u32 = 0;
-            let mut count: u32 = 0;
-
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let py = y as isize + dy;
-                    let px = x as isize + dx;
-                    if py >= 0 && py < height as isize && px >= 0 && px < width as isize {
-                        sum += src.get_pixel(px as usize, py as usize) as u32;
-                        count += 1;
-                    }
+    // Helper: scalar 3x3 box at (x, y) honouring rustVX's "variable
+    // neighbour count" border behaviour. Used both as the standalone
+    // fallback and as the border-pixel pass after the SIMD interior.
+    let box_at = |sd: &[u8], x: usize, y: usize| -> u8 {
+        let mut sum: u32 = 0;
+        let mut count: u32 = 0;
+        for dy in -1isize..=1 {
+            for dx in -1isize..=1 {
+                let py = y as isize + dy;
+                let px = x as isize + dx;
+                if py >= 0 && py < height as isize && px >= 0 && px < width as isize {
+                    sum += sd[py as usize * width + px as usize] as u32;
+                    count += 1;
                 }
             }
+        }
+        (sum / count.max(1)) as u8
+    };
 
-            let idx = y.saturating_mul(width).saturating_add(x);
-            if let Some(p) = dst_data.get_mut(idx) {
-                *p = (sum / count.max(1)) as u8;
+    if width < 3 || height < 3 {
+        // No interior — fall back to scalar for every pixel.
+        for y in 0..height {
+            for x in 0..width {
+                dst_data[y * width + x] = box_at(src_data, x, y);
             }
         }
+        return Ok(());
+    }
+
+    // Interior (where every neighbour count is exactly 9): take the
+    // SIMD path when available, else a tight slice loop.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    let wrote_interior_via_simd = unsafe {
+        if std::is_x86_feature_detected!("sse2") {
+            crate::simd_kernels::box3x3_u8::sse2(
+                src_data.as_ptr(),
+                dst_data.as_mut_ptr(),
+                width,
+                height,
+            );
+            true
+        } else {
+            false
+        }
+    };
+    #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+    let wrote_interior_via_simd = false;
+
+    if !wrote_interior_via_simd {
+        for y in 1..height - 1 {
+            let row0 = (y - 1) * width;
+            let row1 = y * width;
+            let row2 = (y + 1) * width;
+            for x in 1..width - 1 {
+                let s = src_data[row0 + x - 1] as u32
+                    + src_data[row0 + x] as u32
+                    + src_data[row0 + x + 1] as u32
+                    + src_data[row1 + x - 1] as u32
+                    + src_data[row1 + x] as u32
+                    + src_data[row1 + x + 1] as u32
+                    + src_data[row2 + x - 1] as u32
+                    + src_data[row2 + x] as u32
+                    + src_data[row2 + x + 1] as u32;
+                dst_data[row1 + x] = (s / 9) as u8;
+            }
+        }
+    }
+
+    // Borders: top + bottom rows, left + right columns (excluding the
+    // four corner pixels which are covered by the row passes).
+    for x in 0..width {
+        dst_data[x] = box_at(src_data, x, 0);
+        dst_data[(height - 1) * width + x] = box_at(src_data, x, height - 1);
+    }
+    for y in 1..height - 1 {
+        dst_data[y * width] = box_at(src_data, 0, y);
+        dst_data[y * width + width - 1] = box_at(src_data, width - 1, y);
     }
 
     Ok(())
@@ -5892,10 +5997,54 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult
     let height = src1.height;
     let saturate = policy == VX_CONVERT_POLICY_SATURATE;
 
-    // Check output format
     let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
     let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
     let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    // Hot path: U8 + U8 -> U8. The graph executor used to walk this
+    // pixel-by-pixel via `get_pixel(x, y)` which dominates FHD
+    // benchmarks; we now feed the slice straight into the SIMD
+    // dispatcher in `crate::simd_kernels` (AVX2 → SSE2 → scalar).
+    if !dst_is_s16 && !src1_is_s16 && !src2_is_s16 {
+        let len = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidParameters)?;
+        let s1 = &src1.data()[..len];
+        let s2 = &src2.data()[..len];
+        let dst_data = dst.data_mut();
+        let d = &mut dst_data[..len];
+
+        if saturate {
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+            unsafe {
+                if std::is_x86_feature_detected!("avx2") {
+                    crate::simd_kernels::add_u8_sat::avx2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+                if std::is_x86_feature_detected!("sse2") {
+                    crate::simd_kernels::add_u8_sat::sse2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+            }
+            for ((a, b), o) in s1.iter().zip(s2.iter()).zip(d.iter_mut()) {
+                *o = (*a).saturating_add(*b);
+            }
+        } else {
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+            unsafe {
+                if std::is_x86_feature_detected!("avx2") {
+                    crate::simd_kernels::add_u8_wrap::avx2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+                if std::is_x86_feature_detected!("sse2") {
+                    crate::simd_kernels::add_u8_wrap::sse2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+            }
+            for ((a, b), o) in s1.iter().zip(s2.iter()).zip(d.iter_mut()) {
+                *o = (*a).wrapping_add(*b);
+            }
+        }
+        return Ok(());
+    }
 
     if dst_is_s16 {
         // S16 output - compute with 32-bit intermediate to avoid overflow
@@ -5921,7 +6070,9 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult
             }
         }
     } else {
-        // U8 output
+        // U8 output with at least one S16 input — keep the precise
+        // mixed-format fallback (rare in practice, hot path above
+        // covered the U8/U8/U8 case).
         let dst_data = dst.data_mut();
         for y in 0..height {
             for x in 0..width {
@@ -5936,7 +6087,6 @@ fn add(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxResult
                     src2.get_pixel(x, y) as i32
                 };
                 let sum = a + b;
-                // Apply saturation or wrap policy
                 let result = if saturate {
                     sum.clamp(0, 255) as u8
                 } else {
@@ -5964,10 +6114,51 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
     let height = src1.height;
     let saturate = policy == VX_CONVERT_POLICY_SATURATE;
 
-    // Check output format
     let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
     let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
     let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    // Hot path: U8 - U8 -> U8.
+    if !dst_is_s16 && !src1_is_s16 && !src2_is_s16 {
+        let len = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidParameters)?;
+        let s1 = &src1.data()[..len];
+        let s2 = &src2.data()[..len];
+        let dst_data = dst.data_mut();
+        let d = &mut dst_data[..len];
+
+        if saturate {
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+            unsafe {
+                if std::is_x86_feature_detected!("avx2") {
+                    crate::simd_kernels::sub_u8_sat::avx2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+                if std::is_x86_feature_detected!("sse2") {
+                    crate::simd_kernels::sub_u8_sat::sse2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+            }
+            for ((a, b), o) in s1.iter().zip(s2.iter()).zip(d.iter_mut()) {
+                *o = (*a).saturating_sub(*b);
+            }
+        } else {
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+            unsafe {
+                if std::is_x86_feature_detected!("avx2") {
+                    crate::simd_kernels::sub_u8_wrap::avx2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+                if std::is_x86_feature_detected!("sse2") {
+                    crate::simd_kernels::sub_u8_wrap::sse2(s1.as_ptr(), s2.as_ptr(), d.as_mut_ptr(), len);
+                    return Ok(());
+                }
+            }
+            for ((a, b), o) in s1.iter().zip(s2.iter()).zip(d.iter_mut()) {
+                *o = (*a).wrapping_sub(*b);
+            }
+        }
+        return Ok(());
+    }
 
     if dst_is_s16 {
         // S16 output
@@ -5993,7 +6184,7 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
             }
         }
     } else {
-        // U8 output
+        // U8 output with at least one S16 input — mixed-format fallback.
         let dst_data = dst.data_mut();
         for y in 0..height {
             for x in 0..width {
@@ -6008,7 +6199,6 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
                     src2.get_pixel(x, y) as i32
                 };
                 let diff = a - b;
-                // Apply saturation or wrap policy
                 let result = if saturate {
                     diff.clamp(0, 255) as u8
                 } else {

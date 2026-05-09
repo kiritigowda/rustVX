@@ -181,21 +181,32 @@ pub fn add(src1: &Image, src2: &Image, dst: &Image) -> VxResult<()> {
         return Err(openvx_core::VxStatus::ErrorInvalidDimension);
     }
 
-    let width = src1.width();
-    let height = src1.height();
-
-    let mut dst_data = dst.data_mut();
-
-    for y in 0..height {
-        for x in 0..width {
-            let a = src1.get_pixel(x, y) as u16;
-            let b = src2.get_pixel(x, y) as u16;
-            let sum = a + b;
-            dst_data[y * width + x] = sum.min(255) as u8;
-        }
+    #[cfg(feature = "simd")]
+    {
+        return crate::arithmetic_simd::add_images_simd(src1, src2, dst);
     }
 
-    Ok(())
+    #[cfg(not(feature = "simd"))]
+    {
+        let width = src1.width();
+        let height = src1.height();
+        let len = width * height;
+
+        let src1_data = src1.data();
+        let src2_data = src2.data();
+        let mut dst_data = dst.data_mut();
+
+        let src1_slice = &src1_data[..len];
+        let src2_slice = &src2_data[..len];
+        let dst_slice = &mut dst_data[..len];
+
+        for ((a, b), d) in src1_slice.iter().zip(src2_slice.iter()).zip(dst_slice.iter_mut()) {
+            let sum = *a as u16 + *b as u16;
+            *d = sum.min(255) as u8;
+        }
+
+        Ok(())
+    }
 }
 
 /// Pixel-wise subtraction with saturation

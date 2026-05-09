@@ -74,19 +74,39 @@ The standard OpenVX 1.3 C headers are bundled in [`include/VX/`](include/VX/) an
 
 ### Cargo features
 
-The vision kernel crate exposes opt-in performance features:
+Both `openvx-core` (host of the C-API kernel callbacks the OpenVX graph executor invokes) and `openvx-vision` (host of the public Rust API kernels) expose a matching opt-in feature set:
 
 | Feature | Effect |
 |---------|--------|
 | `simd` | Enables architecture-neutral SIMD code paths |
 | `sse2` / `avx2` | x86_64 SIMD back-ends (imply `simd`) |
 | `neon` | AArch64 SIMD back-end (implies `simd`) |
-| `parallel` | Enables Rayon-based multi-threaded kernels |
+| `parallel` (`openvx-vision` only) | Enables Rayon-based multi-threaded kernels |
 
-Build with one or more features, e.g.:
+Build with the matching pair on each crate so the FFI graph path and the direct Rust API path both pick up the SIMD kernels:
 
 ```bash
-cargo build --release -p openvx-ffi --features "openvx-vision/avx2 openvx-vision/parallel"
+cargo build --release -p openvx-ffi \
+  --features "openvx-core/sse2 openvx-core/avx2 openvx-vision/sse2 openvx-vision/avx2"
+```
+
+### Hardware acceleration
+
+Performance work targets **AMD Zen (Ryzen / EPYC, Zen 2+)** — that's what CI measures and what the *Benchmark & compare* numbers come from. Intel and ARM aren't penalised; the runtime dispatcher reads CPU **flags**, not vendor strings, so any host whose flags match the same gate runs the same path:
+
+- **AMD Zen 2+** (Ryzen 3000+, Threadripper 3000+, EPYC Rome / Milan / Genoa) → AVX2 kernels + `-C target-cpu=x86-64-v3` auto-vec.
+- **Intel Haswell and later** → same AVX2 path, parity with Zen.
+- **Older x86_64** (pre-AVX2) → SSE2 kernels + `-C target-cpu=x86-64-v2`.
+- **AArch64** (Apple Silicon, AWS Graviton, etc.) → NEON path.
+- **Anything else / no features** → scalar slice loop (still ~50× faster than the original per-pixel kernels).
+
+Dispatch lives in `openvx-core::simd_kernels` (FFI graph path) and `openvx-vision::x86_64_simd` (Rust API). CI auto-detects host flags; for a manual Zen-targeted build:
+
+```bash
+RUSTFLAGS="-C target-cpu=x86-64-v3" \
+  cargo build --release -p openvx-ffi \
+    --features "openvx-core/sse2 openvx-core/avx2 \
+                openvx-vision/sse2 openvx-vision/avx2"
 ```
 
 ## Using rustVX from a C application

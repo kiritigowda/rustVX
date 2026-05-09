@@ -604,20 +604,32 @@ pub fn rgb_to_gray(src: &Image, dst: &Image) -> VxResult<()> {
         return Err(openvx_core::VxStatus::ErrorInvalidFormat);
     }
 
-    let width = src.width();
-    let height = src.height();
-    let mut dst_data = dst.data_mut();
-
-    // BT.709 coefficients matching CTS reference: Y = (int)(R*0.2126 + G*0.7152 + B*0.0722 + 0.5)
-    for y in 0..height {
-        for x in 0..width {
-            let (r, g, b) = src.get_rgb(x, y);
-            let gray = (r as f32 * 0.2126 + g as f32 * 0.7152 + b as f32 * 0.0722 + 0.5) as i32;
-            dst_data[y * width + x] = gray.clamp(0, 255) as u8;
-        }
+    #[cfg(feature = "simd")]
+    {
+        return crate::color_simd::rgb_to_gray_auto(src, dst);
     }
 
-    Ok(())
+    #[cfg(not(feature = "simd"))]
+    {
+        let width = src.width();
+        let height = src.height();
+        let num_pixels = width * height;
+        let src_data = src.data();
+        let mut dst_data = dst.data_mut();
+
+        // BT.709: Y = 0.2126*R + 0.7152*G + 0.0722*B
+        // Using fixed-point with +127 rounding: Y = (54*R + 183*G + 18*B + 127) >> 8
+        // This approximates /255 and avoids per-pixel division
+        for i in 0..num_pixels {
+            let r = src_data[i * 3] as u32;
+            let g = src_data[i * 3 + 1] as u32;
+            let b = src_data[i * 3 + 2] as u32;
+            let gray = (54 * r + 183 * g + 18 * b + 127) >> 8;
+            dst_data[i] = gray.min(255) as u8;
+        }
+
+        Ok(())
+    }
 }
 
 /// Grayscale to RGB
