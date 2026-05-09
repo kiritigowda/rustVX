@@ -1081,6 +1081,8 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
                 ("org.khronos.openvx.subtract", vec![3]), // [in1, in2, policy_scalar, output]
+                ("org.khronos.openvx.min", vec![2]), // [in1, in2, output] (Enhanced Vision)
+                ("org.khronos.openvx.max", vec![2]), // [in1, in2, output] (Enhanced Vision)
                 ("org.khronos.openvx.warp_affine", vec![3]), // [input, matrix, type, output]
                 ("org.khronos.openvx.warp_perspective", vec![3]),
                 ("org.khronos.openvx.remap", vec![3]),
@@ -3087,6 +3089,46 @@ fn dispatch_kernel_with_border_impl(
                         in1,
                         in2,
                         policy,
+                        output,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Min (Enhanced Vision)
+        "org.khronos.openvx.min" => {
+            if params.len() >= 3 {
+                let in1 = params[0] as vx_image;
+                let in2 = params[1] as vx_image;
+                let output = params[2] as vx_image;
+                if !in1.is_null() && !in2.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_min_impl(
+                        unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
+                        in1,
+                        in2,
+                        output,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Max (Enhanced Vision)
+        "org.khronos.openvx.max" => {
+            if params.len() >= 3 {
+                let in1 = params[0] as vx_image;
+                let in2 = params[1] as vx_image;
+                let output = params[2] as vx_image;
+                if !in1.is_null() && !in2.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_max_impl(
+                        unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
+                        in1,
+                        in2,
                         output,
                     )
                 } else {
@@ -9544,6 +9586,60 @@ pub extern "C" fn vxMultiplyNode(
     node
 }
 
+/// `vxMinNode` — Enhanced Vision pixel-wise minimum.
+///
+/// Per OpenVX 1.3 §3 (Enhanced Vision Functions / `vxMinNode`), `in1`,
+/// `in2`, and `out` must all be the same dimension and matching format
+/// (`VX_DF_IMAGE_U8` *or* `VX_DF_IMAGE_S16`). The 3-parameter kernel takes
+/// no policy/scalar arguments.
+#[no_mangle]
+pub extern "C" fn vxMinNode(
+    graph: vx_graph,
+    in1: vx_image,
+    in2: vx_image,
+    out: vx_image,
+) -> vx_node {
+    if graph.is_null() || in1.is_null() || in2.is_null() || out.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.min",
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            out as vx_reference,
+        ],
+    )
+}
+
+/// `vxMaxNode` — Enhanced Vision pixel-wise maximum.
+///
+/// Same dimension/format contract as `vxMinNode`; the per-pixel reduction
+/// is `max(in1, in2)`.
+#[no_mangle]
+pub extern "C" fn vxMaxNode(
+    graph: vx_graph,
+    in1: vx_image,
+    in2: vx_image,
+    out: vx_image,
+) -> vx_node {
+    if graph.is_null() || in1.is_null() || in2.is_null() || out.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.max",
+        &[
+            in1 as vx_reference,
+            in2 as vx_reference,
+            out as vx_reference,
+        ],
+    )
+}
+
 #[no_mangle]
 pub extern "C" fn vxMinMaxLocNode(
     graph: vx_graph,
@@ -10479,6 +10575,28 @@ pub extern "C" fn vxuSubtract(
     output: vx_image,
 ) -> i32 {
     crate::vxu_impl::vxu_subtract_impl(context, in1, in2, _policy, output)
+}
+
+/// `vxuMin` — Enhanced Vision immediate-mode pixel-wise minimum.
+#[no_mangle]
+pub extern "C" fn vxuMin(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    out: vx_image,
+) -> i32 {
+    crate::vxu_impl::vxu_min_impl(context, in1, in2, out)
+}
+
+/// `vxuMax` — Enhanced Vision immediate-mode pixel-wise maximum.
+#[no_mangle]
+pub extern "C" fn vxuMax(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    out: vx_image,
+) -> i32 {
+    crate::vxu_impl::vxu_max_impl(context, in1, in2, out)
 }
 
 #[no_mangle]
@@ -12629,3 +12747,336 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
 
     VX_SUCCESS
 }
+
+// ============================================================================
+// Enhanced Vision link stubs
+// ============================================================================
+//
+// The CTS executable always compiles every test case that is gated on
+// `#ifdef OPENVX_USE_ENHANCED_VISION`, so the test binary refuses to link
+// unless rustVX exposes the entire Enhanced Vision symbol surface — even
+// the kernels Phase 1 does not yet implement (BilateralFilter, NonMaxSuppression,
+// MatchTemplate, LBP, HOG, ScalarOperation, Select, Tensor*, etc.).
+//
+// To unblock the Phase-1 CI job (which filters to just `Min.*:Max.*`), we
+// publish lightweight stubs for every remaining Enhanced Vision symbol:
+//   - graph node constructors (`vx*Node`) return NULL,
+//   - immediate-mode entry points (`vxu*`) return `VX_ERROR_NOT_IMPLEMENTED`,
+//   - tensor handle helpers return NULL / error.
+//
+// These stubs are intentionally narrow and will be replaced one-by-one as
+// later phases implement the underlying kernels.
+
+const VX_ERROR_NOT_IMPLEMENTED: vx_status = -29;
+
+macro_rules! ev_node_stub {
+    ($name:ident ( $($arg:ident : $ty:ty),* $(,)? )) => {
+        #[no_mangle]
+        pub extern "C" fn $name($($arg: $ty),*) -> vx_node {
+            $(let _ = $arg;)*
+            std::ptr::null_mut()
+        }
+    };
+}
+
+macro_rules! ev_vxu_stub {
+    ($name:ident ( $($arg:ident : $ty:ty),* $(,)? )) => {
+        #[no_mangle]
+        pub extern "C" fn $name($($arg: $ty),*) -> vx_status {
+            $(let _ = $arg;)*
+            VX_ERROR_NOT_IMPLEMENTED
+        }
+    };
+}
+
+// ---- Image kernels still missing ----
+ev_node_stub!(vxBilateralFilterNode(
+    graph: vx_graph,
+    src: vx_tensor,
+    diameter: vx_int32,
+    sigma_space: vx_float32,
+    sigma_values: vx_float32,
+    dst: vx_tensor,
+));
+ev_vxu_stub!(vxuBilateralFilter(
+    context: vx_context,
+    src: vx_tensor,
+    diameter: vx_int32,
+    sigma_space: vx_float32,
+    sigma_values: vx_float32,
+    dst: vx_tensor,
+));
+
+ev_node_stub!(vxLBPNode(
+    graph: vx_graph,
+    input: vx_image,
+    format: vx_enum,
+    kernel_size: vx_int8,
+    output: vx_image,
+));
+ev_vxu_stub!(vxuLBP(
+    context: vx_context,
+    input: vx_image,
+    format: vx_enum,
+    kernel_size: vx_int8,
+    output: vx_image,
+));
+
+ev_node_stub!(vxMatchTemplateNode(
+    graph: vx_graph,
+    src: vx_image,
+    templ: vx_image,
+    matching_method: vx_enum,
+    output: vx_image,
+));
+ev_vxu_stub!(vxuMatchTemplate(
+    context: vx_context,
+    src: vx_image,
+    templ: vx_image,
+    matching_method: vx_enum,
+    output: vx_image,
+));
+
+ev_node_stub!(vxNonMaxSuppressionNode(
+    graph: vx_graph,
+    input: vx_image,
+    mask: vx_image,
+    win_size: vx_int32,
+    output: vx_image,
+));
+ev_vxu_stub!(vxuNonMaxSuppression(
+    context: vx_context,
+    input: vx_image,
+    mask: vx_image,
+    win_size: vx_int32,
+    output: vx_image,
+));
+
+ev_node_stub!(vxHOGCellsNode(
+    graph: vx_graph,
+    input: vx_image,
+    cell_width: vx_int32,
+    cell_height: vx_int32,
+    num_bins: vx_int32,
+    magnitudes: vx_tensor,
+    bins: vx_tensor,
+));
+ev_vxu_stub!(vxuHOGCells(
+    context: vx_context,
+    input: vx_image,
+    cell_width: vx_int32,
+    cell_height: vx_int32,
+    num_bins: vx_int32,
+    magnitudes: vx_tensor,
+    bins: vx_tensor,
+));
+
+ev_node_stub!(vxHOGFeaturesNode(
+    graph: vx_graph,
+    input: vx_image,
+    magnitudes: vx_tensor,
+    bins: vx_tensor,
+    params: *const c_void,
+    hog_param_size: vx_size,
+    features: vx_tensor,
+));
+ev_vxu_stub!(vxuHOGFeatures(
+    context: vx_context,
+    input: vx_image,
+    magnitudes: vx_tensor,
+    bins: vx_tensor,
+    params: *const c_void,
+    hog_param_size: vx_size,
+    features: vx_tensor,
+));
+
+// ---- Immediate wrappers around already-implemented graph nodes ----
+//
+// `vxCopyNode` is currently a NULL stub (per its existing comment) and
+// `vxHoughLinesPNode` is implemented but its `vxu*` immediate counterpart
+// has never been exported. Both stay as stubs in Phase 1; they will be
+// replaced with real implementations in a follow-up PR (the CTS Copy and
+// Houghlinesp tests are not in the Phase-1 filter).
+ev_vxu_stub!(vxuCopy(context: vx_context, input: vx_reference, output: vx_reference));
+ev_vxu_stub!(vxuHoughLinesP(
+    context: vx_context,
+    input: vx_image,
+    params: *const vx_hough_lines_p_t,
+    lines_array: vx_array,
+    num_lines: vx_scalar,
+));
+
+// ---- Control flow ----
+ev_node_stub!(vxScalarOperationNode(
+    graph: vx_graph,
+    op: vx_enum,
+    a: vx_scalar,
+    b: vx_scalar,
+    output: vx_scalar,
+));
+ev_node_stub!(vxSelectNode(
+    graph: vx_graph,
+    condition: vx_scalar,
+    true_value: vx_reference,
+    false_value: vx_reference,
+    output: vx_reference,
+));
+
+// ---- Tensor data-object handle APIs ----
+#[no_mangle]
+pub extern "C" fn vxCreateTensorFromHandle(
+    context: vx_context,
+    number_of_dims: vx_size,
+    dims: *const vx_size,
+    data_type: vx_enum,
+    fixed_point_position: vx_int8,
+    stride: *const vx_size,
+    ptr: *mut c_void,
+    memory_type: vx_enum,
+) -> vx_tensor {
+    let _ = (
+        context,
+        number_of_dims,
+        dims,
+        data_type,
+        fixed_point_position,
+        stride,
+        ptr,
+        memory_type,
+    );
+    std::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn vxCreateImageObjectArrayFromTensor(
+    tensor: vx_tensor,
+    rect: *const vx_rectangle_t,
+    array_size: vx_size,
+    jump: vx_size,
+    image_format: vx_df_image,
+) -> vx_object_array {
+    let _ = (tensor, rect, array_size, jump, image_format);
+    std::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn vxSwapTensorHandle(
+    tensor: vx_tensor,
+    new_ptr: *mut c_void,
+    prev_ptr: *mut *mut c_void,
+) -> vx_status {
+    let _ = (tensor, new_ptr, prev_ptr);
+    VX_ERROR_NOT_IMPLEMENTED
+}
+
+// ---- Tensor kernels ----
+ev_node_stub!(vxTensorAddNode(
+    graph: vx_graph,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    policy: vx_enum,
+    output: vx_tensor,
+));
+ev_vxu_stub!(vxuTensorAdd(
+    context: vx_context,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    policy: vx_enum,
+    output: vx_tensor,
+));
+
+ev_node_stub!(vxTensorSubtractNode(
+    graph: vx_graph,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    policy: vx_enum,
+    output: vx_tensor,
+));
+ev_vxu_stub!(vxuTensorSubtract(
+    context: vx_context,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    policy: vx_enum,
+    output: vx_tensor,
+));
+
+ev_node_stub!(vxTensorMultiplyNode(
+    graph: vx_graph,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    scale: vx_scalar,
+    overflow_policy: vx_enum,
+    rounding_policy: vx_enum,
+    output: vx_tensor,
+));
+ev_vxu_stub!(vxuTensorMultiply(
+    context: vx_context,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    scale: vx_scalar,
+    overflow_policy: vx_enum,
+    rounding_policy: vx_enum,
+    output: vx_tensor,
+));
+
+ev_node_stub!(vxTensorMatrixMultiplyNode(
+    graph: vx_graph,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    input3: vx_tensor,
+    matrix_multiply_params: *const c_void,
+    output: vx_tensor,
+));
+ev_vxu_stub!(vxuTensorMatrixMultiply(
+    context: vx_context,
+    input1: vx_tensor,
+    input2: vx_tensor,
+    input3: vx_tensor,
+    matrix_multiply_params: *const c_void,
+    output: vx_tensor,
+));
+
+ev_node_stub!(vxTensorTableLookupNode(
+    graph: vx_graph,
+    input1: vx_tensor,
+    lut: vx_lut,
+    output: vx_tensor,
+));
+ev_vxu_stub!(vxuTensorTableLookup(
+    context: vx_context,
+    input1: vx_tensor,
+    lut: vx_lut,
+    output: vx_tensor,
+));
+
+ev_node_stub!(vxTensorTransposeNode(
+    graph: vx_graph,
+    input: vx_tensor,
+    output: vx_tensor,
+    dimension1: vx_size,
+    dimension2: vx_size,
+));
+ev_vxu_stub!(vxuTensorTranspose(
+    context: vx_context,
+    input: vx_tensor,
+    output: vx_tensor,
+    dimension1: vx_size,
+    dimension2: vx_size,
+));
+
+ev_node_stub!(vxTensorConvertDepthNode(
+    graph: vx_graph,
+    input: vx_tensor,
+    policy: vx_enum,
+    norm: vx_scalar,
+    offset: vx_scalar,
+    output: vx_tensor,
+));
+ev_vxu_stub!(vxuTensorConvertDepth(
+    context: vx_context,
+    input: vx_tensor,
+    policy: vx_enum,
+    norm: vx_scalar,
+    offset: vx_scalar,
+    output: vx_tensor,
+));

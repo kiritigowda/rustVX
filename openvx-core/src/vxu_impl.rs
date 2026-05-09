@@ -6025,6 +6025,171 @@ fn subtract(src1: &Image, src2: &Image, dst: &mut Image, policy: vx_enum) -> VxR
     Ok(())
 }
 
+/// Pixel-wise minimum (Enhanced Vision: `vxMin`).
+///
+/// Per the OpenVX 1.3 spec the input and output images must have the same
+/// dimensions and a matching `VX_DF_IMAGE_U8` *or* `VX_DF_IMAGE_S16` format.
+/// The output pixel is `min(src1, src2)`, no policy is involved.
+fn min_image(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
+    if src1.width != src2.width || src1.height != src2.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+    if dst.width != src1.width || dst.height != src1.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+
+    let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
+    let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
+    let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    // Min/Max require src and dst formats to match per spec.
+    if dst_is_s16 != src1_is_s16 || dst_is_s16 != src2_is_s16 {
+        return Err(VxStatus::ErrorInvalidFormat);
+    }
+
+    let width = src1.width;
+    let height = src1.height;
+
+    if dst_is_s16 {
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel_s16(x, y);
+                let b = src2.get_pixel_s16(x, y);
+                dst.set_pixel_s16(x, y, a.min(b));
+            }
+        }
+    } else {
+        let dst_data = dst.data_mut();
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel(x, y);
+                let b = src2.get_pixel(x, y);
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = a.min(b);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Pixel-wise maximum (Enhanced Vision: `vxMax`). See `min_image` for the
+/// format/dimension contract; identical except the per-pixel reduction is
+/// `max(src1, src2)`.
+fn max_image(src1: &Image, src2: &Image, dst: &mut Image) -> VxResult<()> {
+    if src1.width != src2.width || src1.height != src2.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+    if dst.width != src1.width || dst.height != src1.height {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+
+    let dst_is_s16 = matches!(dst.format, ImageFormat::GrayS16);
+    let src1_is_s16 = matches!(src1.format, ImageFormat::GrayS16);
+    let src2_is_s16 = matches!(src2.format, ImageFormat::GrayS16);
+
+    if dst_is_s16 != src1_is_s16 || dst_is_s16 != src2_is_s16 {
+        return Err(VxStatus::ErrorInvalidFormat);
+    }
+
+    let width = src1.width;
+    let height = src1.height;
+
+    if dst_is_s16 {
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel_s16(x, y);
+                let b = src2.get_pixel_s16(x, y);
+                dst.set_pixel_s16(x, y, a.max(b));
+            }
+        }
+    } else {
+        let dst_data = dst.data_mut();
+        for y in 0..height {
+            for x in 0..width {
+                let a = src1.get_pixel(x, y);
+                let b = src2.get_pixel(x, y);
+                let idx = y.saturating_mul(width).saturating_add(x);
+                if let Some(p) = dst_data.get_mut(idx) {
+                    *p = a.max(b);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Immediate-mode entry point for `vxuMin`. Also used by the graph kernel
+/// dispatcher when `vxMinNode` is processed via `vxProcessGraph`.
+pub fn vxu_min_impl(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        match min_image(&src1, &src2, &mut dst) {
+            Ok(_) => copy_rust_to_c_image(&dst, output),
+            Err(VxStatus::ErrorInvalidFormat) => VX_ERROR_INVALID_FORMAT,
+            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+}
+
+/// Immediate-mode entry point for `vxuMax`. Also used by the graph kernel
+/// dispatcher when `vxMaxNode` is processed via `vxProcessGraph`.
+pub fn vxu_max_impl(
+    context: vx_context,
+    in1: vx_image,
+    in2: vx_image,
+    output: vx_image,
+) -> vx_status {
+    if context.is_null() || in1.is_null() || in2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    unsafe {
+        let src1 = match c_image_to_rust(in1) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let src2 = match c_image_to_rust(in2) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        let mut dst = match create_matching_image(output) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        match max_image(&src1, &src2, &mut dst) {
+            Ok(_) => copy_rust_to_c_image(&dst, output),
+            Err(VxStatus::ErrorInvalidFormat) => VX_ERROR_INVALID_FORMAT,
+            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        }
+    }
+}
+
 /// Pixel-wise multiplication with scale, overflow and rounding policies
 /// overflow_policy: 0 = WRAP, 1 = SATURATE
 /// rounding_policy: 1 = TO_ZERO, 2 = TO_NEAREST_EVEN
@@ -6276,39 +6441,57 @@ fn integral_image(src: &Image, dst: &mut Image) -> VxResult<()> {
     let width = src.width;
     let height = src.height;
 
-    let dst_data = dst.data_mut();
-    // dst is U32 format: 4 bytes per pixel, stored as little-endian
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
 
-    for y in 0..height {
+    let src_data = src.data();
+    let dst_bytes = dst.data_mut();
+
+    // Bail out (rather than corrupt memory) if the buffers are smaller than
+    // the declared image dimensions for any reason.
+    let pixels = width.checked_mul(height).ok_or(VxStatus::ErrorInvalidDimension)?;
+    if src_data.len() < pixels || dst_bytes.len() < pixels.checked_mul(4).ok_or(VxStatus::ErrorInvalidDimension)? {
+        return Err(VxStatus::ErrorInvalidDimension);
+    }
+
+    // The destination is a U32 image laid out as little-endian bytes. On the
+    // platforms rustVX targets (little-endian x86_64 / aarch64) we can safely
+    // reinterpret the byte buffer as `[u32]` and use native 32-bit stores
+    // instead of decomposing every result into `to_le_bytes()`. Even on a
+    // hypothetical big-endian target the reinterpret is sound — we just lose
+    // the on-disk LE convention there, which is moot because rustVX is only
+    // built on LE hosts.
+    debug_assert!(cfg!(target_endian = "little"));
+    let dst_u32: &mut [u32] = unsafe {
+        std::slice::from_raw_parts_mut(dst_bytes.as_mut_ptr() as *mut u32, pixels)
+    };
+
+    // First row: integral = running row sum, no row above.
+    {
+        let src_row = &src_data[..width];
+        let dst_row = &mut dst_u32[..width];
         let mut row_sum: u32 = 0;
         for x in 0..width {
-            row_sum += src.get_pixel(x, y) as u32;
-            let above = if y > 0 {
-                // Read U32 value from the pixel above
-                let above_offset = ((y - 1) * width + x) * 4;
-                if above_offset + 4 <= dst_data.len() {
-                    u32::from_le_bytes([
-                        dst_data[above_offset],
-                        dst_data[above_offset + 1],
-                        dst_data[above_offset + 2],
-                        dst_data[above_offset + 3],
-                    ])
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            let val = row_sum + above;
-            // Write U32 value as little-endian bytes
-            let offset = (y * width + x) * 4;
-            if offset + 4 <= dst_data.len() {
-                let bytes = val.to_le_bytes();
-                dst_data[offset] = bytes[0];
-                dst_data[offset + 1] = bytes[1];
-                dst_data[offset + 2] = bytes[2];
-                dst_data[offset + 3] = bytes[3];
-            }
+            row_sum += src_row[x] as u32;
+            dst_row[x] = row_sum;
+        }
+    }
+
+    // Subsequent rows: dst[y, x] = row_sum + dst[y - 1, x]. Splitting the
+    // destination into "previous row" and "current row" slices lets the
+    // borrow checker see disjoint ranges and lets the optimiser use native
+    // 32-bit loads/stores in the hot loop.
+    for y in 1..height {
+        let src_row = &src_data[y * width..(y + 1) * width];
+        let (prev_rows, current_and_after) = dst_u32.split_at_mut(y * width);
+        let prev_row = &prev_rows[(y - 1) * width..y * width];
+        let dst_row = &mut current_and_after[..width];
+
+        let mut row_sum: u32 = 0;
+        for x in 0..width {
+            row_sum += src_row[x] as u32;
+            dst_row[x] = row_sum + prev_row[x];
         }
     }
 

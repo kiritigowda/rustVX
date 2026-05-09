@@ -310,6 +310,9 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.add", 0x21, 4),
         ("org.khronos.openvx.subtract", 0x22, 4),
         ("org.khronos.openvx.multiply", 0x20, 7),
+        // Enhanced Vision: pixel-wise min/max
+        ("org.khronos.openvx.min", 0x3F, 3),
+        ("org.khronos.openvx.max", 0x3E, 3),
         // Bitwise
         ("org.khronos.openvx.and", 0x1C, 3),
         ("org.khronos.openvx.or", 0x1D, 3),

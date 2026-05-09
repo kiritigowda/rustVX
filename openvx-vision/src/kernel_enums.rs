@@ -71,6 +71,10 @@ pub const VX_KERNEL_NON_LINEAR_FILTER: i32 = 0x2C;
 // OpenVX 1.0.2 addition
 pub const VX_KERNEL_WEIGHTED_AVERAGE: i32 = 0x40;
 
+// OpenVX 1.2 / 1.3 Enhanced Vision: pixel-wise min/max
+pub const VX_KERNEL_MAX: i32 = 0x3E;
+pub const VX_KERNEL_MIN: i32 = 0x3F;
+
 // OpenVX 1.2 additions
 pub const VX_KERNEL_WARP_BILINEAR: i32 = 0x2D;
 pub const VX_KERNEL_MATCH_TEMPLATE: i32 = 0x2E;
@@ -204,4 +208,7 @@ pub const VISION_KERNELS: &[(&str, i32, u32)] = &[
         VX_KERNEL_WEIGHTED_AVERAGE,
         4,
     ),
+    // Enhanced Vision: pixel-wise min/max
+    ("org.khronos.openvx.min", VX_KERNEL_MIN, 3),
+    ("org.khronos.openvx.max", VX_KERNEL_MAX, 3),
 ];
