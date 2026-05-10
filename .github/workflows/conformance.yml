@@ -846,10 +846,28 @@ jobs:
   # the regression thresholds, posts a markdown verdict to the PR's job
   # summary, and exits non-zero (i.e. fails the workflow) on regression.
   #
-  # Defaults:
-  #   * geomean PR/main >= 0.97   (no more than 3% aggregate slowdown)
-  #   * per-kernel PR/main >= 0.85 (no kernel may regress more than 15%)
-  #   * skip kernels with stability_warning / verified=false / cv_percent > 5%
+  # Threshold rationale (see `.github/scripts/perf_gate.py` for full
+  # docstring and per-flag semantics):
+  #
+  #   * --geomean-floor 0.97     -> aggregate move > 3% slower fails. This
+  #                                 is the real signal for actual perf bugs
+  #                                 that affect multiple kernels.
+  #   * --kernel-floor  0.75     -> a SINGLE-kernel hard fail requires
+  #                                 > 25% regression. This is intentionally
+  #                                 generous: we measured ~10-15% between-
+  #                                 run drift on otherwise-identical
+  #                                 binaries on the same VM (cache state,
+  #                                 thermal, VM-host neighbour load), well
+  #                                 above the within-run CV% the bench
+  #                                 itself reports. A tighter per-kernel
+  #                                 floor produced false positives on
+  #                                 no-op PRs (CI run 25614982597).
+  #   * --warn-floor    0.90     -> soft-warn band [0.75, 0.90). Below 10%
+  #                                 we treat as noise.
+  #   * --max-cv        5.0      -> auto-skip kernels above this within-
+  #                                 run CV%; combined with the looser
+  #                                 per-kernel floor this gives us a clean
+  #                                 signal-to-noise ratio.
   #
   # Trigger:
   #   * pull_request only — push events to main do not gate against
@@ -892,7 +910,7 @@ jobs:
           python3 ${{ github.workspace }}/.github/scripts/perf_gate.py \
             "$MAIN" "$PR" \
             --geomean-floor 0.97 \
-            --kernel-floor 0.85 \
-            --warn-floor 0.97 \
+            --kernel-floor 0.75 \
+            --warn-floor 0.90 \
             --max-cv 5.0 \
             --summary-out "$GITHUB_STEP_SUMMARY"

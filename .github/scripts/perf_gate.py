@@ -13,8 +13,22 @@ writes a markdown verdict block to stdout, suitable for piping into
 
 Defaults:
     --geomean-floor 0.97   (no more than 3% aggregate slowdown)
-    --kernel-floor  0.85   (no kernel may regress more than 15%)
+    --kernel-floor  0.75   (no kernel may regress more than 25%)
+    --warn-floor    0.90   (soft-warn band for individual kernels in
+                            [0.75, 0.90); below 10% we treat as noise)
     --max-cv        5.0    (skip kernels above this run-to-run noise)
+
+The per-kernel floor is intentionally generous (0.75x = 25%
+allowed regression) because between-run drift on otherwise-identical
+binaries on the SAME runner VM measures ~10-15% per kernel in real
+CI — well above the within-run CV% the bench itself reports. Cache
+state, thermal headroom, and VM-host neighbour load are the usual
+suspects. A tighter per-kernel floor produced false positives on
+no-op PRs.
+
+Aggregate moves > 3% across 50+ verified kernels are essentially
+impossible to fake with noise, which is why the geomean floor is
+the real gate signal — it stays at 0.97x.
 
 Each filter is applied independently; a kernel that doesn't pass the
 filters (unverified, noisy, missing on either side) is reported in a
@@ -284,10 +298,12 @@ def main(argv: list[str]) -> int:
     p.add_argument("pr_json", help="benchmark_results.json from PR's rustVX run")
     p.add_argument("--geomean-floor", type=float, default=0.97,
                    help="Aggregate geomean floor (default 0.97 = up to 3%% regression)")
-    p.add_argument("--kernel-floor", type=float, default=0.85,
-                   help="Per-kernel floor (default 0.85 = up to 15%% regression)")
-    p.add_argument("--warn-floor", type=float, default=0.97,
-                   help="Soft warn floor (default 0.97 = warn between -3%% and -15%%)")
+    p.add_argument("--kernel-floor", type=float, default=0.75,
+                   help="Per-kernel floor (default 0.75 = up to 25%% regression; "
+                        "generous to absorb ~10-15%% between-run noise on real CI)")
+    p.add_argument("--warn-floor", type=float, default=0.90,
+                   help="Soft warn floor (default 0.90 = warn for individual "
+                        "kernels in [-25%%, -10%%); below 10%% is treated as noise)")
     p.add_argument("--max-cv", type=float, default=5.0,
                    help="Skip kernels whose CV%% exceeds this threshold (default 5.0)")
     p.add_argument("--summary-out", default=None,
