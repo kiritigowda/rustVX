@@ -188,6 +188,124 @@ jobs:
             include/
           retention-days: 1
 
+  # Build rustVX from the merge-target ref (i.e. main, in practice) in
+  # its own phase, in parallel with the PR's `build` job. The downstream
+  # `perf-gate` job pulls *both* archives down onto a single runner so
+  # the PR-vs-main bench comparison runs on identical hardware against
+  # binaries that were each built with their own branch's source tree.
+  #
+  # Both this job and `build` run on the same `ubuntu-22.04` runner pool
+  # with the same auto-detection logic, so the resulting libopenvx_ffi.so
+  # binaries should have matching compile-time SIMD feature sets in
+  # practice. (If GitHub's pool ever produces a heterogeneous mix, the
+  # gate will surface it as an obvious cross-the-board regression rather
+  # than silently report nonsense; we have not seen this happen yet.)
+  #
+  # Skipped on push events to main (no merge target to diff against).
+  build-main:
+    name: Build rustVX (main)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout merge target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source $HOME/.cargo/env
+          rustc --version
+          cargo --version
+      - name: Detect host CPU features
+        id: cpu
+        # Identical to `build` job's detection step. Replicated rather
+        # than refactored into a composite action to keep the workflow
+        # self-contained.
+        run: |
+          set -euo pipefail
+          ARCH=$(uname -m)
+          VENDOR="unknown"
+          FLAGS=""
+          if [ -r /proc/cpuinfo ]; then
+            VENDOR=$(grep -m1 '^vendor_id' /proc/cpuinfo | awk '{print $3}' || true)
+            VENDOR=${VENDOR:-unknown}
+            FLAGS=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 || true)
+          fi
+          echo "Architecture : $ARCH"
+          echo "CPU vendor   : $VENDOR"
+
+          CARGO_FEATURES=""
+          RUSTFLAGS_VAL=""
+          case "$ARCH" in
+            x86_64|amd64)
+              HAS_SSE2=false
+              HAS_AVX2=false
+              if echo "$FLAGS" | grep -qw sse2; then
+                CARGO_FEATURES="$CARGO_FEATURES openvx-core/sse2 openvx-vision/sse2"
+                HAS_SSE2=true
+                echo "  + sse2 detected"
+              fi
+              if echo "$FLAGS" | grep -qw avx2; then
+                CARGO_FEATURES="$CARGO_FEATURES openvx-core/avx2 openvx-vision/avx2"
+                HAS_AVX2=true
+                echo "  + avx2 detected"
+              fi
+              if [ "$HAS_AVX2" = true ]; then
+                RUSTFLAGS_VAL="-C target-cpu=x86-64-v3"
+              elif [ "$HAS_SSE2" = true ]; then
+                RUSTFLAGS_VAL="-C target-cpu=x86-64-v2"
+              fi
+              ;;
+            aarch64|arm64)
+              CARGO_FEATURES="$CARGO_FEATURES openvx-core/neon openvx-vision/neon"
+              echo "  + neon (mandatory on aarch64)"
+              ;;
+            *)
+              echo "  (no SIMD features enabled for $ARCH — scalar build)"
+              ;;
+          esac
+          CARGO_FEATURES=$(echo "$CARGO_FEATURES" | xargs)
+          echo "Cargo features: ${CARGO_FEATURES:-<none>}"
+          echo "RUSTFLAGS    : ${RUSTFLAGS_VAL:-<none>}"
+
+          {
+            echo "arch=$ARCH"
+            echo "vendor=$VENDOR"
+            echo "cargo_features=$CARGO_FEATURES"
+            echo "rustflags=$RUSTFLAGS_VAL"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build rustVX (main)
+        env:
+          RUSTFLAGS: ${{ steps.cpu.outputs.rustflags }}
+        run: |
+          source $HOME/.cargo/env
+          FEATURES="${{ steps.cpu.outputs.cargo_features }}"
+          if [ -n "$FEATURES" ]; then
+            echo "Building openvx-ffi (main) with features: $FEATURES"
+            cargo build --release -p openvx-ffi --features "$FEATURES"
+          else
+            echo "Building openvx-ffi (main) with no extra SIMD features"
+            cargo build --release -p openvx-ffi
+          fi
+      - name: Upload main build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts-main
+          # No CTS payload here — only the perf-gate job consumes this
+          # artifact, and it only needs the libopenvx_ffi.so + the
+          # standard headers (for openvx-mark to compile against).
+          path: |
+            target/release/libopenvx_ffi.so
+            include/
+          retention-days: 1
+
   # Build the Khronos OpenVX sample implementation in its own phase, in
   # parallel with the rustVX `build` job, and upload the resulting library
   # + headers as a self-contained archive. The benchmark job below pulls
@@ -588,118 +706,6 @@ jobs:
           ./openvx-mark --resolution FHD --iterations 20 --warmup 5
 
       # ---------------------------------------------------------------------
-      # rustVX-on-main benchmark (perf-gate input)
-      #
-      # On pull_request runs we additionally build `origin/${{ github.base_ref }}`
-      # (i.e. main, in practice) on the *same* runner VM, run openvx-mark
-      # against it with the same workload as the PR run, and upload the
-      # resulting JSON. The downstream `perf-gate` job consumes that
-      # JSON together with the PR's `benchmark-results-rustvx` artifact
-      # to decide whether the PR regresses against main. Same-VM is the
-      # whole point — hardware variance between separate runs would
-      # swamp any real regression.
-      #
-      # Skipped on push events to main (there is no "merge target" to
-      # diff against, and we do not want pushes to main to gate against
-      # themselves).
-      # ---------------------------------------------------------------------
-      - name: Check out merge-base ref (main)
-        if: github.event_name == 'pull_request'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.base_ref }}
-          path: rustvx-main-src
-          fetch-depth: 1
-          submodules: recursive
-
-      - name: Build rustVX from merge-base ref
-        if: github.event_name == 'pull_request'
-        id: rustvx_main
-        env:
-          # Reuse the same auto-detected SIMD feature set the PR build
-          # used. `steps.cpu` is the CPU-detect step from the `build`
-          # job — its outputs are not visible across jobs, so we
-          # re-detect here. The detection is a few hundred ms and the
-          # logic is identical to the build job's.
-          CARGO_TERM_COLOR: always
-          RUST_BACKTRACE: 1
-        run: |
-          set -euo pipefail
-          # Install Rust if not present (runner image normally has it,
-          # but the Khronos-only path above doesn't depend on it, so
-          # we install defensively).
-          if ! command -v cargo >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain stable
-          fi
-          source $HOME/.cargo/env || true
-
-          # Re-detect host CPU features (mirrors `build` job).
-          ARCH=$(uname -m)
-          FLAGS=""
-          if [ -r /proc/cpuinfo ]; then
-            FLAGS=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 || true)
-          fi
-          CARGO_FEATURES=""
-          RUSTFLAGS_VAL=""
-          case "$ARCH" in
-            x86_64|amd64)
-              if echo "$FLAGS" | grep -qw sse2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-core/sse2 openvx-vision/sse2"
-              fi
-              if echo "$FLAGS" | grep -qw avx2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-core/avx2 openvx-vision/avx2"
-                RUSTFLAGS_VAL="-C target-cpu=x86-64-v3"
-              elif echo "$FLAGS" | grep -qw sse2; then
-                RUSTFLAGS_VAL="-C target-cpu=x86-64-v2"
-              fi
-              ;;
-            aarch64|arm64)
-              CARGO_FEATURES="openvx-core/neon openvx-vision/neon"
-              ;;
-          esac
-          CARGO_FEATURES=$(echo "$CARGO_FEATURES" | xargs)
-
-          cd ${{ github.workspace }}/rustvx-main-src
-          export RUSTFLAGS="$RUSTFLAGS_VAL"
-          if [ -n "$CARGO_FEATURES" ]; then
-            cargo build --release -p openvx-ffi --features "$CARGO_FEATURES"
-          else
-            cargo build --release -p openvx-ffi
-          fi
-
-          # Stage main's lib alongside the PR's, with the libopenvx /
-          # libvxu symlinks openvx-mark needs to find at link time.
-          MAIN_LIB_DIR=${{ github.workspace }}/rustvx-main-pkg
-          mkdir -p "$MAIN_LIB_DIR"
-          cp target/release/libopenvx_ffi.so "$MAIN_LIB_DIR/"
-          cd "$MAIN_LIB_DIR"
-          ln -sf libopenvx_ffi.so libopenvx.so
-          ln -sf libopenvx_ffi.so libvxu.so
-          ls -la
-          echo "lib_dir=$MAIN_LIB_DIR" >> "$GITHUB_OUTPUT"
-          echo "include_dir=${{ github.workspace }}/rustvx-main-src/include" >> "$GITHUB_OUTPUT"
-
-      - name: Build openvx-mark against rustVX-on-main
-        if: github.event_name == 'pull_request'
-        run: |
-          mkdir -p ${{ github.workspace }}/openvx-mark/build-rustvx-main
-          cd ${{ github.workspace }}/openvx-mark/build-rustvx-main
-          cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOPENVX_INCLUDES=${{ steps.rustvx_main.outputs.include_dir }} \
-            -DOPENVX_LIB_DIR=${{ steps.rustvx_main.outputs.lib_dir }} \
-            ..
-          cmake --build . -j$(nproc)
-
-      - name: Run benchmark (rustVX-on-main)
-        if: github.event_name == 'pull_request'
-        run: |
-          cd ${{ github.workspace }}/openvx-mark/build-rustvx-main
-          export LD_LIBRARY_PATH=${{ steps.rustvx_main.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
-
-      # ---------------------------------------------------------------------
       # Compare results
       # ---------------------------------------------------------------------
       - name: Compare benchmark results (rustVX vs Khronos)
@@ -812,14 +818,6 @@ jobs:
           path: ${{ github.workspace }}/openvx-mark/build-rustvx/benchmark_results/
           if-no-files-found: ignore
 
-      - name: Upload rustVX-on-main benchmark results
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-rustvx-main
-          path: ${{ github.workspace }}/openvx-mark/build-rustvx-main/benchmark_results/
-          if-no-files-found: ignore
-
       - name: Upload Khronos sample benchmark results
         if: always()
         uses: actions/upload-artifact@v4
@@ -837,37 +835,34 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # Perf gate
+  # Perf gate (PR rustVX vs main rustVX)
   #
-  # Direct rustVX-PR vs rustVX-main comparison on the SAME runner VM (the
-  # `benchmark` job above benches both back-to-back, so hardware variance
-  # between the two is zero). This job downloads the two JSON artifacts
-  # the bench job produced, runs `.github/scripts/perf_gate.py` to apply
-  # the regression thresholds, posts a markdown verdict to the PR's job
-  # summary, and exits non-zero (i.e. fails the workflow) on regression.
+  # This job is self-contained and runs in parallel with the existing
+  # `benchmark` job (which still does the rustVX-vs-Khronos comparison
+  # report). It pulls down the two rustVX `libopenvx_ffi.so` archives
+  # produced in Phase 1 (`build` for the PR, `build-main` for the merge
+  # target), builds openvx-mark twice (once per library), runs both
+  # benches back-to-back on this single runner VM, and compares the
+  # results with `.github/scripts/perf_gate.py`. Same-VM bench is the
+  # whole point — hardware variance between separate runs would swamp
+  # any real regression.
   #
   # Threshold rationale (see `.github/scripts/perf_gate.py` for full
   # docstring and per-flag semantics):
   #
-  #   * --geomean-floor 0.97     -> aggregate move > 3% slower fails. This
-  #                                 is the real signal for actual perf bugs
-  #                                 that affect multiple kernels.
+  #   * --geomean-floor 0.97     -> aggregate move > 3% slower fails;
+  #                                 this is the real signal for actual
+  #                                 perf bugs that touch multiple kernels.
   #   * --kernel-floor  0.75     -> a SINGLE-kernel hard fail requires
-  #                                 > 25% regression. This is intentionally
-  #                                 generous: we measured ~10-15% between-
-  #                                 run drift on otherwise-identical
+  #                                 > 25% regression. Generous to absorb
+  #                                 the ~10-15% between-run drift we've
+  #                                 measured on otherwise-identical
   #                                 binaries on the same VM (cache state,
-  #                                 thermal, VM-host neighbour load), well
-  #                                 above the within-run CV% the bench
-  #                                 itself reports. A tighter per-kernel
-  #                                 floor produced false positives on
-  #                                 no-op PRs (CI run 25614982597).
-  #   * --warn-floor    0.90     -> soft-warn band [0.75, 0.90). Below 10%
-  #                                 we treat as noise.
+  #                                 thermal, VM-host neighbour load).
+  #   * --warn-floor    0.90     -> soft-warn band [0.75, 0.90). Below
+  #                                 10% we treat as noise.
   #   * --max-cv        5.0      -> auto-skip kernels above this within-
-  #                                 run CV%; combined with the looser
-  #                                 per-kernel floor this gives us a clean
-  #                                 signal-to-noise ratio.
+  #                                 run CV%.
   #
   # Trigger:
   #   * pull_request only — push events to main do not gate against
@@ -877,33 +872,127 @@ jobs:
     name: Perf gate (PR vs main)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
-    needs: benchmark
+    needs:
+      - build
+      - build-main
     steps:
       - name: Checkout repo (for the perf_gate script)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Download PR rustVX benchmark results
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmark-results-rustvx
-          path: ${{ github.workspace }}/bench-pr
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3
 
-      - name: Download main rustVX benchmark results
+      - name: Download PR rustVX archive
         uses: actions/download-artifact@v4
         with:
-          name: benchmark-results-rustvx-main
-          path: ${{ github.workspace }}/bench-main
+          name: build-artifacts
+          path: ${{ github.workspace }}/rustvx-pr-pkg
+
+      - name: Download main rustVX archive
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-main
+          path: ${{ github.workspace }}/rustvx-main-pkg
+
+      - name: Stage PR rustVX (libopenvx / libvxu symlinks for openvx-mark)
+        id: pr_rustvx
+        run: |
+          set -euo pipefail
+          LIB_DIR=${{ github.workspace }}/rustvx-pr-pkg/target/release
+          chmod -R u+rwX "$LIB_DIR"
+          cd "$LIB_DIR"
+          ln -sf libopenvx_ffi.so libopenvx.so
+          ln -sf libopenvx_ffi.so libvxu.so
+          ls -la libopenvx*.so libvxu*.so
+          echo "lib_dir=$LIB_DIR" >> "$GITHUB_OUTPUT"
+          echo "include_dir=${{ github.workspace }}/rustvx-pr-pkg/include" >> "$GITHUB_OUTPUT"
+
+      - name: Stage main rustVX (libopenvx / libvxu symlinks for openvx-mark)
+        id: main_rustvx
+        run: |
+          set -euo pipefail
+          LIB_DIR=${{ github.workspace }}/rustvx-main-pkg/target/release
+          chmod -R u+rwX "$LIB_DIR"
+          cd "$LIB_DIR"
+          ln -sf libopenvx_ffi.so libopenvx.so
+          ln -sf libopenvx_ffi.so libvxu.so
+          ls -la libopenvx*.so libvxu*.so
+          echo "lib_dir=$LIB_DIR" >> "$GITHUB_OUTPUT"
+          echo "include_dir=${{ github.workspace }}/rustvx-main-pkg/include" >> "$GITHUB_OUTPUT"
+
+      - name: Clone openvx-mark
+        run: |
+          git clone --depth 1 https://github.com/kiritigowda/openvx-mark.git \
+            ${{ github.workspace }}/openvx-mark
+
+      # Build openvx-mark once per library. The two CMake configs differ
+      # only in the include / lib paths, so we keep them in separate
+      # build trees to avoid any re-link confusion.
+      - name: Build openvx-mark against rustVX-PR
+        run: |
+          mkdir -p ${{ github.workspace }}/openvx-mark/build-pr
+          cd ${{ github.workspace }}/openvx-mark/build-pr
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ steps.pr_rustvx.outputs.include_dir }} \
+            -DOPENVX_LIB_DIR=${{ steps.pr_rustvx.outputs.lib_dir }} \
+            ..
+          cmake --build . -j$(nproc)
+
+      - name: Build openvx-mark against rustVX-main
+        run: |
+          mkdir -p ${{ github.workspace }}/openvx-mark/build-main
+          cd ${{ github.workspace }}/openvx-mark/build-main
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ steps.main_rustvx.outputs.include_dir }} \
+            -DOPENVX_LIB_DIR=${{ steps.main_rustvx.outputs.lib_dir }} \
+            ..
+          cmake --build . -j$(nproc)
+
+      # Throwaway warmup runs to neutralise the "first bench is slower
+      # because of cold OS caches / first-time page faults / runtime
+      # feature-detection initial dispatch" effect we observed in
+      # practice. Both real-measurement runs below then start from a
+      # warm-VM state.
+      - name: Warmup runs (throwaway)
+        run: |
+          set +e
+          cd ${{ github.workspace }}/openvx-mark/build-pr
+          export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
+            --output ${{ github.workspace }}/warmup-pr 2>/dev/null || true
+
+          cd ${{ github.workspace }}/openvx-mark/build-main
+          export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
+            --output ${{ github.workspace }}/warmup-main 2>/dev/null || true
+          true
+
+      - name: Run benchmark (rustVX-PR)
+        run: |
+          cd ${{ github.workspace }}/openvx-mark/build-pr
+          export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+
+      - name: Run benchmark (rustVX-main)
+        run: |
+          cd ${{ github.workspace }}/openvx-mark/build-main
+          export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
 
       - name: Run perf gate
         run: |
           set -euo pipefail
-          PR=${{ github.workspace }}/bench-pr/benchmark_results.json
-          MAIN=${{ github.workspace }}/bench-main/benchmark_results.json
+          PR=${{ github.workspace }}/openvx-mark/build-pr/benchmark_results/benchmark_results.json
+          MAIN=${{ github.workspace }}/openvx-mark/build-main/benchmark_results/benchmark_results.json
           if [ ! -f "$PR" ] || [ ! -f "$MAIN" ]; then
-            echo "::error::Missing benchmark JSONs (PR=$PR, MAIN=$MAIN). Did the bench job upload them?"
-            ls -la ${{ github.workspace }}/bench-pr ${{ github.workspace }}/bench-main 2>/dev/null || true
+            echo "::error::Missing benchmark JSONs (PR=$PR, MAIN=$MAIN)."
+            ls -la "$(dirname "$PR")" "$(dirname "$MAIN")" 2>/dev/null || true
             exit 1
           fi
 
@@ -914,3 +1003,19 @@ jobs:
             --warn-floor 0.90 \
             --max-cv 5.0 \
             --summary-out "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload PR rustVX benchmark results (perf-gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-results-pr
+          path: ${{ github.workspace }}/openvx-mark/build-pr/benchmark_results/
+          if-no-files-found: ignore
+
+      - name: Upload main rustVX benchmark results (perf-gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-results-main
+          path: ${{ github.workspace }}/openvx-mark/build-main/benchmark_results/
+          if-no-files-found: ignore
