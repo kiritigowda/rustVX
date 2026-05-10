@@ -241,16 +241,24 @@ def _render(
         lines.append(_table([sorted(warns, key=lambda v: v.ratio)]))
         lines.append("")
 
-    if oks:
-        # Show top regressions among oks (most useful) plus top wins.
-        oks_sorted = sorted(oks, key=lambda v: v.ratio)
-        worst_oks = oks_sorted[:5]
-        best_oks = list(reversed(oks_sorted[-5:]))
+    # Comprehensive per-kernel breakdown. Every gated kernel appears
+    # exactly once, sorted from worst PR/main ratio to best — so any
+    # regression (or near-regression) is visible at the top of the
+    # table without needing to cross-reference the highlight sections
+    # above. Pure-OK rows are still included so the workflow log
+    # captures the complete trajectory of every kernel each run, which
+    # is what's needed for trend tracking across PRs.
+    if verdicts:
+        all_sorted = sorted(verdicts, key=lambda v: (v.ratio, v.key))
+        n_fail = _count_status(verdicts, "fail")
+        n_warn = _count_status(verdicts, "warn")
+        n_ok = _count_status(verdicts, "ok")
         lines.append(
-            f"### Healthy kernels ({len(oks)} total — showing 5 closest to floor and 5 biggest wins)"
+            f"### All kernels ({len(verdicts)} compared — "
+            f"{n_fail} fail, {n_warn} warn, {n_ok} ok; sorted worst -> best)"
         )
         lines.append("")
-        lines.append(_table([worst_oks, best_oks]))
+        lines.append(_table([all_sorted]))
         lines.append("")
 
     if skipped:
