@@ -109,6 +109,12 @@ class KernelVerdict:
 class SkipRecord:
     key: tuple[str, str, str]
     reason: str
+    # Carry the underlying rows when both sides are available, so the
+    # comprehensive "All kernels" table can still display the kernel's
+    # numbers (sorted alongside the gated kernels) even though the row
+    # itself does not contribute to the gate decision.
+    main: "Row | None" = None
+    pr: "Row | None" = None
 
 
 def _classify(
@@ -169,7 +175,12 @@ def _geomean(values: Iterable[float]) -> float:
 
 
 def _emoji(status: str) -> str:
-    return {"ok": "[ok]", "warn": "[warn]", "fail": "[fail]"}[status]
+    return {
+        "ok": "[ok]",
+        "warn": "[warn]",
+        "fail": "[fail]",
+        "skip": "[skip]",
+    }[status]
 
 
 def _render(
@@ -241,37 +252,68 @@ def _render(
         lines.append(_table([sorted(warns, key=lambda v: v.ratio)]))
         lines.append("")
 
-    # Comprehensive per-kernel breakdown. Every gated kernel appears
-    # exactly once, sorted from worst PR/main ratio to best — so any
-    # regression (or near-regression) is visible at the top of the
-    # table without needing to cross-reference the highlight sections
-    # above. Pure-OK rows are still included so the workflow log
-    # captures the complete trajectory of every kernel each run, which
-    # is what's needed for trend tracking across PRs.
-    if verdicts:
-        all_sorted = sorted(verdicts, key=lambda v: (v.ratio, v.key))
+    # Comprehensive per-kernel breakdown. Every kernel — gated AND
+    # skipped — appears exactly once, sorted from worst PR/main ratio
+    # to best. Skipped rows still show their numbers for trend
+    # tracking, but they're flagged with [skip] and a reason in the
+    # Notes column so it's clear they did not contribute to the gate
+    # decision. Skipped rows whose ratio cannot be computed (kernel
+    # missing on one side) sort to the very bottom of the table.
+    all_rows: list[KernelVerdict] = list(verdicts)
+    for s in skipped:
+        # Synthesize a KernelVerdict-shaped row from the skip record so
+        # the same _table() code can render it. The status is "skip"
+        # and the reason is forwarded into the Notes column.
+        if s.main is not None and s.pr is not None and s.main.mps > 0 and s.pr.mps > 0:
+            ratio = s.pr.mps / s.main.mps
+        else:
+            ratio = 0.0  # sorts to the bottom; rendered as "—"
+        all_rows.append(KernelVerdict(
+            key=s.key,
+            main=s.main if s.main is not None else _empty_row(s.key),
+            pr=s.pr if s.pr is not None else _empty_row(s.key),
+            ratio=ratio,
+            status="skip",
+            reason=f"skipped: {s.reason}",
+        ))
+
+    if all_rows:
+        # ratio==0.0 (skipped, missing on one side) sorts to the bottom
+        # via this key; everyone else sorts by ratio ascending.
+        def sort_key(v: KernelVerdict) -> tuple[float, tuple[str, str, str]]:
+            r = v.ratio if v.ratio > 0 else float("inf")
+            return (r, v.key)
+
+        all_sorted = sorted(all_rows, key=sort_key)
         n_fail = _count_status(verdicts, "fail")
         n_warn = _count_status(verdicts, "warn")
         n_ok = _count_status(verdicts, "ok")
+        n_skip = len(skipped)
         lines.append(
-            f"### All kernels ({len(verdicts)} compared — "
-            f"{n_fail} fail, {n_warn} warn, {n_ok} ok; sorted worst -> best)"
+            f"### All kernels ({len(all_rows)} total — "
+            f"{n_fail} fail, {n_warn} warn, {n_ok} ok, {n_skip} skipped; "
+            f"sorted worst -> best)"
         )
         lines.append("")
         lines.append(_table([all_sorted]))
         lines.append("")
 
-    if skipped:
-        lines.append(f"### Skipped ({len(skipped)})")
-        lines.append("")
-        lines.append("| Kernel | Mode | Resolution | Reason |")
-        lines.append("|---|---|---|---|")
-        for s in sorted(skipped, key=lambda x: x.key):
-            n, m, r = s.key
-            lines.append(f"| `{n}` | {m} | {r} | {s.reason} |")
-        lines.append("")
-
     return "\n".join(lines) + "\n"
+
+
+def _empty_row(key: tuple[str, str, str]) -> Row:
+    """Placeholder Row for skipped kernels missing on one side."""
+    name, mode, res = key
+    return Row(
+        name=name,
+        mode=mode,
+        resolution=res,
+        mps=0.0,
+        sustained_ms=0.0,
+        cv_percent=0.0,
+        verified=False,
+        stability_warning=False,
+    )
 
 
 def _count_status(verdicts: list[KernelVerdict], status: str) -> int:
@@ -279,6 +321,13 @@ def _count_status(verdicts: list[KernelVerdict], status: str) -> int:
 
 
 def _table(groups: list[list[KernelVerdict]]) -> str:
+    def _mps(v: float) -> str:
+        return f"{v:.2f}" if v > 0 else "—"
+    def _ms(v: float) -> str:
+        return f"{v:.3f}" if v > 0 else "—"
+    def _ratio(v: float) -> str:
+        return f"**{v:.3f}x**" if v > 0 else "—"
+
     rows: list[str] = []
     rows.append("| Status | Kernel | Mode | Res | main MP/s | PR MP/s | PR/main | main ms | PR ms | Notes |")
     rows.append("|:---|---|---|---|---:|---:|---:|---:|---:|---|")
@@ -287,9 +336,9 @@ def _table(groups: list[list[KernelVerdict]]) -> str:
             n, m, r = v.key
             rows.append(
                 f"| {_emoji(v.status)} | `{n}` | {m} | {r} | "
-                f"{v.main.mps:.2f} | {v.pr.mps:.2f} | "
-                f"**{v.ratio:.3f}x** | "
-                f"{v.main.sustained_ms:.3f} | {v.pr.sustained_ms:.3f} | "
+                f"{_mps(v.main.mps)} | {_mps(v.pr.mps)} | "
+                f"{_ratio(v.ratio)} | "
+                f"{_ms(v.main.sustained_ms)} | {_ms(v.pr.sustained_ms)} | "
                 f"{v.reason} |"
             )
     return "\n".join(rows)
@@ -331,18 +380,20 @@ def main(argv: list[str]) -> int:
     for key in sorted(set(main_rows) & set(pr_rows)):
         m, r = main_rows[key], pr_rows[key]
         if m.name in skip_names:
-            skipped.append(SkipRecord(key=key, reason="explicitly skipped by --skip-name"))
+            skipped.append(SkipRecord(key=key, reason="explicitly skipped by --skip-name", main=m, pr=r))
             continue
         if not (m.verified and r.verified):
-            skipped.append(SkipRecord(key=key, reason="unverified on at least one side"))
+            skipped.append(SkipRecord(key=key, reason="unverified on at least one side", main=m, pr=r))
             continue
         if m.stability_warning or r.stability_warning:
-            skipped.append(SkipRecord(key=key, reason="stability_warning on at least one side"))
+            skipped.append(SkipRecord(key=key, reason="stability_warning on at least one side", main=m, pr=r))
             continue
         if m.cv_percent > args.max_cv or r.cv_percent > args.max_cv:
             skipped.append(SkipRecord(
                 key=key,
                 reason=f"CV% over {args.max_cv}% (main={m.cv_percent:.2f}% pr={r.cv_percent:.2f}%)",
+                main=m,
+                pr=r,
             ))
             continue
 
@@ -354,9 +405,17 @@ def main(argv: list[str]) -> int:
 
     # Kernels missing on either side are also reported.
     for key in sorted(set(main_rows) - set(pr_rows)):
-        skipped.append(SkipRecord(key=key, reason="missing in PR run (new on main?)"))
+        skipped.append(SkipRecord(
+            key=key,
+            reason="missing in PR run (new on main?)",
+            main=main_rows[key],
+        ))
     for key in sorted(set(pr_rows) - set(main_rows)):
-        skipped.append(SkipRecord(key=key, reason="missing in main run (new in PR — not gated)"))
+        skipped.append(SkipRecord(
+            key=key,
+            reason="missing in main run (new in PR — not gated)",
+            pr=pr_rows[key],
+        ))
 
     geomean_ratio = _geomean(v.ratio for v in verdicts if v.ratio > 0)
 
