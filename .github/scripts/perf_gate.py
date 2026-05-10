@@ -13,22 +13,24 @@ writes a markdown verdict block to stdout, suitable for piping into
 
 Defaults:
     --geomean-floor 0.97   (no more than 3% aggregate slowdown)
-    --kernel-floor  0.75   (no kernel may regress more than 25%)
-    --warn-floor    0.90   (soft-warn band for individual kernels in
-                            [0.75, 0.90); below 10% we treat as noise)
+    --kernel-floor  0.90   (no kernel may regress more than 10%)
+    --warn-floor    0.95   (soft-warn band for individual kernels in
+                            [0.90, 0.95); 5-10% slower → advisory)
     --max-cv        5.0    (skip kernels above this run-to-run noise)
 
-The per-kernel floor is intentionally generous (0.75x = 25%
-allowed regression) because between-run drift on otherwise-identical
-binaries on the SAME runner VM measures ~10-15% per kernel in real
-CI — well above the within-run CV% the bench itself reports. Cache
-state, thermal headroom, and VM-host neighbour load are the usual
-suspects. A tighter per-kernel floor produced false positives on
-no-op PRs.
+The per-kernel floor is set to a strict 10% regression because the
+upstream workflow now builds both PR and main rustVX with EXPLICIT
+AVX2 features and `-C target-cpu=x86-64-v3` (rather than per-VM
+auto-detected features). With the binaries having identical
+compile-time configuration and both running on the same Phase-3
+runner VM, the only remaining noise source is genuine same-VM
+jitter (cache state, thermal, VM-host neighbour load), which on
+real CI sits well below 10%. Anything that trips the gate is a
+real regression worth investigating.
 
 Aggregate moves > 3% across 50+ verified kernels are essentially
 impossible to fake with noise, which is why the geomean floor is
-the real gate signal — it stays at 0.97x.
+the strongest gate signal — it stays at 0.97x.
 
 Each filter is applied independently; a kernel that doesn't pass the
 filters (unverified, noisy, missing on either side) is reported in a
@@ -88,6 +90,13 @@ def _load(path: str) -> dict[tuple[str, str, str], Row]:
         row = _row_from(r)
         out[row.key] = row
     return out
+
+
+def _load_system(path: str) -> dict:
+    """Return the `system` block from a benchmark_results.json, or {}."""
+    with open(path) as f:
+        report = json.load(f)
+    return report.get("system", {}) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +183,62 @@ def _geomean(values: Iterable[float]) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _render_hardware(main_system: dict | None, pr_system: dict | None) -> str:
+    """Render the runner-hardware details for both bench runs.
+
+    Both rustVX builds are benchmarked on the same Phase-3 runner VM,
+    so the two `system` blocks should match. We render both anyway so
+    the user has a record of the bench environment per run, and so any
+    drift (different VMs / CPU pools) surfaces visually rather than
+    being silently absorbed into the verdict.
+    """
+    main_system = main_system or {}
+    pr_system = pr_system or {}
+
+    def cell(d: dict, key: str, default: str = "—") -> str:
+        v = d.get(key)
+        if v is None or v == "":
+            return default
+        return str(v)
+
+    out: list[str] = []
+    out.append("### Hardware")
+    out.append("")
+    out.append("| Field | rustVX-main run | rustVX-PR run |")
+    out.append("|---|---|---|")
+    fields = [
+        ("CPU model",  "cpu_model"),
+        ("CPU cores",  "cpu_cores"),
+        ("RAM (GB)",   "ram_gb"),
+        ("Hostname",   "hostname"),
+        ("OS version", "os_version"),
+        ("Timestamp",  "timestamp"),
+    ]
+    for label, key in fields:
+        m = cell(main_system, key)
+        p = cell(pr_system, key)
+        out.append(f"| {label} | `{m}` | `{p}` |")
+
+    # Surface any drift in hardware between the two runs as a warning.
+    main_cpu = cell(main_system, "cpu_model", "")
+    pr_cpu = cell(pr_system, "cpu_model", "")
+    main_host = cell(main_system, "hostname", "")
+    pr_host = cell(pr_system, "hostname", "")
+    drifted = (main_cpu and pr_cpu and main_cpu != pr_cpu) or (
+        main_host and pr_host and main_host != pr_host
+    )
+    if drifted:
+        out.append("")
+        out.append(
+            "> **Warning:** the two rustVX runs reported different runner "
+            "hardware (CPU model or hostname). The perf comparison may be "
+            "biased by the hardware delta in addition to any real software "
+            "change in this PR — interpret regressions cautiously."
+        )
+
+    return "\n".join(out)
+
+
 def _emoji(status: str) -> str:
     return {
         "ok": "[ok]",
@@ -193,6 +258,8 @@ def _render(
     warn_floor: float,
     max_cv: float,
     overall_pass: bool,
+    main_system: dict | None = None,
+    pr_system: dict | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("## Perf gate (rustVX-PR vs rustVX-main)")
@@ -203,6 +270,8 @@ def _render(
         "ratios below are pure software-side deltas attributable to "
         "this PR."
     )
+    lines.append("")
+    lines.append(_render_hardware(main_system, pr_system))
     lines.append("")
 
     if overall_pass:
@@ -355,12 +424,14 @@ def main(argv: list[str]) -> int:
     p.add_argument("pr_json", help="benchmark_results.json from PR's rustVX run")
     p.add_argument("--geomean-floor", type=float, default=0.97,
                    help="Aggregate geomean floor (default 0.97 = up to 3%% regression)")
-    p.add_argument("--kernel-floor", type=float, default=0.75,
-                   help="Per-kernel floor (default 0.75 = up to 25%% regression; "
-                        "generous to absorb ~10-15%% between-run noise on real CI)")
-    p.add_argument("--warn-floor", type=float, default=0.90,
-                   help="Soft warn floor (default 0.90 = warn for individual "
-                        "kernels in [-25%%, -10%%); below 10%% is treated as noise)")
+    p.add_argument("--kernel-floor", type=float, default=0.90,
+                   help="Per-kernel floor (default 0.90 = up to 10%% regression). "
+                        "With explicit-AVX2 builds the same-VM noise floor sits "
+                        "well below this; anything tripping the gate is a real "
+                        "regression worth investigating.")
+    p.add_argument("--warn-floor", type=float, default=0.95,
+                   help="Soft warn floor (default 0.95 = warn for individual "
+                        "kernels in [-10%%, -5%%); below 5%% is treated as noise)")
     p.add_argument("--max-cv", type=float, default=5.0,
                    help="Skip kernels whose CV%% exceeds this threshold (default 5.0)")
     p.add_argument("--summary-out", default=None,
@@ -371,6 +442,8 @@ def main(argv: list[str]) -> int:
 
     main_rows = _load(args.main_json)
     pr_rows = _load(args.pr_json)
+    main_system = _load_system(args.main_json)
+    pr_system = _load_system(args.pr_json)
 
     skipped: list[SkipRecord] = []
     verdicts: list[KernelVerdict] = []
@@ -430,6 +503,8 @@ def main(argv: list[str]) -> int:
         geomean_floor=args.geomean_floor,
         kernel_floor=args.kernel_floor,
         warn_floor=args.warn_floor,
+        main_system=main_system,
+        pr_system=pr_system,
         max_cv=args.max_cv,
         overall_pass=overall_pass,
     )

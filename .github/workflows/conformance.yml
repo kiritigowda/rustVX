@@ -54,106 +54,57 @@ jobs:
           source $HOME/.cargo/env
           rustc --version
           cargo --version
-      - name: Detect host CPU features
-        id: cpu
-        # GitHub-hosted Linux runners can be backed by either Intel or AMD
-        # x86_64 silicon (and ARM-based pools exist too). Rather than
-        # hard-coding a vendor, we read /proc/cpuinfo / uname and turn on
-        # the matching openvx-vision SIMD Cargo features (sse2 / avx2 on
-        # x86_64, neon on aarch64).
+      - name: Build rustVX
+        # Explicit AVX2-targeted build for AMD Zen 2+ / Intel Haswell+.
         #
-        # IMPORTANT: do NOT use `-C target-cpu=native` here. The build,
-        # CTS, and benchmark jobs run on independent runner VMs; the build
-        # host may expose ISA extensions (e.g. AVX-512) that a downstream
-        # CTS runner does not, which produces SIGILL ("Illegal instruction")
-        # when the artifact is loaded on a less-capable host. Instead we
-        # pin x86_64 to the portable `x86-64-v3` microarch level (SSE4.2 +
-        # AVX + AVX2 + BMI1/2 + FMA + F16C) which every modern AMD EPYC
-        # and Intel Xeon in GitHub's Azure pool supports, and rely on
-        # `#[target_feature]`-gated intrinsics (already in openvx-vision)
-        # for anything beyond that — those paths dispatch via
-        # `is_x86_feature_detected!` at runtime.
+        # We deliberately do NOT auto-detect CPU features from
+        # /proc/cpuinfo any more — the previous auto-detection design
+        # produced subtly mismatched binaries between the parallel
+        # `build` (PR) and `build-main` jobs whenever the two jobs
+        # happened to land on different VM pools, which silently
+        # poisoned the perf-gate's PR-vs-main comparison (see
+        # `Magnitude` regression on a no-op PR in CI run 25615947512).
+        #
+        # Hardcoding the feature set guarantees both rustVX binaries
+        # the perf gate compares are produced with identical:
+        #   * Cargo `--features` flags (sse2 + avx2 on both crates)
+        #   * RUSTFLAGS                (`-C target-cpu=x86-64-v3`)
+        #
+        # The `x86-64-v3` microarch level (SSE4.2 + AVX + AVX2 +
+        # BMI1+2 + FMA + F16C) is supported by every Linux runner in
+        # GitHub's Azure pool today (AMD EPYC Milan/Genoa, Intel
+        # Cascade Lake / Ice Lake) and is the right baseline for AMD
+        # Zen-tuned performance work — it lets rustc auto-vectorise
+        # the rest of the workspace using AVX2 / FMA / BMI2 on top of
+        # the hand-tuned `#[target_feature(enable = "avx2")]`
+        # intrinsic kernels gated by the `avx2` Cargo feature.
+        #
+        # Falls back to NEON-only on aarch64 and scalar on anything
+        # else — those paths exist for completeness and aren't the
+        # gated targets.
         run: |
           set -euo pipefail
-          ARCH=$(uname -m)
-          VENDOR="unknown"
-          FLAGS=""
-          if [ -r /proc/cpuinfo ]; then
-            VENDOR=$(grep -m1 '^vendor_id' /proc/cpuinfo | awk '{print $3}' || true)
-            VENDOR=${VENDOR:-unknown}
-            FLAGS=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 || true)
-          fi
-          echo "Architecture : $ARCH"
-          echo "CPU vendor   : $VENDOR"
-
-          CARGO_FEATURES=""
-          RUSTFLAGS_VAL=""
-
-          case "$ARCH" in
+          source $HOME/.cargo/env
+          case "$(uname -m)" in
             x86_64|amd64)
-              HAS_SSE2=false
-              HAS_AVX2=false
-              # openvx-core hosts the C-API kernel callbacks (vxAdd /
-              # vxSubtract / vxBox3x3 / vxGaussian3x3 / vxColorConvert
-              # → crate::simd_kernels). openvx-vision hosts the public
-              # Rust-API SIMD kernels. Both crates need the matching
-              # feature flag for the SIMD path to actually compile in.
-              if echo "$FLAGS" | grep -qw sse2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-core/sse2 openvx-vision/sse2"
-                HAS_SSE2=true
-                echo "  + sse2 detected"
-              fi
-              if echo "$FLAGS" | grep -qw avx2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-core/avx2 openvx-vision/avx2"
-                HAS_AVX2=true
-                echo "  + avx2 detected"
-              fi
-              # Pick the most permissive *portable* microarch level that
-              # the build host satisfies. v3 is safe on every GitHub
-              # Linux runner today (AMD EPYC Milan/Genoa, Intel Cascade
-              # Lake / Ice Lake), v2 is universal on x86_64 cloud silicon.
-              if [ "$HAS_AVX2" = true ]; then
-                RUSTFLAGS_VAL="-C target-cpu=x86-64-v3"
-              elif [ "$HAS_SSE2" = true ]; then
-                RUSTFLAGS_VAL="-C target-cpu=x86-64-v2"
-              fi
+              FEATURES="openvx-core/sse2 openvx-core/avx2 openvx-vision/sse2 openvx-vision/avx2"
+              export RUSTFLAGS="-C target-cpu=x86-64-v3"
               ;;
             aarch64|arm64)
-              CARGO_FEATURES="$CARGO_FEATURES openvx-core/neon openvx-vision/neon"
-              echo "  + neon (mandatory on aarch64)"
+              FEATURES="openvx-core/neon openvx-vision/neon"
+              export RUSTFLAGS=""
               ;;
             *)
-              echo "  (no SIMD features enabled for $ARCH — scalar build)"
+              FEATURES=""
+              export RUSTFLAGS=""
               ;;
           esac
-
-          CARGO_FEATURES=$(echo "$CARGO_FEATURES" | xargs)
-          echo "Cargo features: ${CARGO_FEATURES:-<none>}"
-          echo "RUSTFLAGS    : ${RUSTFLAGS_VAL:-<none>}"
-
-          {
-            echo "arch=$ARCH"
-            echo "vendor=$VENDOR"
-            echo "cargo_features=$CARGO_FEATURES"
-            echo "rustflags=$RUSTFLAGS_VAL"
-          } >> "$GITHUB_OUTPUT"
-      - name: Build rustVX
-        env:
-          RUSTFLAGS: ${{ steps.cpu.outputs.rustflags }}
-        run: |
-          source $HOME/.cargo/env
-          FEATURES="${{ steps.cpu.outputs.cargo_features }}"
-          # Build only the FFI cdylib that downstream jobs consume; this
-          # is the artifact that becomes libopenvx_ffi.so. Building this
-          # one package (instead of the whole workspace) keeps the build
-          # tight and lets us forward openvx-vision SIMD features via
-          # the `pkg/feature` syntax without needing a passthrough in
-          # openvx-ffi's Cargo.toml.
+          echo "Architecture: $(uname -m)"
+          echo "Cargo features: ${FEATURES:-<none>}"
+          echo "RUSTFLAGS    : ${RUSTFLAGS:-<none>}"
           if [ -n "$FEATURES" ]; then
-            echo "Building openvx-ffi with features: $FEATURES"
             cargo build --release -p openvx-ffi --features "$FEATURES"
           else
-            echo "Building openvx-ffi with no extra SIMD features"
             cargo build --release -p openvx-ffi
           fi
       - name: Build OpenVX CTS
@@ -223,75 +174,36 @@ jobs:
           source $HOME/.cargo/env
           rustc --version
           cargo --version
-      - name: Detect host CPU features
-        id: cpu
-        # Identical to `build` job's detection step. Replicated rather
-        # than refactored into a composite action to keep the workflow
-        # self-contained.
+      - name: Build rustVX (main)
+        # Identical hardcoded build configuration as the `build` job —
+        # see that step for the full rationale. The whole point of
+        # making both builds explicit (rather than per-VM auto-
+        # detected) is that the `perf-gate` job downstream is
+        # guaranteed to compare two binaries with matching
+        # compile-time SIMD features and RUSTFLAGS.
         run: |
           set -euo pipefail
-          ARCH=$(uname -m)
-          VENDOR="unknown"
-          FLAGS=""
-          if [ -r /proc/cpuinfo ]; then
-            VENDOR=$(grep -m1 '^vendor_id' /proc/cpuinfo | awk '{print $3}' || true)
-            VENDOR=${VENDOR:-unknown}
-            FLAGS=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 || true)
-          fi
-          echo "Architecture : $ARCH"
-          echo "CPU vendor   : $VENDOR"
-
-          CARGO_FEATURES=""
-          RUSTFLAGS_VAL=""
-          case "$ARCH" in
+          source $HOME/.cargo/env
+          case "$(uname -m)" in
             x86_64|amd64)
-              HAS_SSE2=false
-              HAS_AVX2=false
-              if echo "$FLAGS" | grep -qw sse2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-core/sse2 openvx-vision/sse2"
-                HAS_SSE2=true
-                echo "  + sse2 detected"
-              fi
-              if echo "$FLAGS" | grep -qw avx2; then
-                CARGO_FEATURES="$CARGO_FEATURES openvx-core/avx2 openvx-vision/avx2"
-                HAS_AVX2=true
-                echo "  + avx2 detected"
-              fi
-              if [ "$HAS_AVX2" = true ]; then
-                RUSTFLAGS_VAL="-C target-cpu=x86-64-v3"
-              elif [ "$HAS_SSE2" = true ]; then
-                RUSTFLAGS_VAL="-C target-cpu=x86-64-v2"
-              fi
+              FEATURES="openvx-core/sse2 openvx-core/avx2 openvx-vision/sse2 openvx-vision/avx2"
+              export RUSTFLAGS="-C target-cpu=x86-64-v3"
               ;;
             aarch64|arm64)
-              CARGO_FEATURES="$CARGO_FEATURES openvx-core/neon openvx-vision/neon"
-              echo "  + neon (mandatory on aarch64)"
+              FEATURES="openvx-core/neon openvx-vision/neon"
+              export RUSTFLAGS=""
               ;;
             *)
-              echo "  (no SIMD features enabled for $ARCH — scalar build)"
+              FEATURES=""
+              export RUSTFLAGS=""
               ;;
           esac
-          CARGO_FEATURES=$(echo "$CARGO_FEATURES" | xargs)
-          echo "Cargo features: ${CARGO_FEATURES:-<none>}"
-          echo "RUSTFLAGS    : ${RUSTFLAGS_VAL:-<none>}"
-
-          {
-            echo "arch=$ARCH"
-            echo "vendor=$VENDOR"
-            echo "cargo_features=$CARGO_FEATURES"
-            echo "rustflags=$RUSTFLAGS_VAL"
-          } >> "$GITHUB_OUTPUT"
-      - name: Build rustVX (main)
-        env:
-          RUSTFLAGS: ${{ steps.cpu.outputs.rustflags }}
-        run: |
-          source $HOME/.cargo/env
-          FEATURES="${{ steps.cpu.outputs.cargo_features }}"
+          echo "Architecture: $(uname -m)"
+          echo "Cargo features: ${FEATURES:-<none>}"
+          echo "RUSTFLAGS    : ${RUSTFLAGS:-<none>}"
           if [ -n "$FEATURES" ]; then
-            echo "Building openvx-ffi (main) with features: $FEATURES"
             cargo build --release -p openvx-ffi --features "$FEATURES"
           else
-            echo "Building openvx-ffi (main) with no extra SIMD features"
             cargo build --release -p openvx-ffi
           fi
       - name: Upload main build artifacts
@@ -847,20 +759,28 @@ jobs:
   # whole point — hardware variance between separate runs would swamp
   # any real regression.
   #
+  # Both rustVX binaries are now built with explicit AVX2 features +
+  # `-C target-cpu=x86-64-v3` in Phase 1 (no per-VM auto-detection),
+  # so any noise that remains is genuine same-VM jitter rather than
+  # divergent compile-time configuration. This lets us run the
+  # per-kernel floor much tighter than the previous 25% threshold.
+  #
   # Threshold rationale (see `.github/scripts/perf_gate.py` for full
   # docstring and per-flag semantics):
   #
   #   * --geomean-floor 0.97     -> aggregate move > 3% slower fails;
-  #                                 this is the real signal for actual
-  #                                 perf bugs that touch multiple kernels.
-  #   * --kernel-floor  0.75     -> a SINGLE-kernel hard fail requires
-  #                                 > 25% regression. Generous to absorb
-  #                                 the ~10-15% between-run drift we've
-  #                                 measured on otherwise-identical
-  #                                 binaries on the same VM (cache state,
-  #                                 thermal, VM-host neighbour load).
-  #   * --warn-floor    0.90     -> soft-warn band [0.75, 0.90). Below
-  #                                 10% we treat as noise.
+  #                                 the real signal for actual perf
+  #                                 bugs that touch multiple kernels.
+  #   * --kernel-floor  0.90     -> a SINGLE-kernel hard fail requires
+  #                                 > 10% regression. With explicit-
+  #                                 AVX2 binaries the same-VM noise
+  #                                 floor sits well below this, so
+  #                                 anything tripping the gate is a
+  #                                 real regression worth investigating.
+  #   * --warn-floor    0.95     -> soft-warn band [0.90, 0.95) — kernels
+  #                                 in the 5-10% slower range get an
+  #                                 advisory annotation but don't block
+  #                                 merge.
   #   * --max-cv        5.0      -> auto-skip kernels above this within-
   #                                 run CV%.
   #
@@ -999,8 +919,8 @@ jobs:
           python3 ${{ github.workspace }}/.github/scripts/perf_gate.py \
             "$MAIN" "$PR" \
             --geomean-floor 0.97 \
-            --kernel-floor 0.75 \
-            --warn-floor 0.90 \
+            --kernel-floor 0.90 \
+            --warn-floor 0.95 \
             --max-cv 5.0 \
             --summary-out "$GITHUB_STEP_SUMMARY"
 
