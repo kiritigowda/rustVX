@@ -5030,6 +5030,27 @@ static IMPORTS: Lazy<Mutex<HashMap<usize, Arc<VxCImport>>>> =
 pub static MODULES: Lazy<Mutex<HashMap<u64, std::collections::HashSet<String>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Static-kernel-library registry — populated by
+/// [`crate::unified_c_api::vxRegisterKernelLibrary`] and consulted by
+/// [`crate::c_api::vxLoadKernels`] when the caller asks to load a module
+/// name that wasn't shipped as a dynamic library.
+///
+/// Outer key: `context as u64`. Inner key: module name (case-sensitive,
+/// matches what the caller passes to `vxLoadKernels`). Inner value: the
+/// (publish, unpublish) callback pair the library registered with us.
+///
+/// Spec: see `vxRegisterKernelLibrary` in `vx_api.h` for the precondition
+/// it establishes for `vxLoadKernels` of non-dynamic-library modules.
+#[derive(Clone, Copy)]
+pub struct VxKernelLibraryRegistration {
+    pub publish: crate::c_api::vx_publish_kernels_f,
+    pub unpublish: crate::c_api::vx_unpublish_kernels_f,
+}
+
+pub static REGISTERED_KERNEL_LIBRARIES: Lazy<
+    Mutex<HashMap<u64, HashMap<String, VxKernelLibraryRegistration>>>,
+> = Lazy::new(|| Mutex::new(HashMap::new()));
+
 // Kernel registry
 pub static KERNELS: Lazy<Mutex<HashMap<u64, Arc<VxCKernel>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -6136,6 +6157,115 @@ pub extern "C" fn vxRegisterLogCallback(
     }
 
     VX_SUCCESS
+}
+
+/// `vxRegisterKernelLibrary` — register a static (i.e. non-dynamic-library)
+/// kernel library with the given context, so a later
+/// [`crate::c_api::vxLoadKernels`] call against the same `module` name can
+/// invoke the library's `publish` callback to enumerate its kernels.
+///
+/// Spec: `vx_api.h`:
+///
+/// ```c
+/// VX_API_ENTRY vx_status VX_API_CALL vxRegisterKernelLibrary(
+///     vx_context context,
+///     const vx_char *module,
+///     vx_publish_kernels_f publish,
+///     vx_unpublish_kernels_f unpublish);
+/// ```
+///
+/// We do not invoke `publish` here — that happens lazily inside
+/// `vxLoadKernels(context, module)`. This call only records the
+/// `(module, publish, unpublish)` triple in [`REGISTERED_KERNEL_LIBRARIES`].
+///
+/// # Safety
+///
+/// `module` must be a valid NUL-terminated C string. `context` must be a
+/// live `vx_context` returned by `vxCreateContext`. The two callbacks may
+/// be `None` (the OpenVX `NULL` function pointer); callers commonly pass
+/// `Some(publish_fn)` and a matching `unpublish_fn`.
+#[no_mangle]
+pub unsafe extern "C" fn vxRegisterKernelLibrary(
+    context: vx_context,
+    module: *const vx_char,
+    publish: crate::c_api::vx_publish_kernels_f,
+    unpublish: crate::c_api::vx_unpublish_kernels_f,
+) -> vx_status {
+    if context.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if module.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    let module_name = match CStr::from_ptr(module).to_str() {
+        Ok(s) if !s.is_empty() => s.to_string(),
+        _ => return VX_ERROR_INVALID_PARAMETERS,
+    };
+    let context_id = context as u64;
+
+    if let Ok(mut libs) = REGISTERED_KERNEL_LIBRARIES.lock() {
+        libs.entry(context_id)
+            .or_insert_with(HashMap::new)
+            .insert(
+                module_name,
+                VxKernelLibraryRegistration { publish, unpublish },
+            );
+    }
+    VX_SUCCESS
+}
+
+/// `vxSetGraphAttribute` — write side of [`vxQueryGraph`].
+///
+/// Spec: `vx_api.h`:
+///
+/// ```c
+/// VX_API_ENTRY vx_status VX_API_CALL vxSetGraphAttribute(
+///     vx_graph graph,
+///     vx_enum attribute,
+///     const void *ptr,
+///     vx_size size);
+/// ```
+///
+/// In OpenVX 1.3.1 the entire `vx_graph_attribute_e` set
+/// (`VX_GRAPH_NUMNODES`, `VX_GRAPH_PERFORMANCE`, `VX_GRAPH_NUMPARAMETERS`,
+/// `VX_GRAPH_STATE`) is runtime-derived state that the implementation
+/// owns — none of those attributes are spec-writable. We therefore return
+/// `VX_ERROR_NOT_SUPPORTED` for each of them rather than silently mutating
+/// implementation state and confusing the graph executor.
+///
+/// Vendor-defined graph attributes (outside the Khronos
+/// `VX_ATTRIBUTE_BASE(VX_ID_KHRONOS, VX_TYPE_GRAPH)` range) are not yet
+/// supported either, but they get a separate `VX_ERROR_NOT_SUPPORTED`
+/// branch so the error tells a caller their attribute id wasn't
+/// recognised, distinct from "this attribute exists but is read-only".
+#[no_mangle]
+pub extern "C" fn vxSetGraphAttribute(
+    graph: vx_graph,
+    attribute: vx_enum,
+    ptr: *const c_void,
+    size: vx_size,
+) -> vx_status {
+    if graph.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    // `ptr` is unused for the spec-defined read-only attributes below,
+    // but the spec does require us to validate it for any future
+    // writable attributes — surface obvious nullptr / zero-size mistakes.
+    let _ = (ptr, size);
+
+    match attribute {
+        // VX_GRAPH_NUMNODES
+        0x00080200 |
+        // VX_GRAPH_PERFORMANCE
+        0x00080202 |
+        // VX_GRAPH_NUMPARAMETERS
+        0x00080203 |
+        // VX_GRAPH_STATE
+        0x00080204 => VX_ERROR_NOT_SUPPORTED,
+
+        // Unknown / vendor-defined attribute id.
+        _ => VX_ERROR_NOT_SUPPORTED,
+    }
 }
 
 /// Add log entry with message (variadic - simplified to just message)

@@ -128,6 +128,21 @@ pub type vx_nodecomplete_f = Option<extern "C" fn(vx_node) -> vx_action>;
 pub type vx_log_callback_t =
     Option<extern "C" fn(vx_context, vx_reference, vx_status, *const vx_char)>;
 
+/// `vx_publish_kernels_f` — user-supplied function the OpenVX implementation
+/// invokes (via [`vxLoadKernels`]) to register a library's kernels with the
+/// context. The function is expected to call [`vxAddUserKernel`] for each
+/// kernel in the library and return [`VX_SUCCESS`] on success.
+///
+/// See [`vxRegisterKernelLibrary`] for the registration side.
+pub type vx_publish_kernels_f =
+    Option<unsafe extern "C" fn(vx_context) -> vx_status>;
+
+/// `vx_unpublish_kernels_f` — paired with [`vx_publish_kernels_f`]; invoked by
+/// [`vxUnloadKernels`] to give the library a chance to tear down any per-
+/// context state it set up at publish time.
+pub type vx_unpublish_kernels_f =
+    Option<unsafe extern "C" fn(vx_context) -> vx_status>;
+
 /// Action return values from callbacks
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -1522,7 +1537,27 @@ pub extern "C" fn vxLoadKernels(context: vx_context, module: *const vx_char) -> 
             // Standard kernels already registered at context creation
             VX_SUCCESS
         } else {
-            VX_ERROR_INVALID_PARAMETERS
+            // Look up libraries previously registered via
+            // `vxRegisterKernelLibrary` for this context and invoke
+            // their `publish` callback. The callback is expected to
+            // call `vxAddUserKernel` for each kernel in the library.
+            use crate::unified_c_api::REGISTERED_KERNEL_LIBRARIES;
+            let reg = {
+                let libs = match REGISTERED_KERNEL_LIBRARIES.lock() {
+                    Ok(libs) => libs,
+                    Err(_) => return VX_ERROR_INVALID_PARAMETERS,
+                };
+                libs.get(&context_id)
+                    .and_then(|m| m.get(module_name))
+                    .copied()
+            };
+            match reg {
+                Some(r) => match r.publish {
+                    Some(publish) => publish(context),
+                    None => VX_SUCCESS,
+                },
+                None => VX_ERROR_INVALID_PARAMETERS,
+            }
         }
     }
 }
@@ -1549,6 +1584,24 @@ pub extern "C" fn vxUnloadKernels(context: vx_context, module: *const vx_char) -
         if let Ok(mut modules) = MODULES.lock() {
             if let Some(context_modules) = modules.get_mut(&context_id) {
                 context_modules.remove(module_name);
+            }
+        }
+
+        // If a static library was registered via `vxRegisterKernelLibrary`
+        // for this (context, module) pair, give it the chance to tear
+        // down its kernels by invoking the matching `unpublish` callback.
+        // The registration itself is intentionally kept around — the
+        // spec lets a library be re-loaded later without re-registering.
+        {
+            use crate::unified_c_api::REGISTERED_KERNEL_LIBRARIES;
+            let reg = REGISTERED_KERNEL_LIBRARIES
+                .lock()
+                .ok()
+                .and_then(|libs| libs.get(&context_id).and_then(|m| m.get(module_name)).copied());
+            if let Some(r) = reg {
+                if let Some(unpublish) = r.unpublish {
+                    let _ = unpublish(context);
+                }
             }
         }
 

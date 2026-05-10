@@ -13,3 +13,14 @@ openvx-core = { path = "../openvx-core" }
 openvx-vision = { path = "../openvx-vision" }
 openvx-buffer = { path = "../openvx-buffer" }
 openvx-image = { path = "../openvx-image" }
+
+# Integration tests live under `openvx-ffi/tests/` so they get linked
+# against every workspace crate the cdylib aggregates. Re-listing the
+# core/image/buffer crates as dev-dependencies forces the test binaries
+# to keep those rlibs in their link line, which `openvx-core`'s
+# internal `extern "C"` references to `vxReleaseImage` / `vxReleasePyramid`
+# need to resolve at link time.
+[dev-dependencies]
+openvx-core = { path = "../openvx-core" }
+openvx-image = { path = "../openvx-image" }
+openvx-buffer = { path = "../openvx-buffer" }
