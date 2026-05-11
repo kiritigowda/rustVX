@@ -123,7 +123,8 @@ jobs:
             -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
             -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
             -DOPENVX_CONFORMANCE_VISION=ON \
-            -DOPENVX_USE_ENHANCED_VISION=ON
+            -DOPENVX_USE_ENHANCED_VISION=ON \
+            -DOPENVX_USE_USER_DATA_OBJECT=ON
           make -j$(nproc)
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -310,7 +311,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 300 ./bin/vx_test_conformance --filter="Scalar.*:Array.*:ObjectArray.*:Matrix.*:Convolution.*:Distribution.*:LUT.*:Histogram.*"
+          timeout 300 ./bin/vx_test_conformance --filter="Scalar.*:Array.*:ObjectArray.*:Matrix.*:Convolution.*:Distribution.*:LUT.*:Histogram.*:UserDataObject.*"
 
   image-ops:
     runs-on: ubuntu-22.04
