@@ -894,9 +894,12 @@ jobs:
       # comparable warm-VM state.
       - name: Bench rustVX-PR (warmup + measure)
         run: |
-          set -euo pipefail
+          set -eo pipefail
+          # NB: not using `-u` because `$LD_LIBRARY_PATH` is unset in a
+          # fresh step and the trailing `:${LD_LIBRARY_PATH:-}` default
+          # would still trip `-u` in some bash variants.
           cd ${{ github.workspace }}/openvx-mark/build-pr
-          export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}
           # Throwaway: prime instruction/data caches and any
           # is_x86_feature_detected! one-time-dispatch overhead.
           ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
@@ -906,9 +909,9 @@ jobs:
 
       - name: Bench rustVX-main (warmup + measure)
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd ${{ github.workspace }}/openvx-mark/build-main
-          export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}
           ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
             --output /tmp/warmup-main-throwaway >/dev/null 2>&1 || true
           ./openvx-mark --resolution FHD --iterations 20 --warmup 5
