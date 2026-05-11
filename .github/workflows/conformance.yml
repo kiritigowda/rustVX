@@ -874,35 +874,43 @@ jobs:
             ..
           cmake --build . -j$(nproc)
 
-      # Throwaway warmup runs to neutralise the "first bench is slower
-      # because of cold OS caches / first-time page faults / runtime
-      # feature-detection initial dispatch" effect we observed in
-      # practice. Both real-measurement runs below then start from a
-      # warm-VM state.
-      - name: Warmup runs (throwaway)
+      # Per-library "warmup + measure" cycles, back-to-back for each lib.
+      #
+      # The previous design did all warmups first (PR warmup, main
+      # warmup) and then both real measurements (PR measure, main
+      # measure). That sequence is asymmetric: by the time the PR's
+      # real measurement runs, the main warmup has just evicted the
+      # PR-side instruction/data caches; by the time main's real
+      # measurement runs, the PR measurement has been thrashing for
+      # ~30s and the system is "warm" overall. The result was tight
+      # kernels like Box3x3 / Gaussian3x3 (~1.8 ms) consistently
+      # showing 25-30% slower numbers on the PR side on no-op PRs
+      # — a methodology artefact, not a real regression.
+      #
+      # New design: run each lib's throwaway warmup IMMEDIATELY
+      # before its measurement, in the same step. Both
+      # warmup-then-measure cycles run back-to-back with no other
+      # lib's bench process in between, so each measurement sees a
+      # comparable warm-VM state.
+      - name: Bench rustVX-PR (warmup + measure)
         run: |
-          set +e
+          set -euo pipefail
           cd ${{ github.workspace }}/openvx-mark/build-pr
           export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          # Throwaway: prime instruction/data caches and any
+          # is_x86_feature_detected! one-time-dispatch overhead.
           ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
-            --output ${{ github.workspace }}/warmup-pr 2>/dev/null || true
-
-          cd ${{ github.workspace }}/openvx-mark/build-main
-          export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
-            --output ${{ github.workspace }}/warmup-main 2>/dev/null || true
-          true
-
-      - name: Run benchmark (rustVX-PR)
-        run: |
-          cd ${{ github.workspace }}/openvx-mark/build-pr
-          export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+            --output /tmp/warmup-pr-throwaway >/dev/null 2>&1 || true
+          # Real measurement.
           ./openvx-mark --resolution FHD --iterations 20 --warmup 5
 
-      - name: Run benchmark (rustVX-main)
+      - name: Bench rustVX-main (warmup + measure)
         run: |
+          set -euo pipefail
           cd ${{ github.workspace }}/openvx-mark/build-main
           export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
+            --output /tmp/warmup-main-throwaway >/dev/null 2>&1 || true
           ./openvx-mark --resolution FHD --iterations 20 --warmup 5
 
       - name: Run perf gate
