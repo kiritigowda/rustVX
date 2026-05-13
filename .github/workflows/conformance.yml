@@ -88,20 +88,29 @@ jobs:
           case "$(uname -m)" in
             x86_64|amd64)
               FEATURES="openvx-core/sse2 openvx-core/avx2 openvx-vision/sse2 openvx-vision/avx2"
-              # `-C llvm-args=-align-all-functions=6` pins every function
-              # entry to a 64-byte (cache-line) boundary so the perf-gate
-              # PR-vs-main bench comparison is invariant to link-order
-              # shifts caused by upstream additive code. Required because
-              # otherwise a purely-additive PR that grows `.text` by
-              # O(10 KB) shifts every downstream hot kernel forward by
-              # the same offset and lands it at less-favourable cache-line
-              # alignment, producing reproducible 20%+ "regressions" on
-              # tight ~5 ms kernels whose compiled machine code is
-              # bit-identical between PR and main (verified by matching
-              # Rust mangling hash + objdump comparison). Cost is
-              # ~50–100 KB of NOP-pad bloat in libopenvx_ffi.so. Both
-              # bench binaries pay it equally.
-              export RUSTFLAGS="-C target-cpu=x86-64-v3 -C llvm-args=-align-all-functions=6"
+              # Pin code-layout alignment so the perf-gate's PR-vs-main
+              # bench comparison is invariant to link-order shifts caused
+              # by upstream additive code. Without these flags, a purely
+              # additive PR that grows `.text` by O(10 KB) shifts every
+              # downstream hot kernel forward by the same offset and
+              # lands it (or its hot inner loop) at less-favourable
+              # cache-line alignment — producing reproducible 20%+
+              # "regressions" on tight ~5 ms kernels whose compiled
+              # machine code is bit-identical between PR and main
+              # (verified by matching Rust mangling hash + objdump
+              # comparison).
+              #
+              #   * `-align-all-functions=6` — pad each function entry
+              #     to 2^6 = 64 bytes (cache-line aligned).
+              #   * `-align-all-nofallthru-blocks=4` — pad basic blocks
+              #     reached only via branches (loop headers and join
+              #     points) to 2^4 = 16 bytes. Catches inner-loop
+              #     alignment penalties that function-entry padding
+              #     alone misses.
+              #
+              # Cost: ~100–200 KB of NOP-pad bloat in libopenvx_ffi.so.
+              # Both bench binaries pay it equally so the gate is fair.
+              export RUSTFLAGS="-C target-cpu=x86-64-v3 -C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=4"
               ;;
             aarch64|arm64)
               FEATURES="openvx-core/neon openvx-vision/neon"
@@ -201,20 +210,29 @@ jobs:
           case "$(uname -m)" in
             x86_64|amd64)
               FEATURES="openvx-core/sse2 openvx-core/avx2 openvx-vision/sse2 openvx-vision/avx2"
-              # `-C llvm-args=-align-all-functions=6` pins every function
-              # entry to a 64-byte (cache-line) boundary so the perf-gate
-              # PR-vs-main bench comparison is invariant to link-order
-              # shifts caused by upstream additive code. Required because
-              # otherwise a purely-additive PR that grows `.text` by
-              # O(10 KB) shifts every downstream hot kernel forward by
-              # the same offset and lands it at less-favourable cache-line
-              # alignment, producing reproducible 20%+ "regressions" on
-              # tight ~5 ms kernels whose compiled machine code is
-              # bit-identical between PR and main (verified by matching
-              # Rust mangling hash + objdump comparison). Cost is
-              # ~50–100 KB of NOP-pad bloat in libopenvx_ffi.so. Both
-              # bench binaries pay it equally.
-              export RUSTFLAGS="-C target-cpu=x86-64-v3 -C llvm-args=-align-all-functions=6"
+              # Pin code-layout alignment so the perf-gate's PR-vs-main
+              # bench comparison is invariant to link-order shifts caused
+              # by upstream additive code. Without these flags, a purely
+              # additive PR that grows `.text` by O(10 KB) shifts every
+              # downstream hot kernel forward by the same offset and
+              # lands it (or its hot inner loop) at less-favourable
+              # cache-line alignment — producing reproducible 20%+
+              # "regressions" on tight ~5 ms kernels whose compiled
+              # machine code is bit-identical between PR and main
+              # (verified by matching Rust mangling hash + objdump
+              # comparison).
+              #
+              #   * `-align-all-functions=6` — pad each function entry
+              #     to 2^6 = 64 bytes (cache-line aligned).
+              #   * `-align-all-nofallthru-blocks=4` — pad basic blocks
+              #     reached only via branches (loop headers and join
+              #     points) to 2^4 = 16 bytes. Catches inner-loop
+              #     alignment penalties that function-entry padding
+              #     alone misses.
+              #
+              # Cost: ~100–200 KB of NOP-pad bloat in libopenvx_ffi.so.
+              # Both bench binaries pay it equally so the gate is fair.
+              export RUSTFLAGS="-C target-cpu=x86-64-v3 -C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=4"
               ;;
             aarch64|arm64)
               FEATURES="openvx-core/neon openvx-vision/neon"
