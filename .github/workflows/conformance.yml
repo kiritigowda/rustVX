@@ -917,32 +917,12 @@ jobs:
             exit 1
           fi
 
-          # MinMaxLoc / Not / Xor are skipped from the per-kernel gate as a
-          # documented code-alignment workaround. Empirical finding on this PR:
-          # adding ~50 KB of additive UDO code at the back of `.text` in
-          # libopenvx_ffi.so shifts these three kernels' hot-loop entry
-          # points onto less-favorable cache-line alignments, producing
-          # 0.77x / 0.86x / 0.89x ratios that are bit-reproducible across
-          # reruns on different EPYC VMs. The same kernels showed 0.999x /
-          # 0.995x / 1.001x on PR #25 (also a non-kernel-touching change)
-          # under the same methodology, confirming the noise floor is
-          # sub-1% when layout is incidentally favorable — i.e. the
-          # variance source is purely binary-layout, not algorithm.
-          # The geomean gate (0.97x) and all other kernel-floor checks
-          # still apply, so a real regression would still trip the gate.
-          # TODO(perf-gate-layout): permanent fix is to pin function
-          # alignment in the cdylib build (e.g.
-          # `-Cllvm-args=-align-all-functions=6`) so additive PRs can't
-          # perturb downstream kernel layout. Tracked in a follow-up issue.
           python3 ${{ github.workspace }}/.github/scripts/perf_gate.py \
             "$MAIN" "$PR" \
             --geomean-floor 0.97 \
             --kernel-floor 0.90 \
             --warn-floor 0.95 \
             --max-cv 5.0 \
-            --skip-name MinMaxLoc \
-            --skip-name Not \
-            --skip-name Xor \
             --summary-out "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PR rustVX benchmark results (perf-gate)
