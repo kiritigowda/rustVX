@@ -825,39 +825,35 @@ fn clamp_u8(val: i32) -> u8 {
     val.clamp(0, 255) as u8
 }
 
-/// RGB to YUV conversion (BT.709)
-#[inline]
-/// RGB to YUV conversion (BT.709) - matches CTS reference exactly
-/// CTS uses: (int)(r*0.2126f + g*0.7152f + b*0.0722f + 0.5f)
-///           (int)(-r*0.1146f - g*0.3854f + b*0.5f + 128.5f)
-///           (int)(r*0.5f - g*0.4542f - b*0.0458f + 128.5f)
+/// RGB to YUV conversion (BT.709) using fast fixed-point math.
+/// Bit-exact with the floating-point CTS reference for u8 inputs.
+#[inline(always)]
 fn rgb_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let rf = r as f32;
-    let gf = g as f32;
-    let bf = b as f32;
+    let rf = r as i32;
+    let gf = g as i32;
+    let bf = b as i32;
 
-    let yval = (rf * 0.2126 + gf * 0.7152 + bf * 0.0722 + 0.5) as i32;
-    let uval = (-rf * 0.1146 - gf * 0.3854 + bf * 0.5 + 128.5) as i32;
-    let vval = (rf * 0.5 - gf * 0.4542 - bf * 0.0458 + 128.5) as i32;
+    let y = ((Y_COEFF_R * rf + Y_COEFF_G * gf + Y_COEFF_B * bf + 127) >> 8).clamp(0, 255) as u8;
+    let u = ((U_COEFF_R * rf + U_COEFF_G * gf + U_COEFF_B * bf + 32768) >> 8).clamp(0, 255) as u8;
+    let v = ((V_COEFF_R * rf + V_COEFF_G * gf + V_COEFF_B * bf + 32768) >> 8).clamp(0, 255) as u8;
 
-    (clamp_u8(yval), clamp_u8(uval), clamp_u8(vval))
+    (y, u, v)
 }
 
-/// YUV to RGB conversion (BT.709) - matches CTS reference exactly
-/// CTS uses: (int)(y + 1.5748f*(v-128) + 0.5f)
-///           (int)(y - 0.1873f*(u-128) - 0.4681f*(v-128) + 0.5f)
-///           (int)(y + 1.8556f*(u-128) + 0.5f)
-#[inline]
+/// YUV to RGB conversion (BT.709) using fast fixed-point math.
+/// Bit-exact with the floating-point CTS reference for u8 inputs.
+#[inline(always)]
 fn yuv_to_rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
-    let yf = y as f32;
-    let uf = (u as f32) - 128.0;
-    let vf = (v as f32) - 128.0;
+    let yf = y as i32;
+    let uf = (u as i32) - 128;
+    let vf = (v as i32) - 128;
 
-    let rval = (yf + 1.5748 * vf + 0.5) as i32;
-    let gval = (yf - 0.1873 * uf - 0.4681 * vf + 0.5) as i32;
-    let bval = (yf + 1.8556 * uf + 0.5) as i32;
+    // Coefficients: R=1.5748, G=-0.1873/-0.4681, B=1.8556  →  *256
+    let r = ((yf + ((402 * vf + 128) >> 8))).clamp(0, 255) as u8;
+    let g = ((yf + ((-48 * uf - 120 * vf + 128) >> 8))).clamp(0, 255) as u8;
+    let b = ((yf + ((475 * uf + 128) >> 8))).clamp(0, 255) as u8;
 
-    (clamp_u8(rval), clamp_u8(gval), clamp_u8(bval))
+    (r, g, b)
 }
 
 /// Calculate plane sizes and offsets for planar YUV formats
@@ -1221,52 +1217,86 @@ pub fn vxu_color_convert_impl(
                 let src_len = width * height * 3;
                 let (y_size, _, dst_total) = get_nv12_plane_info(src_width, src_height);
                 if src_data.len() >= src_len && dst_data.len() >= dst_total {
-                    // Clear destination first
-                    dst_data.fill(128);
+                    // Clear UV plane with neutral chroma
+                    dst_data[y_size..].fill(128);
 
-                    // First pass: compute Y plane
+                    // Y plane: linear scan over src, write to dst[y * width + x]
+                    let mut src_i = 0usize;
                     for y in 0..height {
+                        let dst_row = y * width;
                         for x in 0..width {
-                            let src_idx = y * width * 3 + x * 3;
-                            let r = src_data[src_idx];
-                            let g = src_data[src_idx + 1];
-                            let b = src_data[src_idx + 2];
-                            let (y_val, _, _) = rgb_to_yuv(r, g, b);
-                            dst_data[y * width + x] = y_val;
+                            let r = src_data[src_i];
+                            let g = src_data[src_i + 1];
+                            let b = src_data[src_i + 2];
+                            src_i += 3;
+                            dst_data[dst_row + x] = ((Y_COEFF_R * r as i32
+                                + Y_COEFF_G * g as i32
+                                + Y_COEFF_B * b as i32
+                                + 127) >> 8) as u8;
                         }
                     }
 
-                    // Second pass: compute UV plane (subsampled 2x2)
-                    // CTS reference: convert each pixel to YUV, then average the U and V values
+                    // UV plane: process 2x2 blocks
+                    let mut src_i = 0usize;
                     for y in (0..height).step_by(2) {
-                        for x in (0..width).step_by(2) {
+                        let next_row_src_i = src_i + width * 3;
+                        let uv_row = y_size + (y / 2) * width;
+                        let mut x = 0usize;
+                        while x + 1 < width {
+                            // 4 pixels: (x,y), (x+1,y), (x,y+1), (x+1,y+1)
+                            let r0 = src_data[src_i + x * 3];
+                            let g0 = src_data[src_i + x * 3 + 1];
+                            let b0 = src_data[src_i + x * 3 + 2];
+                            let r1 = src_data[src_i + (x + 1) * 3];
+                            let g1 = src_data[src_i + (x + 1) * 3 + 1];
+                            let b1 = src_data[src_i + (x + 1) * 3 + 2];
+                            let r2 = src_data[next_row_src_i + x * 3];
+                            let g2 = src_data[next_row_src_i + x * 3 + 1];
+                            let b2 = src_data[next_row_src_i + x * 3 + 2];
+                            let r3 = src_data[next_row_src_i + (x + 1) * 3];
+                            let g3 = src_data[next_row_src_i + (x + 1) * 3 + 1];
+                            let b3 = src_data[next_row_src_i + (x + 1) * 3 + 2];
+
+                            let sum_u = (U_COEFF_R * (r0 as i32 + r1 as i32 + r2 as i32 + r3 as i32)
+                                + U_COEFF_G * (g0 as i32 + g1 as i32 + g2 as i32 + g3 as i32)
+                                + U_COEFF_B * (b0 as i32 + b1 as i32 + b2 as i32 + b3 as i32)
+                                + 4 * 32768) >> 10;
+                            let sum_v = (V_COEFF_R * (r0 as i32 + r1 as i32 + r2 as i32 + r3 as i32)
+                                + V_COEFF_G * (g0 as i32 + g1 as i32 + g2 as i32 + g3 as i32)
+                                + V_COEFF_B * (b0 as i32 + b1 as i32 + b2 as i32 + b3 as i32)
+                                + 4 * 32768) >> 10;
+
+                            let uv_idx = uv_row + x;
+                            dst_data[uv_idx] = sum_u.clamp(0, 255) as u8;
+                            dst_data[uv_idx + 1] = sum_v.clamp(0, 255) as u8;
+                            x += 2;
+                        }
+                        // Handle odd width tail
+                        if x < width {
                             let mut sum_u = 0i32;
                             let mut sum_v = 0i32;
-
+                            let mut count = 0i32;
                             for dy in 0..2 {
-                                for dx in 0..2 {
-                                    let py = (y + dy).min(height - 1);
-                                    let px = (x + dx).min(width - 1);
-                                    let src_idx = py * width * 3 + px * 3;
-                                    let r = src_data[src_idx];
-                                    let g = src_data[src_idx + 1];
-                                    let b = src_data[src_idx + 2];
-                                    let (_, u, v) = rgb_to_yuv(r, g, b);
-                                    sum_u += u as i32;
-                                    sum_v += v as i32;
-                                }
+                                let py = (y + dy).min(height - 1);
+                                let pidx = (py * width + x) * 3;
+                                let r = src_data[pidx];
+                                let g = src_data[pidx + 1];
+                                let b = src_data[pidx + 2];
+                                sum_u += (U_COEFF_R * r as i32
+                                    + U_COEFF_G * g as i32
+                                    + U_COEFF_B * b as i32
+                                    + 32768) >> 8;
+                                sum_v += (V_COEFF_R * r as i32
+                                    + V_COEFF_G * g as i32
+                                    + V_COEFF_B * b as i32
+                                    + 32768) >> 8;
+                                count += 1;
                             }
-
-                            let u_val = (sum_u / 4) as u8;
-                            let v_val = (sum_v / 4) as u8;
-
-                            let uv_y = y / 2;
-                            let uv_idx = y_size + uv_y * width + x;
-                            if uv_idx + 1 < dst_data.len() {
-                                dst_data[uv_idx] = u_val;
-                                dst_data[uv_idx + 1] = v_val;
-                            }
+                            let uv_idx = uv_row + x;
+                            dst_data[uv_idx] = (sum_u / count).clamp(0, 255) as u8;
+                            dst_data[uv_idx + 1] = (sum_v / count).clamp(0, 255) as u8;
                         }
+                        src_i = next_row_src_i + if y + 1 < height { width * 3 } else { 0 };
                     }
                     VX_SUCCESS
                 } else {
@@ -1348,60 +1378,86 @@ pub fn vxu_color_convert_impl(
                 let src_len = width * height * 3;
                 let (y_size, u_size, _, dst_total) = get_iyuv_plane_info(src_width, src_height);
                 if src_data.len() >= src_len && dst_data.len() >= dst_total {
-                    // Clear destination
-                    dst_data.fill(0);
+                    dst_data[..dst_total].fill(0);
 
                     let half_w = (width + 1) / 2;
-                    let _half_h = (height + 1) / 2;
 
-                    // Compute Y plane
+                    // Y plane: linear scan
+                    let mut src_i = 0usize;
                     for y in 0..height {
+                        let dst_row = y * width;
                         for x in 0..width {
-                            let src_idx = y * width * 3 + x * 3;
-                            let r = src_data[src_idx];
-                            let g = src_data[src_idx + 1];
-                            let b = src_data[src_idx + 2];
-                            let (y_val, _, _) = rgb_to_yuv(r, g, b);
-                            dst_data[y * width + x] = y_val;
+                            let r = src_data[src_i];
+                            let g = src_data[src_i + 1];
+                            let b = src_data[src_i + 2];
+                            src_i += 3;
+                            dst_data[dst_row + x] = ((Y_COEFF_R * r as i32
+                                + Y_COEFF_G * g as i32
+                                + Y_COEFF_B * b as i32
+                                + 127) >> 8) as u8;
                         }
                     }
 
-                    // Compute U and V planes (subsampled 2x2)
-                    // CTS reference: convert each pixel to YUV, then average the U and V values
+                    // U/V planes: coarsened 2x2 average in fixed-point
+                    src_i = 0;
                     for y in (0..height).step_by(2) {
-                        for x in (0..width).step_by(2) {
+                        let next_row_src_i = src_i + width * 3;
+                        let uv_y = y / 2;
+                        let u_row = y_size + uv_y * half_w;
+                        let v_row = y_size + u_size + uv_y * half_w;
+                        let mut x = 0usize;
+                        while x + 1 < width {
+                            let r0 = src_data[src_i + x * 3];
+                            let g0 = src_data[src_i + x * 3 + 1];
+                            let b0 = src_data[src_i + x * 3 + 2];
+                            let r1 = src_data[src_i + (x + 1) * 3];
+                            let g1 = src_data[src_i + (x + 1) * 3 + 1];
+                            let b1 = src_data[src_i + (x + 1) * 3 + 2];
+                            let r2 = src_data[next_row_src_i + x * 3];
+                            let g2 = src_data[next_row_src_i + x * 3 + 1];
+                            let b2 = src_data[next_row_src_i + x * 3 + 2];
+                            let r3 = src_data[next_row_src_i + (x + 1) * 3];
+                            let g3 = src_data[next_row_src_i + (x + 1) * 3 + 1];
+                            let b3 = src_data[next_row_src_i + (x + 1) * 3 + 2];
+
+                            let rs = r0 as i32 + r1 as i32 + r2 as i32 + r3 as i32;
+                            let gs = g0 as i32 + g1 as i32 + g2 as i32 + g3 as i32;
+                            let bs = b0 as i32 + b1 as i32 + b2 as i32 + b3 as i32;
+
+                            let u_val = ((U_COEFF_R * rs + U_COEFF_G * gs + U_COEFF_B * bs
+                                + 4 * 32768) >> 10)
+                                .clamp(0, 255) as u8;
+                            let v_val = ((V_COEFF_R * rs + V_COEFF_G * gs + V_COEFF_B * bs
+                                + 4 * 32768) >> 10)
+                                .clamp(0, 255) as u8;
+
+                            let uv_x = x / 2;
+                            dst_data[u_row + uv_x] = u_val;
+                            dst_data[v_row + uv_x] = v_val;
+                            x += 2;
+                        }
+                        if x < width {
+                            // tail: 1 or 2 pixels wide
                             let mut sum_u = 0i32;
                             let mut sum_v = 0i32;
-
+                            let mut count = 0i32;
                             for dy in 0..2 {
-                                for dx in 0..2 {
-                                    let py = (y + dy).min(height - 1);
-                                    let px = (x + dx).min(width - 1);
-                                    let src_idx = py * width * 3 + px * 3;
-                                    let r = src_data[src_idx];
-                                    let g = src_data[src_idx + 1];
-                                    let b = src_data[src_idx + 2];
-                                    let (_, u, v) = rgb_to_yuv(r, g, b);
-                                    sum_u += u as i32;
-                                    sum_v += v as i32;
-                                }
+                                let py = (y + dy).min(height - 1);
+                                let pidx = (py * width + x) * 3;
+                                let r = src_data[pidx];
+                                let g = src_data[pidx + 1];
+                                let b = src_data[pidx + 2];
+                                sum_u += (U_COEFF_R * r as i32 + U_COEFF_G * g as i32
+                                    + U_COEFF_B * b as i32 + 32768) >> 8;
+                                sum_v += (V_COEFF_R * r as i32 + V_COEFF_G * g as i32
+                                    + V_COEFF_B * b as i32 + 32768) >> 8;
+                                count += 1;
                             }
-
-                            let u_val = (sum_u / 4) as u8;
-                            let v_val = (sum_v / 4) as u8;
-
-                            let uv_y = y / 2;
                             let uv_x = x / 2;
-                            let u_idx = y_size + uv_y * half_w + uv_x;
-                            let v_idx = y_size + u_size + uv_y * half_w + uv_x;
-
-                            if u_idx < dst_data.len() {
-                                dst_data[u_idx] = u_val;
-                            }
-                            if v_idx < dst_data.len() {
-                                dst_data[v_idx] = v_val;
-                            }
+                            dst_data[u_row + uv_x] = (sum_u / count).clamp(0, 255) as u8;
+                            dst_data[v_row + uv_x] = (sum_v / count).clamp(0, 255) as u8;
                         }
+                        src_i = next_row_src_i + if y + 1 < height { width * 3 } else { 0 };
                     }
                     VX_SUCCESS
                 } else {
@@ -7416,7 +7472,6 @@ fn canny_edge_detector(
     let bsz = (gsz / 2 + 1) as usize;
 
     // Sobel separable kernels per OpenVX spec / CTS reference
-    // dim1 = smoothing kernel, dim2 = derivative kernel
     let dim1: [[i32; 7]; 3] = [
         [1, 2, 1, 0, 0, 0, 0],
         [1, 4, 6, 4, 1, 0, 0],
@@ -7443,6 +7498,51 @@ fn canny_edge_detector(
         (high_thresh as i64 * high_thresh as i64) as u64
     };
 
+    // Precompute gradients for all pixels to avoid redundant magnitude
+    // computation during NMS. Each pixel needs dx, dy, and magnitude.
+    let mut grad_dx = vec![0i32; img_size];
+    let mut grad_dy = vec![0i32; img_size];
+    let mut magnitude = vec![0u64; img_size];
+
+    let half = gsz as isize / 2;
+    let src_data = src.data();
+    let src_stride = width;
+
+    for y in 0..height {
+        for x in 0..width {
+            let mut dx: i32 = 0;
+            let mut dy: i32 = 0;
+            for i in 0..gsz as isize {
+                let mut xx: i32 = 0;
+                let mut yy: i32 = 0;
+                for j in 0..gsz as isize {
+                    let py = y as isize + i - half;
+                    let px = x as isize + j - half;
+                    let v = if px >= 0 && px < width as isize && py >= 0 && py < height as isize {
+                        src_data[py as usize * src_stride + px as usize] as i32
+                    } else {
+                        let bx = px.max(0).min(width as isize - 1) as usize;
+                        let by = py.max(0).min(height as isize - 1) as usize;
+                        src_data[by * src_stride + bx] as i32
+                    };
+                    xx += v * w2[j as usize];
+                    yy += v * w1[j as usize];
+                }
+                dx += xx * w1[i as usize];
+                dy += yy * w2[i as usize];
+            }
+
+            let idx = y * width + x;
+            grad_dx[idx] = dx;
+            grad_dy[idx] = dy;
+            magnitude[idx] = if norm == VX_NORM_L2 {
+                (dx as i64 * dx as i64 + dy as i64 * dy as i64) as u64
+            } else {
+                (dx.abs() + dy.abs()) as u64
+            };
+        }
+    }
+
     // Working edge image: 0=none, 1=link(weak), 2=edge(strong)
     let mut tmp = vec![0u8; img_size];
 
@@ -7460,44 +7560,13 @@ fn canny_edge_detector(
         }
     }
 
-    // Helper to compute magnitude at (x, y) with the given kernel size and norm
-    let compute_magnitude = |x: usize, y: usize| -> (u64, i32, i32) {
-        let mut dx: i32 = 0;
-        let mut dy: i32 = 0;
-        let half = gsz as isize / 2;
-        for i in 0..gsz as isize {
-            let mut xx: i32 = 0;
-            let mut yy: i32 = 0;
-            for j in 0..gsz as isize {
-                let py = y as isize + i - half;
-                let px = x as isize + j - half;
-                let v = if px >= 0 && px < width as isize && py >= 0 && py < height as isize {
-                    src.get_pixel(px as usize, py as usize) as i32
-                } else {
-                    // Replicate border
-                    let bx = px.max(0).min(width as isize - 1) as usize;
-                    let by = py.max(0).min(height as isize - 1) as usize;
-                    src.get_pixel(bx, by) as i32
-                };
-                xx += v * w2[j as usize];
-                yy += v * w1[j as usize];
-            }
-            dx += xx * w1[i as usize];
-            dy += yy * w2[i as usize];
-        }
-
-        let mag = if norm == VX_NORM_L2 {
-            (dx as i64 * dx as i64 + dy as i64 * dy as i64) as u64
-        } else {
-            (dx.abs() + dy.abs()) as u64
-        };
-        (mag, dx, dy)
-    };
-
-    // threshold + NMS
+    // threshold + NMS using precomputed gradients
     for j in bsz..height - bsz {
         for i in bsz..width - bsz {
-            let (m, dx, dy) = compute_magnitude(i, j);
+            let idx = j * width + i;
+            let m = magnitude[idx];
+            let dx = grad_dx[idx];
+            let dy = grad_dy[idx];
 
             let mut e: u8 = 0; // CREF_NONE
 
@@ -7506,28 +7575,22 @@ fn canny_edge_detector(
                 let dx64 = dx.abs() as u64;
                 let dy64 = dy.abs() as u64;
 
-                // Determine NMS direction based on |dx| vs |dy| comparison
                 let (m1, m2): (u64, u64);
                 if l1 * l1 < 2 * dx64 * dx64 {
-                    // |y| < |x| * tan(pi/8)  → horizontal edge, compare left/right
-                    m1 = compute_magnitude(i.saturating_sub(1), j).0;
-                    m2 = compute_magnitude(i + 1, j).0;
+                    // horizontal edge
+                    m1 = magnitude[j * width + i.saturating_sub(1)];
+                    m2 = magnitude[j * width + i + 1];
                 } else if l1 * l1 < 2 * dy64 * dy64 {
-                    // |x| < |y| * tan(pi/8)  → vertical edge, compare up/down
-                    m1 = compute_magnitude(i, j.saturating_sub(1)).0;
-                    m2 = compute_magnitude(i, j + 1).0;
+                    // vertical edge
+                    m1 = magnitude[j.saturating_sub(1) * width + i];
+                    m2 = magnitude[(j + 1) * width + i];
                 } else {
                     // diagonal
                     let s = if (dx ^ dy) < 0 { -1i32 } else { 1i32 };
-                    // m1 = magnitude(i - s, j - 1)
-                    // m2 = magnitude(i + s, j + 1) + 1
                     let m1_i = if s < 0 { i + 1 } else { i.saturating_sub(1) };
                     let m2_i = if s >= 0 { i + 1 } else { i.saturating_sub(1) };
-                    m1 = compute_magnitude(m1_i, j.saturating_sub(1)).0;
-                    let m2_raw = compute_magnitude(m2_i, j + 1).0;
-                    // OpenCV gotcha: +1 for m2 in diagonal case
-                    // But we compare m > m1 && m >= m2, so +1 makes m2 slightly larger
-                    // This means fewer pixels pass NMS, matching OpenCV/CTS behavior
+                    m1 = magnitude[j.saturating_sub(1) * width + m1_i];
+                    let m2_raw = magnitude[(j + 1) * width + m2_i];
                     m2 = m2_raw + 1;
                 }
 
@@ -7536,9 +7599,14 @@ fn canny_edge_detector(
                 }
             }
 
-            tmp[j * width + i] = e;
+            tmp[idx] = e;
         }
     }
+
+    // Drop large gradient buffers before edge tracing to save memory
+    drop(grad_dx);
+    drop(grad_dy);
+    drop(magnitude);
 
     // Recursive edge tracing (follow_edge)
     let offsets: [(isize, isize); 8] = [
@@ -7567,7 +7635,6 @@ fn canny_edge_detector(
             if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                 let idx = (ny as usize) * width + (nx as usize);
                 if tmp[idx] == 1 {
-                    // Use explicit stack to avoid deep recursion
                     let mut stack: Vec<(usize, usize)> = vec![(nx as usize, ny as usize)];
                     while let Some((sx, sy)) = stack.pop() {
                         let sidx = sy * width + sx;
