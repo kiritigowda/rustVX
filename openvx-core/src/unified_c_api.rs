@@ -7598,7 +7598,32 @@ fn create_object_like_exemplar(
             thresh_type: vx_enum,
             data_type: vx_enum,
         ) -> vx_threshold;
+        // vx_user_data_object is `*mut c_void` (see
+        // openvx-buffer/src/user_data_object.rs); openvx-core can't import
+        // the alias without a circular dep, so the raw pointer type is
+        // used inline here.
+        fn vxQueryUserDataObject(
+            udo: *mut c_void,
+            attr: vx_enum,
+            ptr: *mut c_void,
+            size: usize,
+        ) -> vx_status;
+        fn vxCreateUserDataObject(
+            ctx: vx_context,
+            type_name: *const vx_char,
+            size: vx_size,
+            ptr: *const c_void,
+        ) -> *mut c_void;
     }
+    // VX_TYPE_USER_DATA_OBJECT = 0x816 per vx_khr_user_data_object.h. The
+    // pre-existing file-scope `VX_TYPE_TARGET` constant happens to also
+    // equal 0x816 (a latent labeling artefact predating this code) — a
+    // local shadow keeps this match arm self-documenting without changing
+    // unrelated callers of the old name.
+    const VX_TYPE_USER_DATA_OBJECT: vx_enum = 0x816;
+    const VX_USER_DATA_OBJECT_NAME: vx_enum = 0x0008_1600;
+    const VX_USER_DATA_OBJECT_SIZE: vx_enum = 0x0008_1601;
+    const VX_MAX_REFERENCE_NAME: usize = 64;
     unsafe {
         match exemplar_type {
             VX_TYPE_IMAGE => {
@@ -7832,6 +7857,34 @@ fn create_object_like_exemplar(
                 let mut item_ref = item0 as vx_reference;
                 vxReleaseReference(&mut item_ref as *mut vx_reference);
                 new_array as vx_reference
+            }
+            VX_TYPE_USER_DATA_OBJECT => {
+                // Clone the exemplar's metadata (name + byte size) into a
+                // fresh, zero-initialised UDO. `vxCreateObjectArray`
+                // contract is "build `count` independent items shaped like
+                // the exemplar", not "share storage" — so each slot gets
+                // its own backing buffer, matching how the IMAGE/ARRAY
+                // arms above also produce fresh blanks.
+                let mut name = [0u8; VX_MAX_REFERENCE_NAME];
+                let mut size: vx_size = 0;
+                vxQueryUserDataObject(
+                    exemplar as *mut c_void,
+                    VX_USER_DATA_OBJECT_NAME,
+                    name.as_mut_ptr() as *mut c_void,
+                    VX_MAX_REFERENCE_NAME,
+                );
+                vxQueryUserDataObject(
+                    exemplar as *mut c_void,
+                    VX_USER_DATA_OBJECT_SIZE,
+                    &mut size as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
+                vxCreateUserDataObject(
+                    context,
+                    name.as_ptr() as *const vx_char,
+                    size,
+                    std::ptr::null(),
+                ) as vx_reference
             }
             _ => std::ptr::null_mut(),
         }

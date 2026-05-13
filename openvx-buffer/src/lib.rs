@@ -1,6 +1,7 @@
 //! Buffer module
 
 pub mod c_api;
+pub mod user_data_object;
 
 use openvx_core::{Referenceable, VxResult, VxType};
 

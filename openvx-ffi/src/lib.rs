@@ -12,4 +12,5 @@ pub use openvx_core::unified_c_api::*;
 
 // Re-export from buffer and image crates to ensure symbols are included
 pub use openvx_buffer::c_api::*;
+pub use openvx_buffer::user_data_object::*;
 pub use openvx_image::c_api::*;
