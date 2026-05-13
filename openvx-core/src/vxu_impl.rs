@@ -2580,151 +2580,147 @@ pub fn vxu_channel_combine_impl(
         match format as u32 {
             0x32424752 => {
                 // VX_DF_IMAGE_RGB
-                // Interleaved RGB: R, G, B per pixel
-                for y in 0..height {
-                    for x in 0..width {
-                        let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let idx = y * width * 3 + x * 3;
-                        if idx + 2 < dst_data.len() {
-                            dst_data[idx] = r;
-                            dst_data[idx + 1] = g;
-                            dst_data[idx + 2] = b;
+                if let Some(yi) = y_img.as_ref() {
+                    let p0 = yi.data();
+                    if let Some(ui) = u_img.as_ref() {
+                        let p1 = ui.data();
+                        if let Some(vi) = v_img.as_ref() {
+                            let p2 = vi.data();
+                            let count = width * height;
+                            for i in 0..count {
+                                let idx = i * 3;
+                                dst_data[idx] = p0[i];
+                                dst_data[idx + 1] = p1[i];
+                                dst_data[idx + 2] = p2[i];
+                            }
+                        } else {
+                            for i in 0..(width * height) {
+                                let idx = i * 3;
+                                dst_data[idx] = p0[i];
+                            }
+                        }
+                    } else {
+                        for i in 0..(width * height) {
+                            let idx = i * 3;
+                            dst_data[idx] = p0[i];
                         }
                     }
                 }
             }
             0x41424752 => {
                 // VX_DF_IMAGE_RGBX
-                // Interleaved RGBX: R, G, B, X per pixel
-                for y in 0..height {
-                    for x in 0..width {
-                        let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let a = a_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(255);
-                        let idx = y * width * 4 + x * 4;
-                        if idx + 3 < dst_data.len() {
-                            dst_data[idx] = r;
-                            dst_data[idx + 1] = g;
-                            dst_data[idx + 2] = b;
-                            dst_data[idx + 3] = a;
+                if let Some(yi) = y_img.as_ref() {
+                    let p0 = yi.data();
+                    if let Some(ui) = u_img.as_ref() {
+                        let p1 = ui.data();
+                        if let Some(vi) = v_img.as_ref() {
+                            let p2 = vi.data();
+                            let p3 = a_img.as_ref().map(|a| a.data());
+                            let count = width * height;
+                            for i in 0..count {
+                                let idx = i * 4;
+                                dst_data[idx] = p0[i];
+                                dst_data[idx + 1] = p1[i];
+                                dst_data[idx + 2] = p2[i];
+                                dst_data[idx + 3] = p3.as_ref().map(|d| d[i]).unwrap_or(255);
+                            }
                         }
                     }
                 }
             }
             0x3231564E => {
                 // VX_DF_IMAGE_NV12
-                // Planar: Y (full), UV interleaved (half size)
                 let y_size = width * height;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        dst_data[y * width + x] = y_val;
-                    }
+                if let Some(yi) = y_img.as_ref() {
+                    let p0 = yi.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
                 }
-                // UV plane (subsampled)
                 let half_w = (width + 1) / 2;
                 let half_h = (height + 1) / 2;
-                for y in 0..half_h {
-                    for x in 0..half_w {
-                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        let uv_idx = y_size + y * width + x * 2;
-                        if uv_idx + 1 < dst_data.len() {
-                            dst_data[uv_idx] = u_val;
-                            dst_data[uv_idx + 1] = v_val;
+                if let Some(ui) = u_img.as_ref() {
+                    let p1 = ui.data();
+                    if let Some(vi) = v_img.as_ref() {
+                        let p2 = vi.data();
+                        for y in 0..half_h {
+                            for x in 0..half_w {
+                                let uv_idx = y_size + y * width + x * 2;
+                                if uv_idx + 1 < dst_data.len() {
+                                    dst_data[uv_idx] = p1[y * half_w + x];
+                                    dst_data[uv_idx + 1] = p2[y * half_w + x];
+                                }
+                            }
                         }
                     }
                 }
             }
             0x3132564E => {
                 // VX_DF_IMAGE_NV21
-                // Planar: Y (full), VU interleaved (half size, V first)
                 let y_size = width * height;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        dst_data[y * width + x] = y_val;
-                    }
+                if let Some(yi) = y_img.as_ref() {
+                    let p0 = yi.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
                 }
-                // VU plane (subsampled)
                 let half_w = (width + 1) / 2;
                 let half_h = (height + 1) / 2;
-                for y in 0..half_h {
-                    for x in 0..half_w {
-                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        let vu_idx = y_size + y * width + x * 2;
-                        if vu_idx + 1 < dst_data.len() {
-                            dst_data[vu_idx] = v_val;
-                            dst_data[vu_idx + 1] = u_val;
+                if let Some(ui) = u_img.as_ref() {
+                    let p1 = ui.data();
+                    if let Some(vi) = v_img.as_ref() {
+                        let p2 = vi.data();
+                        for y in 0..half_h {
+                            for x in 0..half_w {
+                                let vu_idx = y_size + y * width + x * 2;
+                                if vu_idx + 1 < dst_data.len() {
+                                    dst_data[vu_idx] = p2[y * half_w + x];
+                                    dst_data[vu_idx + 1] = p1[y * half_w + x];
+                                }
+                            }
                         }
                     }
                 }
             }
             0x56555949 => {
                 // VX_DF_IMAGE_IYUV
-                // Planar: Y (full), U (quarter), V (quarter)
                 let y_size = width * height;
                 let half_w = (width + 1) / 2;
                 let half_h = (height + 1) / 2;
                 let u_size = half_w * half_h;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        dst_data[y * width + x] = y_val;
-                    }
+                if let Some(yi) = y_img.as_ref() {
+                    let p0 = yi.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
                 }
-                // U plane
-                for y in 0..half_h {
-                    for x in 0..half_w {
-                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        let u_idx = y_size + y * half_w + x;
-                        if u_idx < dst_data.len() {
-                            dst_data[u_idx] = u_val;
-                        }
-                    }
-                }
-                // V plane
-                for y in 0..half_h {
-                    for x in 0..half_w {
-                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        let v_idx = y_size + u_size + y * half_w + x;
-                        if v_idx < dst_data.len() {
-                            dst_data[v_idx] = v_val;
+                if let Some(ui) = u_img.as_ref() {
+                    let p1 = ui.data();
+                    if let Some(vi) = v_img.as_ref() {
+                        let p2 = vi.data();
+                        for y in 0..half_h {
+                            for x in 0..half_w {
+                                let u_idx = y_size + y * half_w + x;
+                                let v_idx = y_size + u_size + y * half_w + x;
+                                if u_idx < dst_data.len() {
+                                    dst_data[u_idx] = p1[y * half_w + x];
+                                }
+                                if v_idx < dst_data.len() {
+                                    dst_data[v_idx] = p2[y * half_w + x];
+                                }
+                            }
                         }
                     }
                 }
             }
             0x34565559 => {
                 // VX_DF_IMAGE_YUV4
-                // Planar: Three full-size planes
                 let y_size = width * height;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        dst_data[y * width + x] = y_val;
-                    }
+                if let Some(yi) = y_img.as_ref() {
+                    let p0 = yi.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
                 }
-                // U plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let u_val = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        dst_data[y_size + y * width + x] = u_val;
-                    }
+                if let Some(ui) = u_img.as_ref() {
+                    let p1 = ui.data();
+                    dst_data[y_size..2 * y_size].copy_from_slice(&p1[..y_size]);
                 }
-                // V plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let v_val = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(128);
-                        dst_data[2 * y_size + y * width + x] = v_val;
-                    }
+                if let Some(vi) = v_img.as_ref() {
+                    let p2 = vi.data();
+                    dst_data[2 * y_size..3 * y_size].copy_from_slice(&p2[..y_size]);
                 }
             }
             0x59565955 => {
@@ -2996,6 +2992,80 @@ pub fn vxu_convolve_impl(
         let origin_x = cols / 2;
         let origin_y = rows / 2;
 
+        // Fast path: 3x3 kernel with Undefined border (inner region only, no border checks)
+        if cols == 3 && rows == 3 && border_mode == BorderMode::Undefined
+            && width > 2 && height > 2
+        {
+            let src_data = src.data();
+            if dst_format == VX_DF_IMAGE_S16 {
+                let mut dst = match Image::new(width, height, ImageFormat::GrayS16) {
+                    Some(img) => img,
+                    None => return VX_ERROR_INVALID_PARAMETERS,
+                };
+                let scale_i = scale as i32;
+                let c00 = coeffs[8] as i32; let c01 = coeffs[7] as i32; let c02 = coeffs[6] as i32;
+                let c10 = coeffs[5] as i32; let c11 = coeffs[4] as i32; let c12 = coeffs[3] as i32;
+                let c20 = coeffs[2] as i32; let c21 = coeffs[1] as i32; let c22 = coeffs[0] as i32;
+                let w = width as usize;
+                for y in 1..(height - 1) {
+                    let y0 = (y - 1) as usize * w;
+                    let y1 = y as usize * w;
+                    let y2 = (y + 1) as usize * w;
+                    for x in 1..(width - 1) {
+                        let x0 = x as usize - 1;
+                        let x1 = x as usize;
+                        let x2 = x as usize + 1;
+                        let sum = src_data[y0 + x0] as i32 * c00
+                            + src_data[y0 + x1] as i32 * c01
+                            + src_data[y0 + x2] as i32 * c02
+                            + src_data[y1 + x0] as i32 * c10
+                            + src_data[y1 + x1] as i32 * c11
+                            + src_data[y1 + x2] as i32 * c12
+                            + src_data[y2 + x0] as i32 * c20
+                            + src_data[y2 + x1] as i32 * c21
+                            + src_data[y2 + x2] as i32 * c22;
+                        let val = sum / scale_i;
+                        let clamped = val.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                        dst.set_pixel_s16(x, y, clamped);
+                    }
+                }
+                return copy_rust_to_c_image(&dst, output);
+            } else {
+                let mut dst = match create_matching_image(output) {
+                    Some(img) => img,
+                    None => return VX_ERROR_INVALID_PARAMETERS,
+                };
+                let dst_data = dst.data_mut();
+                let scale_i = scale as i32;
+                let c00 = coeffs[8] as i32; let c01 = coeffs[7] as i32; let c02 = coeffs[6] as i32;
+                let c10 = coeffs[5] as i32; let c11 = coeffs[4] as i32; let c12 = coeffs[3] as i32;
+                let c20 = coeffs[2] as i32; let c21 = coeffs[1] as i32; let c22 = coeffs[0] as i32;
+                let w = width as usize;
+                for y in 1..(height - 1) {
+                    let y0 = (y - 1) as usize * w;
+                    let y1 = y as usize * w;
+                    let y2 = (y + 1) as usize * w;
+                    let dst_row = y as usize * w;
+                    for x in 1..(width - 1) {
+                        let x0 = x as usize - 1;
+                        let x1 = x as usize;
+                        let x2 = x as usize + 1;
+                        let sum = src_data[y0 + x0] as i32 * c00
+                            + src_data[y0 + x1] as i32 * c01
+                            + src_data[y0 + x2] as i32 * c02
+                            + src_data[y1 + x0] as i32 * c10
+                            + src_data[y1 + x1] as i32 * c11
+                            + src_data[y1 + x2] as i32 * c12
+                            + src_data[y2 + x0] as i32 * c20
+                            + src_data[y2 + x1] as i32 * c21
+                            + src_data[y2 + x2] as i32 * c22;
+                        dst_data[dst_row + x1] = (sum / scale_i).clamp(0, 255) as u8;
+                    }
+                }
+                return copy_rust_to_c_image(&dst, output);
+            }
+        }
+
         if dst_format == VX_DF_IMAGE_S16 {
             let mut dst = match Image::new(width, height, ImageFormat::GrayS16) {
                 Some(img) => img,
@@ -3084,7 +3154,8 @@ pub fn vxu_dilate3x3_impl_with_border(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Convert vx_border_t to BorderMode
+        let width = src.width();
+        let height = src.height();
         let border_mode = if let Some(b) = border {
             match b.mode {
                 VX_BORDER_CONSTANT => {
@@ -3098,6 +3169,70 @@ pub fn vxu_dilate3x3_impl_with_border(
             BorderMode::Undefined
         };
 
+        // Fast path: process inner region with direct slice access,
+        // then edges with border-aware logic.
+        if width > 2 && height > 2 {
+            let src_data = src.data();
+            let dst_data = dst.data_mut();
+            let w = width as usize;
+
+            // Inner region (1..height-1, 1..width-1) — all neighbors in bounds
+            for y in 1..(height - 1) {
+                let y0 = (y - 1) as usize * w;
+                let y1 = y as usize * w;
+                let y2 = (y + 1) as usize * w;
+                let dst_row = y as usize * w;
+                for x in 1..(width - 1) {
+                    let x0 = x as usize - 1;
+                    let x1 = x as usize;
+                    let x2 = x as usize + 1;
+                    let mut max_val = src_data[y0 + x0];
+                    max_val = max_val.max(src_data[y0 + x1]);
+                    max_val = max_val.max(src_data[y0 + x2]);
+                    max_val = max_val.max(src_data[y1 + x0]);
+                    max_val = max_val.max(src_data[y1 + x1]);
+                    max_val = max_val.max(src_data[y1 + x2]);
+                    max_val = max_val.max(src_data[y2 + x0]);
+                    max_val = max_val.max(src_data[y2 + x1]);
+                    max_val = max_val.max(src_data[y2 + x2]);
+                    dst_data[dst_row + x1] = max_val;
+                }
+            }
+
+            // Edge pixels use border-aware logic
+            for y in [0usize, (height - 1) as usize] {
+                for x in 0..width {
+                    let mut max_val: u8 = 0;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            max_val = max_val.max(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x as usize] = max_val;
+                }
+            }
+            for y in 1..(height - 1) {
+                for x in [0usize, (width - 1) as usize] {
+                    let mut max_val: u8 = 0;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            max_val = max_val.max(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x] = max_val;
+                }
+            }
+
+            return copy_rust_to_c_image(&dst, output);
+        }
+
+        // Fallback for small images
         match dilate3x3(&src, &mut dst, border_mode) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -3130,7 +3265,8 @@ pub fn vxu_erode3x3_impl_with_border(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Convert vx_border_t to BorderMode
+        let width = src.width();
+        let height = src.height();
         let border_mode = if let Some(b) = border {
             match b.mode {
                 VX_BORDER_CONSTANT => {
@@ -3144,6 +3280,70 @@ pub fn vxu_erode3x3_impl_with_border(
             BorderMode::Undefined
         };
 
+        // Fast path: process inner region with direct slice access,
+        // then edges with border-aware logic.
+        if width > 2 && height > 2 {
+            let src_data = src.data();
+            let dst_data = dst.data_mut();
+            let w = width as usize;
+
+            // Inner region (1..height-1, 1..width-1) — all neighbors in bounds
+            for y in 1..(height - 1) {
+                let y0 = (y - 1) as usize * w;
+                let y1 = y as usize * w;
+                let y2 = (y + 1) as usize * w;
+                let dst_row = y as usize * w;
+                for x in 1..(width - 1) {
+                    let x0 = x as usize - 1;
+                    let x1 = x as usize;
+                    let x2 = x as usize + 1;
+                    let mut min_val = src_data[y0 + x0];
+                    min_val = min_val.min(src_data[y0 + x1]);
+                    min_val = min_val.min(src_data[y0 + x2]);
+                    min_val = min_val.min(src_data[y1 + x0]);
+                    min_val = min_val.min(src_data[y1 + x1]);
+                    min_val = min_val.min(src_data[y1 + x2]);
+                    min_val = min_val.min(src_data[y2 + x0]);
+                    min_val = min_val.min(src_data[y2 + x1]);
+                    min_val = min_val.min(src_data[y2 + x2]);
+                    dst_data[dst_row + x1] = min_val;
+                }
+            }
+
+            // Edge pixels use border-aware logic
+            for y in [0usize, (height - 1) as usize] {
+                for x in 0..width {
+                    let mut min_val: u8 = 255;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            min_val = min_val.min(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x as usize] = min_val;
+                }
+            }
+            for y in 1..(height - 1) {
+                for x in [0usize, (width - 1) as usize] {
+                    let mut min_val: u8 = 255;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            min_val = min_val.min(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x] = min_val;
+                }
+            }
+
+            return copy_rust_to_c_image(&dst, output);
+        }
+
+        // Fallback for small images
         match erode3x3(&src, &mut dst, border_mode) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -3548,10 +3748,37 @@ pub fn vxu_integral_image_impl(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match integral_image(&src, &mut dst) {
-            Ok(_) => copy_rust_to_c_image(&dst, output),
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+        let width = src.width();
+        let height = src.height();
+        let src_data = src.data();
+        let dst_data = dst.data_mut();
+        let w = width as usize;
+        let count = w * height as usize;
+
+        // Fast path: write u32 values directly via unaligned pointer writes
+        // (GrayU32 images have 4 bytes/pixel; dst_data capacity is count*4)
+        unsafe {
+            let dst_u32 = dst_data.as_mut_ptr() as *mut u32;
+            let src_ptr = src_data.as_ptr();
+            let mut prev_row: Vec<u32> = vec![0; w];
+
+            for y in 0..height {
+                let row_offset = y as usize * w;
+                let mut row_sum: u32 = 0;
+                for x in 0..w {
+                    row_sum += *src_ptr.add(row_offset + x) as u32;
+                    let integral_val = if y == 0 {
+                        row_sum
+                    } else {
+                        row_sum + prev_row[x]
+                    };
+                    prev_row[x] = integral_val;
+                    dst_u32.add(row_offset + x).write_unaligned(integral_val);
+                }
+            }
         }
+
+        copy_rust_to_c_image(&dst, output)
     }
 }
 

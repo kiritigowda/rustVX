@@ -370,142 +370,110 @@ impl KernelTrait for ChannelCombineKernel {
         // Handle different output formats
         match dst.format() {
             ImageFormat::Rgb => {
-                // RGB: Interleaved R, G, B
-                for y in 0..height {
-                    for x in 0..width {
-                        let r = plane0.get_pixel(x, y);
-                        let g = plane1.get_pixel(x, y);
-                        let b = plane2.get_pixel(x, y);
-                        let idx = (y * width + x) * 3;
-                        dst_data[idx] = r;
-                        dst_data[idx + 1] = g;
-                        dst_data[idx + 2] = b;
-                    }
+                // RGB: Interleaved R, G, B using direct slice access
+                let p0 = plane0.data();
+                let p1 = plane1.data();
+                let p2 = plane2.data();
+                let count = (width * height) as usize;
+                for i in 0..count {
+                    let idx = i * 3;
+                    dst_data[idx] = p0[i];
+                    dst_data[idx + 1] = p1[i];
+                    dst_data[idx + 2] = p2[i];
                 }
             }
             ImageFormat::Rgba => {
-                // RGBX: Interleaved R, G, B, A
-                for y in 0..height {
-                    for x in 0..width {
-                        let r = plane0.get_pixel(x, y);
-                        let g = plane1.get_pixel(x, y);
-                        let b = plane2.get_pixel(x, y);
-                        let a = plane3.map(|img| img.get_pixel(x, y)).unwrap_or(255);
-                        let idx = (y * width + x) * 4;
-                        dst_data[idx] = r;
-                        dst_data[idx + 1] = g;
-                        dst_data[idx + 2] = b;
-                        dst_data[idx + 3] = a;
-                    }
+                // RGBX: Interleaved R, G, B, A using direct slice access
+                let p0 = plane0.data();
+                let p1 = plane1.data();
+                let p2 = plane2.data();
+                let p3 = plane3.map(|img| img.data());
+                let count = (width * height) as usize;
+                for i in 0..count {
+                    let idx = i * 4;
+                    dst_data[idx] = p0[i];
+                    dst_data[idx + 1] = p1[i];
+                    dst_data[idx + 2] = p2[i];
+                    dst_data[idx + 3] = p3.as_ref().map(|d| d[i]).unwrap_or(255);
                 }
             }
             ImageFormat::NV12 => {
                 // NV12: Y plane (full), UV plane (half size, interleaved)
-                let y_size = width * height;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = plane0.get_pixel(x, y);
-                        dst_data[y * width + x] = y_val;
-                    }
+                let y_size = (width * height) as usize;
+                let half_w = ((width + 1) / 2) as usize;
+                let half_h = ((height + 1) / 2) as usize;
+                {
+                    let p0 = plane0.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
                 }
-                // UV plane (subsampled)
-                let half_w = (width + 1) / 2;
-                let half_h = (height + 1) / 2;
+                let p1 = plane1.data();
+                let p2 = plane2.data();
                 for y in 0..half_h {
                     for x in 0..half_w {
-                        let u_val = plane1.get_pixel(x, y);
-                        let v_val = plane2.get_pixel(x, y);
-                        let uv_idx = y_size + y * width + x * 2;
+                        let uv_idx = y_size + y * width as usize + x * 2;
                         if uv_idx + 1 < dst_data.len() {
-                            dst_data[uv_idx] = u_val;
-                            dst_data[uv_idx + 1] = v_val;
+                            dst_data[uv_idx] = p1[y * half_w + x];
+                            dst_data[uv_idx + 1] = p2[y * half_w + x];
                         }
                     }
                 }
             }
             ImageFormat::NV21 => {
                 // NV21: Y plane (full), VU plane (half size, interleaved V first)
-                let y_size = width * height;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = plane0.get_pixel(x, y);
-                        dst_data[y * width + x] = y_val;
-                    }
+                let y_size = (width * height) as usize;
+                let half_w = ((width + 1) / 2) as usize;
+                let half_h = ((height + 1) / 2) as usize;
+                {
+                    let p0 = plane0.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
                 }
-                // VU plane (subsampled)
-                let half_w = (width + 1) / 2;
-                let half_h = (height + 1) / 2;
+                let p1 = plane1.data();
+                let p2 = plane2.data();
                 for y in 0..half_h {
                     for x in 0..half_w {
-                        let v_val = plane2.get_pixel(x, y);
-                        let u_val = plane1.get_pixel(x, y);
-                        let vu_idx = y_size + y * width + x * 2;
+                        let vu_idx = y_size + y * width as usize + x * 2;
                         if vu_idx + 1 < dst_data.len() {
-                            dst_data[vu_idx] = v_val;
-                            dst_data[vu_idx + 1] = u_val;
+                            dst_data[vu_idx] = p2[y * half_w + x];
+                            dst_data[vu_idx + 1] = p1[y * half_w + x];
                         }
                     }
                 }
             }
             ImageFormat::IYUV => {
                 // IYUV: Y plane (full), U plane (quarter), V plane (quarter)
-                let y_size = width * height;
-                let half_w = (width + 1) / 2;
-                let half_h = (height + 1) / 2;
+                let y_size = (width * height) as usize;
+                let half_w = ((width + 1) / 2) as usize;
+                let half_h = ((height + 1) / 2) as usize;
                 let u_size = half_w * half_h;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = plane0.get_pixel(x, y);
-                        dst_data[y * width + x] = y_val;
-                    }
+                {
+                    let p0 = plane0.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
                 }
-                // U plane
+                let p1 = plane1.data();
+                let p2 = plane2.data();
                 for y in 0..half_h {
                     for x in 0..half_w {
-                        let u_val = plane1.get_pixel(x, y);
                         let u_idx = y_size + y * half_w + x;
-                        if u_idx < dst_data.len() {
-                            dst_data[u_idx] = u_val;
-                        }
-                    }
-                }
-                // V plane
-                for y in 0..half_h {
-                    for x in 0..half_w {
-                        let v_val = plane2.get_pixel(x, y);
                         let v_idx = y_size + u_size + y * half_w + x;
+                        if u_idx < dst_data.len() {
+                            dst_data[u_idx] = p1[y * half_w + x];
+                        }
                         if v_idx < dst_data.len() {
-                            dst_data[v_idx] = v_val;
+                            dst_data[v_idx] = p2[y * half_w + x];
                         }
                     }
                 }
             }
             ImageFormat::YUV4 => {
                 // YUV4: Three full-size planes
-                let y_size = width * height;
-                // Y plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let y_val = plane0.get_pixel(x, y);
-                        dst_data[y * width + x] = y_val;
-                    }
-                }
-                // U plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let u_val = plane1.get_pixel(x, y);
-                        dst_data[y_size + y * width + x] = u_val;
-                    }
-                }
-                // V plane
-                for y in 0..height {
-                    for x in 0..width {
-                        let v_val = plane2.get_pixel(x, y);
-                        dst_data[2 * y_size + y * width + x] = v_val;
-                    }
+                let y_size = (width * height) as usize;
+                {
+                    let p0 = plane0.data();
+                    let p1 = plane1.data();
+                    let p2 = plane2.data();
+                    dst_data[..y_size].copy_from_slice(&p0[..y_size]);
+                    dst_data[y_size..2 * y_size].copy_from_slice(&p1[..y_size]);
+                    dst_data[2 * y_size..3 * y_size].copy_from_slice(&p2[..y_size]);
                 }
             }
             ImageFormat::UYVY => {

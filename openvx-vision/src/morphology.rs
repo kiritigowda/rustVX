@@ -87,6 +87,36 @@ pub fn dilate3x3(src: &Image, dst: &Image, border: BorderMode) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
 
+    // Fast path: Undefined border means only inner region is written;
+    // all neighbors are in bounds, so skip border checks entirely.
+    if border == BorderMode::Undefined && width > 2 && height > 2 {
+        let src_data = src.data();
+        let mut dst_data = dst.data_mut();
+        let w = width as usize;
+        for y in 1..(height - 1) {
+            let y0 = (y - 1) as usize * w;
+            let y1 = y as usize * w;
+            let y2 = (y + 1) as usize * w;
+            let dst_row = y as usize * w;
+            for x in 1..(width - 1) {
+                let x0 = x as usize - 1;
+                let x1 = x as usize;
+                let x2 = x as usize + 1;
+                let mut max_val = src_data[y0 + x0];
+                max_val = max_val.max(src_data[y0 + x1]);
+                max_val = max_val.max(src_data[y0 + x2]);
+                max_val = max_val.max(src_data[y1 + x0]);
+                max_val = max_val.max(src_data[y1 + x1]);
+                max_val = max_val.max(src_data[y1 + x2]);
+                max_val = max_val.max(src_data[y2 + x0]);
+                max_val = max_val.max(src_data[y2 + x1]);
+                max_val = max_val.max(src_data[y2 + x2]);
+                dst_data[dst_row + x1] = max_val;
+            }
+        }
+        return Ok(());
+    }
+
     let mut dst_data = dst.data_mut();
 
     // For VX_BORDER_UNDEFINED, only process the inner region
@@ -120,6 +150,36 @@ pub fn dilate3x3(src: &Image, dst: &Image, border: BorderMode) -> VxResult<()> {
 pub fn erode3x3(src: &Image, dst: &Image, border: BorderMode) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
+
+    // Fast path: Undefined border means only inner region is written;
+    // all neighbors are in bounds, so skip border checks entirely.
+    if border == BorderMode::Undefined && width > 2 && height > 2 {
+        let src_data = src.data();
+        let mut dst_data = dst.data_mut();
+        let w = width as usize;
+        for y in 1..(height - 1) {
+            let y0 = (y - 1) as usize * w;
+            let y1 = y as usize * w;
+            let y2 = (y + 1) as usize * w;
+            let dst_row = y as usize * w;
+            for x in 1..(width - 1) {
+                let x0 = x as usize - 1;
+                let x1 = x as usize;
+                let x2 = x as usize + 1;
+                let mut min_val = src_data[y0 + x0];
+                min_val = min_val.min(src_data[y0 + x1]);
+                min_val = min_val.min(src_data[y0 + x2]);
+                min_val = min_val.min(src_data[y1 + x0]);
+                min_val = min_val.min(src_data[y1 + x1]);
+                min_val = min_val.min(src_data[y1 + x2]);
+                min_val = min_val.min(src_data[y2 + x0]);
+                min_val = min_val.min(src_data[y2 + x1]);
+                min_val = min_val.min(src_data[y2 + x2]);
+                dst_data[dst_row + x1] = min_val;
+            }
+        }
+        return Ok(());
+    }
 
     let mut dst_data = dst.data_mut();
 
