@@ -355,7 +355,44 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 300 ./bin/vx_test_conformance --filter="Scalar.*:Array.*:ObjectArray.*:Matrix.*:Convolution.*:Distribution.*:LUT.*:Histogram.*:UserDataObject.*"
+          timeout 300 ./bin/vx_test_conformance --filter="Scalar.*:Array.*:ObjectArray.*:Matrix.*:Convolution.*:Distribution.*:LUT.*:Histogram.*"
+
+  # User Data Object KHR extension — runs the upstream Khronos
+  # `test_user_data_object.c` suite, gated at build time by
+  # `OPENVX_USE_USER_DATA_OBJECT=ON` (set in the `Build OpenVX CTS`
+  # step above). Covers all 7 functions from
+  # `include/VX/vx_khr_user_data_object.h`:
+  #
+  #   * vxCreateUserDataObject / vxCreateVirtualUserDataObject / vxReleaseUserDataObject
+  #   * vxQueryUserDataObject
+  #   * vxCopyUserDataObject
+  #   * vxMapUserDataObject / vxUnmapUserDataObject
+  #
+  # plus the user-kernel-with-UDO graph integration paths
+  # (`UserKernel/*`, `UserKernelObjectArray/*`, `RemoveKernel`,
+  # `OutDelay`). Split out of `data-objects` so the extension's status
+  # is visible at a glance in the PR check rollup, matching the
+  # treatment of `enhanced-vision` for the Enhanced Vision feature set.
+  user-data-object:
+    name: "user-data-object (KHR extension)"
+    runs-on: ubuntu-22.04
+    needs: build
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run User Data Object KHR extension tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 120 ./bin/vx_test_conformance --filter="UserDataObject.*"
 
   image-ops:
     runs-on: ubuntu-22.04
