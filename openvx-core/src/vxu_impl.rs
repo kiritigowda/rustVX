@@ -2579,37 +2579,49 @@ pub fn vxu_channel_combine_impl(
 
         match format as u32 {
             0x32424752 => {
-                // VX_DF_IMAGE_RGB
-                // Interleaved RGB: R, G, B per pixel
-                for y in 0..height {
-                    for x in 0..width {
-                        let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let idx = y * width * 3 + x * 3;
-                        if idx + 2 < dst_data.len() {
-                            dst_data[idx] = r;
-                            dst_data[idx + 1] = g;
-                            dst_data[idx + 2] = b;
+                // VX_DF_IMAGE_RGB — fast path when all three planes are present
+                if let (Some(r), Some(g), Some(b)) = (&y_img, &u_img, &v_img) {
+                    if let Err(_) = crate::kernel_fast_paths::channel_combine_rgb(r, g, b, &mut dst) {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                } else {
+                    // Fallback: slow get_pixel path for missing planes
+                    for y in 0..height {
+                        for x in 0..width {
+                            let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                            let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                            let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                            let idx = y * width * 3 + x * 3;
+                            if idx + 2 < dst_data.len() {
+                                dst_data[idx] = r;
+                                dst_data[idx + 1] = g;
+                                dst_data[idx + 2] = b;
+                            }
                         }
                     }
                 }
             }
             0x41424752 => {
-                // VX_DF_IMAGE_RGBX
-                // Interleaved RGBX: R, G, B, X per pixel
-                for y in 0..height {
-                    for x in 0..width {
-                        let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
-                        let a = a_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(255);
-                        let idx = y * width * 4 + x * 4;
-                        if idx + 3 < dst_data.len() {
-                            dst_data[idx] = r;
-                            dst_data[idx + 1] = g;
-                            dst_data[idx + 2] = b;
-                            dst_data[idx + 3] = a;
+                // VX_DF_IMAGE_RGBX — fast path when all four planes are present
+                if let (Some(r), Some(g), Some(b), Some(a)) = (&y_img, &u_img, &v_img, &a_img) {
+                    if let Err(_) = crate::kernel_fast_paths::channel_combine_rgbx(r, g, b, a, &mut dst) {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                } else {
+                    // Fallback: slow get_pixel path for missing planes
+                    for y in 0..height {
+                        for x in 0..width {
+                            let r = y_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                            let g = u_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                            let b = v_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(0);
+                            let a = a_img.as_ref().map(|img| img.get_pixel(x, y)).unwrap_or(255);
+                            let idx = y * width * 4 + x * 4;
+                            if idx + 3 < dst_data.len() {
+                                dst_data[idx] = r;
+                                dst_data[idx + 1] = g;
+                                dst_data[idx + 2] = b;
+                                dst_data[idx + 3] = a;
+                            }
                         }
                     }
                 }
@@ -3029,24 +3041,138 @@ pub fn vxu_convolve_impl(
             };
             let dst_data = dst.data_mut();
 
-            for y in 0..height {
-                for x in 0..width {
-                    let mut sum: i32 = 0;
-                    for ky in 0..rows {
-                        for kx in 0..cols {
-                            let coeff_idx = (rows - 1 - ky) * cols + (cols - 1 - kx);
-                            let coeff = coeffs[coeff_idx] as i32;
-                            let px = x as isize + kx as isize - origin_x as isize;
-                            let py = y as isize + ky as isize - origin_y as isize;
-                            let pixel = get_pixel_bordered(&src, px, py, border_mode) as i32;
-                            sum += pixel * coeff;
+            // Fast path: 3×3 kernel with direct slice access (no per-pixel border checks)
+            if cols == 3 && rows == 3 && border_mode == BorderMode::Undefined {
+                let src_data = src.data();
+                let w = width;
+                let h = height;
+                if w >= 3 && h >= 3 && src_data.len() >= w * h && dst_data.len() >= w * h {
+                    // Coeffs are already in OpenVX reversed order from the caller loop above.
+                    // Reconstruct the 3×3 matrix in normal top-left-to-bottom-right order
+                    // for the fast path (which expects coeffs[0]=top-left).
+                    let mut k: [i16; 9] = [0; 9];
+                    for ky in 0..3 {
+                        for kx in 0..3 {
+                            let coeff_idx = (2 - ky) * 3 + (2 - kx);
+                            k[ky * 3 + kx] = coeffs[coeff_idx];
                         }
                     }
-                    let value = sum / scale as i32;
-                    let clamped = value.clamp(0, 255) as u8;
-                    let idx = y * width + x;
-                    if let Some(p) = dst_data.get_mut(idx) {
-                        *p = clamped;
+                    // Inner region (no border checks)
+                    for y in 1..h - 1 {
+                        let row_m1 = &src_data[(y - 1) * w..y * w];
+                        let row_0  = &src_data[y * w..(y + 1) * w];
+                        let row_p1 = &src_data[(y + 1) * w..(y + 2) * w];
+                        let dst_row = &mut dst_data[y * w..(y + 1) * w];
+                        for x in 1..w - 1 {
+                            let mut sum: i32 = 0;
+                            sum += row_m1[x - 1] as i32 * k[0] as i32;
+                            sum += row_m1[x]     as i32 * k[1] as i32;
+                            sum += row_m1[x + 1] as i32 * k[2] as i32;
+                            sum += row_0[x - 1]  as i32 * k[3] as i32;
+                            sum += row_0[x]      as i32 * k[4] as i32;
+                            sum += row_0[x + 1]  as i32 * k[5] as i32;
+                            sum += row_p1[x - 1] as i32 * k[6] as i32;
+                            sum += row_p1[x]     as i32 * k[7] as i32;
+                            sum += row_p1[x + 1] as i32 * k[8] as i32;
+                            dst_row[x] = (sum / scale as i32).clamp(0, 255) as u8;
+                        }
+                    }
+                    // Top row: replicate nearest
+                    let dst_row = &mut dst_data[0..w];
+                    for x in 0..w {
+                        let mut sum: i32 = 0;
+                        let px = |dx: isize| if dx < 0 { 0 } else if dx >= w as isize { (w - 1) as isize } else { dx } as usize;
+                        let py = |dy: isize| if dy < 0 { 0 } else { dy } as usize;
+                        for ky in 0..3 {
+                            let src_y = py(ky as isize - 1);
+                            let src_row = &src_data[src_y * w..(src_y + 1) * w];
+                            for kx in 0..3 {
+                                let src_x = px(x as isize + kx as isize - 1);
+                                sum += src_row[src_x] as i32 * k[ky * 3 + kx] as i32;
+                            }
+                        }
+                        dst_row[x] = (sum / scale as i32).clamp(0, 255) as u8;
+                    }
+                    // Bottom row: replicate nearest
+                    let dst_row = &mut dst_data[(h - 1) * w..h * w];
+                    for x in 0..w {
+                        let mut sum: i32 = 0;
+                        let px = |dx: isize| if dx < 0 { 0 } else if dx >= w as isize { (w - 1) as isize } else { dx } as usize;
+                        let py = |dy: isize| if dy >= h as isize { (h - 1) as isize } else { dy } as usize;
+                        for ky in 0..3 {
+                            let src_y = py((h - 1) as isize + ky as isize - 1);
+                            let src_row = &src_data[src_y * w..(src_y + 1) * w];
+                            for kx in 0..3 {
+                                let src_x = px(x as isize + kx as isize - 1);
+                                sum += src_row[src_x] as i32 * k[ky * 3 + kx] as i32;
+                            }
+                        }
+                        dst_row[x] = (sum / scale as i32).clamp(0, 255) as u8;
+                    }
+                    // Left/right edges for inner rows
+                    for y in 1..h - 1 {
+                        let row_m1 = &src_data[(y - 1) * w..y * w];
+                        let row_0  = &src_data[y * w..(y + 1) * w];
+                        let row_p1 = &src_data[(y + 1) * w..(y + 2) * w];
+                        let dst_row = &mut dst_data[y * w..(y + 1) * w];
+                        // x = 0
+                        {
+                            let mut sum: i32 = 0;
+                            for ky in 0..3 {
+                                let src_row = match ky {
+                                    0 => row_m1,
+                                    1 => row_0,
+                                    2 => row_p1,
+                                    _ => unreachable!(),
+                                };
+                                for kx in 0..3 {
+                                    let src_x = if kx == 0 { 0 } else { kx - 1 };
+                                    sum += src_row[src_x] as i32 * k[ky * 3 + kx] as i32;
+                                }
+                            }
+                            dst_row[0] = (sum / scale as i32).clamp(0, 255) as u8;
+                        }
+                        // x = w - 1
+                        {
+                            let mut sum: i32 = 0;
+                            let xlast = w - 1;
+                            for ky in 0..3 {
+                                let src_row = match ky {
+                                    0 => row_m1,
+                                    1 => row_0,
+                                    2 => row_p1,
+                                    _ => unreachable!(),
+                                };
+                                for kx in 0..3 {
+                                    let src_x = if xlast + kx >= w + 1 { w - 1 } else { xlast + kx - 1 };
+                                    sum += src_row[src_x] as i32 * k[ky * 3 + kx] as i32;
+                                }
+                            }
+                            dst_row[xlast] = (sum / scale as i32).clamp(0, 255) as u8;
+                        }
+                    }
+                }
+            } else {
+                // Generic fallback (original get_pixel_bordered loop)
+                for y in 0..height {
+                    for x in 0..width {
+                        let mut sum: i32 = 0;
+                        for ky in 0..rows {
+                            for kx in 0..cols {
+                                let coeff_idx = (rows - 1 - ky) * cols + (cols - 1 - kx);
+                                let coeff = coeffs[coeff_idx] as i32;
+                                let px = x as isize + kx as isize - origin_x as isize;
+                                let py = y as isize + ky as isize - origin_y as isize;
+                                let pixel = get_pixel_bordered(&src, px, py, border_mode) as i32;
+                                sum += pixel * coeff;
+                            }
+                        }
+                        let value = sum / scale as i32;
+                        let clamped = value.clamp(0, 255) as u8;
+                        let idx = y * width + x;
+                        if let Some(p) = dst_data.get_mut(idx) {
+                            *p = clamped;
+                        }
                     }
                 }
             }

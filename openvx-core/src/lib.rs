@@ -8,6 +8,7 @@ pub mod simd_kernels;
 pub mod types;
 pub mod unified_c_api;
 pub mod vxu_impl;
+pub mod kernel_fast_paths;
 
 pub use c_api::vx_status;
 pub use context::{Context, KernelTrait};
