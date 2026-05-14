@@ -582,3 +582,104 @@ fn nonlinear_3x3_median(src: &[u8], dst: &mut [u8], w: usize, h: usize) {
         }
     }
 }
+
+
+/// Thin wrapper: try fast path for ScaleImage, return true if handled.
+pub fn try_scale_image_fast(
+    src: &Image,
+    dst: &mut Image,
+    interpolation: u32, // 0x4000=Nearest, 0x4001=Bilinear, 0x4002=Area
+    border: crate::vxu_impl::BorderMode,
+) -> bool {
+    let (sx, sy, ex, ey) = src.valid_rect();
+    if src.format() != ImageFormat::Gray
+        || sx != 0 || sy != 0
+        || ex != src.width() || ey != src.height()
+        || matches!(border, crate::vxu_impl::BorderMode::Constant(_))
+    {
+        return false;
+    }
+    let src_w = src.width();
+    let src_h = src.height();
+    let dst_w = dst.width();
+    let dst_h = dst.height();
+    let src_data = src.data();
+    let dst_data = dst.data_mut();
+    match interpolation {
+        0x4000 => {
+            scale_image_nearest(src_data, src_w, src_h, dst_data, dst_w, dst_h);
+            true
+        }
+        0x4001 => {
+            scale_image_bilinear(src_data, src_w, src_h, dst_data, dst_w, dst_h);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Thin wrapper: try fast path for Phase, return true if handled.
+pub fn try_phase_fast(grad_x: &Image, grad_y: &Image, phase: &mut Image) -> bool {
+    let w = grad_x.width();
+    let h = grad_x.height();
+    let pixels = w * h;
+    if grad_x.format() != ImageFormat::GrayS16
+        || grad_y.format() != ImageFormat::GrayS16
+        || phase.format() != ImageFormat::Gray
+    {
+        return false;
+    }
+    let gx_data = grad_x.data();
+    let gy_data = grad_y.data();
+    let phase_data = phase.data_mut();
+    if gx_data.len() >= pixels * 2 && gy_data.len() >= pixels * 2 && phase_data.len() >= pixels {
+        phase_s16_fast(
+            &gx_data[..pixels * 2], &gy_data[..pixels * 2],
+            &mut phase_data[..pixels], pixels,
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// Thin wrapper: try fast path for NonLinearFilter 3x3, return true if handled.
+pub fn try_nonlinear_filter_3x3_fast(
+    src: &Image,
+    dst: &mut Image,
+    mask_data: &[u8],
+    mask_cols: usize,
+    mask_rows: usize,
+    origin_x: usize,
+    origin_y: usize,
+    border: crate::vxu_impl::BorderMode,
+    function: u32, // 90113=Min, 90114=Max, 90112=Median
+) -> bool {
+    let mask_all_ones = mask_cols == 3 && mask_rows == 3 && origin_x == 1 && origin_y == 1
+        && mask_data.iter().all(|v| *v != 0);
+    let (sx, sy, ex, ey) = src.valid_rect();
+    if !mask_all_ones
+        || src.format() != ImageFormat::Gray
+        || sx != 0 || sy != 0
+        || ex != src.width() || ey != src.height()
+        || matches!(border, crate::vxu_impl::BorderMode::Constant(_))
+    {
+        return false;
+    }
+    let w = src.width();
+    let h = src.height();
+    let src_data = src.data();
+    let dst_data = dst.data_mut();
+    if src_data.len() < w * h || dst_data.len() < w * h {
+        return false;
+    }
+    let mode = match function {
+        90113 => NonLinearMode::Min,
+        90114 => NonLinearMode::Max,
+        _ => NonLinearMode::Median,
+    };
+    nonlinear_filter_3x3(
+        &src_data[..w * h], &mut dst_data[..w * h], w, h, mode,
+    );
+    true
+}
