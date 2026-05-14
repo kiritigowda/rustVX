@@ -422,11 +422,12 @@ pub fn phase_s16_fast(
     phase_data: &mut [u8],
     pixels: usize,
 ) {
-    let scale = 256.0f32 / (std::f32::consts::PI * 2.0);
+    let scale = 256.0f64 / (std::f64::consts::PI * 2.0);
 
     for i in 0..pixels {
-        let gx = i16::from_le_bytes([gx_data[i * 2], gx_data[i * 2 + 1]]) as f32;
-        let gy = i16::from_le_bytes([gy_data[i * 2], gy_data[i * 2 + 1]]) as f32;
+        // Safe: we verified gx_data.len() >= pixels * 2 before calling
+        let gx = unsafe { (gx_data.as_ptr().add(i * 2) as *const i16).read_unaligned() } as f64;
+        let gy = unsafe { (gy_data.as_ptr().add(i * 2) as *const i16).read_unaligned() } as f64;
 
         let mut val = gy.atan2(gx) * scale;
         if val < 0.0 {
