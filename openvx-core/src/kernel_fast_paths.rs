@@ -586,6 +586,7 @@ fn nonlinear_3x3_median(src: &[u8], dst: &mut [u8], w: usize, h: usize) {
 
 
 /// Thin wrapper: try fast path for ScaleImage, return true if handled.
+#[cold]
 pub fn try_scale_image_fast(
     src: &Image,
     dst: &mut Image,
@@ -620,6 +621,7 @@ pub fn try_scale_image_fast(
 }
 
 /// Thin wrapper: try fast path for Phase, return true if handled.
+#[cold]
 pub fn try_phase_fast(grad_x: &Image, grad_y: &Image, phase: &mut Image) -> bool {
     let w = grad_x.width();
     let h = grad_x.height();
@@ -645,6 +647,7 @@ pub fn try_phase_fast(grad_x: &Image, grad_y: &Image, phase: &mut Image) -> bool
 }
 
 /// Thin wrapper: try fast path for NonLinearFilter 3x3, return true if handled.
+#[cold]
 pub fn try_nonlinear_filter_3x3_fast(
     src: &Image,
     dst: &mut Image,
