@@ -3084,7 +3084,6 @@ pub fn vxu_dilate3x3_impl_with_border(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Convert vx_border_t to BorderMode
         let border_mode = if let Some(b) = border {
             match b.mode {
                 VX_BORDER_CONSTANT => {
@@ -3098,6 +3097,73 @@ pub fn vxu_dilate3x3_impl_with_border(
             BorderMode::Undefined
         };
 
+        let width = src.width();
+        let height = src.height();
+
+        // Fast path: process inner region with direct slice access,
+        // then edges with border-aware logic.
+        if width > 2 && height > 2 {
+            let src_data = src.data();
+            let dst_data = dst.data_mut();
+            let w = width as usize;
+
+            // Inner region (1..height-1, 1..width-1) — all neighbors in bounds
+            for y in 1..(height - 1) {
+                let y0 = (y - 1) as usize * w;
+                let y1 = y as usize * w;
+                let y2 = (y + 1) as usize * w;
+                let dst_row = y as usize * w;
+                for x in 1..(width - 1) {
+                    let x0 = x as usize - 1;
+                    let x1 = x as usize;
+                    let x2 = x as usize + 1;
+                    let mut max_val = src_data[y0 + x0];
+                    max_val = max_val.max(src_data[y0 + x1]);
+                    max_val = max_val.max(src_data[y0 + x2]);
+                    max_val = max_val.max(src_data[y1 + x0]);
+                    max_val = max_val.max(src_data[y1 + x1]);
+                    max_val = max_val.max(src_data[y1 + x2]);
+                    max_val = max_val.max(src_data[y2 + x0]);
+                    max_val = max_val.max(src_data[y2 + x1]);
+                    max_val = max_val.max(src_data[y2 + x2]);
+                    dst_data[dst_row + x1] = max_val;
+                }
+            }
+
+            // Edge pixels use border-aware logic
+            for y in [0usize, (height - 1) as usize] {
+                for x in 0..width {
+                    let mut max_val: u8 = 0;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            max_val = max_val.max(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x as usize] = max_val;
+                }
+            }
+            for y in 1..(height - 1) {
+                for x in [0usize, (width - 1) as usize] {
+                    let mut max_val: u8 = 0;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            max_val = max_val.max(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x] = max_val;
+                }
+            }
+
+            return copy_rust_to_c_image(&dst, output);
+        }
+
+        // Fallback for small images
         match dilate3x3(&src, &mut dst, border_mode) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -3130,7 +3196,6 @@ pub fn vxu_erode3x3_impl_with_border(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        // Convert vx_border_t to BorderMode
         let border_mode = if let Some(b) = border {
             match b.mode {
                 VX_BORDER_CONSTANT => {
@@ -3144,6 +3209,73 @@ pub fn vxu_erode3x3_impl_with_border(
             BorderMode::Undefined
         };
 
+        let width = src.width();
+        let height = src.height();
+
+        // Fast path: process inner region with direct slice access,
+        // then edges with border-aware logic.
+        if width > 2 && height > 2 {
+            let src_data = src.data();
+            let dst_data = dst.data_mut();
+            let w = width as usize;
+
+            // Inner region (1..height-1, 1..width-1) — all neighbors in bounds
+            for y in 1..(height - 1) {
+                let y0 = (y - 1) as usize * w;
+                let y1 = y as usize * w;
+                let y2 = (y + 1) as usize * w;
+                let dst_row = y as usize * w;
+                for x in 1..(width - 1) {
+                    let x0 = x as usize - 1;
+                    let x1 = x as usize;
+                    let x2 = x as usize + 1;
+                    let mut min_val = src_data[y0 + x0];
+                    min_val = min_val.min(src_data[y0 + x1]);
+                    min_val = min_val.min(src_data[y0 + x2]);
+                    min_val = min_val.min(src_data[y1 + x0]);
+                    min_val = min_val.min(src_data[y1 + x1]);
+                    min_val = min_val.min(src_data[y1 + x2]);
+                    min_val = min_val.min(src_data[y2 + x0]);
+                    min_val = min_val.min(src_data[y2 + x1]);
+                    min_val = min_val.min(src_data[y2 + x2]);
+                    dst_data[dst_row + x1] = min_val;
+                }
+            }
+
+            // Edge pixels use border-aware logic
+            for y in [0usize, (height - 1) as usize] {
+                for x in 0..width {
+                    let mut min_val: u8 = 255;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            min_val = min_val.min(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x as usize] = min_val;
+                }
+            }
+            for y in 1..(height - 1) {
+                for x in [0usize, (width - 1) as usize] {
+                    let mut min_val: u8 = 255;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let px = x as isize + dx;
+                            let py = y as isize + dy;
+                            let val = get_pixel_bordered(&src, px, py, border_mode);
+                            min_val = min_val.min(val);
+                        }
+                    }
+                    dst_data[y as usize * w + x] = min_val;
+                }
+            }
+
+            return copy_rust_to_c_image(&dst, output);
+        }
+
+        // Fallback for small images
         match erode3x3(&src, &mut dst, border_mode) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
