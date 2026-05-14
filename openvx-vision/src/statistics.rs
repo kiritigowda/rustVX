@@ -324,29 +324,25 @@ pub fn equalize_histogram(src: &Image, dst: &Image) -> VxResult<()> {
 pub fn integral_image(src: &Image, dst: &Image) -> VxResult<()> {
     let width = src.width();
     let height = src.height();
-
-    // Ensure dst is large enough (integral image needs 32-bit values)
-    // For simplicity, we'll store as u32 values in the first width*height positions
+    let src_data = src.data();
     let mut dst_data = dst.data_mut();
+    let w = width as usize;
 
     // Compute integral image using 32-bit accumulator
-    let mut prev_row: Vec<u32> = vec![0; width];
+    let mut prev_row: Vec<u32> = vec![0; w];
 
     for y in 0..height {
+        let row_offset = y as usize * w;
         let mut row_sum: u32 = 0;
-        for x in 0..width {
-            row_sum += src.get_pixel(x, y) as u32;
-
+        for x in 0..w {
+            row_sum += src_data[row_offset + x] as u32;
             let integral_val = if y == 0 {
                 row_sum
             } else {
                 row_sum + prev_row[x]
             };
-
             prev_row[x] = integral_val;
-
-            // Clamp to u8 for output (in a real implementation, use 32-bit output)
-            let idx = y * width + x;
+            let idx = row_offset + x;
             if idx < dst_data.len() {
                 dst_data[idx] = (integral_val.min(255) >> 8) as u8;
             }
