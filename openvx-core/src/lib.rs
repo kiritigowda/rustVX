@@ -3,6 +3,7 @@
 pub mod c_api;
 pub mod c_api_data;
 pub mod context;
+pub mod kernel_fast_paths;
 pub mod reference;
 pub mod simd_kernels;
 pub mod types;
