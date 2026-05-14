@@ -2951,9 +2951,15 @@ pub fn vxu_median3x3_impl_with_border(
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
 
-        match median3x3(&src, &mut dst) {
+        match crate::kernel_fast_paths::median3x3_u8_replicate(&src, &mut dst) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
-            Err(_) => VX_ERROR_INVALID_PARAMETERS,
+            Err(_) => {
+                // Fallback to generic median3x3
+                match median3x3(&src, &mut dst) {
+                    Ok(_) => copy_rust_to_c_image(&dst, output),
+                    Err(_) => VX_ERROR_INVALID_PARAMETERS,
+                }
+            }
         }
     }
 }
@@ -4704,6 +4710,118 @@ fn harris_sobel_7x7(img_data: &[u8], width: usize, height: usize, gxy: &mut [Gxy
         }
     }
 }
+fn fast9_optimized(
+    img_data: &[u8],
+    width: usize,
+    height: usize,
+    threshold: u8,
+    corners: &mut Vec<(usize, usize, f32)>,
+) {
+    const CIRCLE: [(isize, isize); 16] = [
+        (0, -3), (1, -3), (2, -2), (3, -1),
+        (3, 0),  (3, 1),  (2, 2),  (1, 3),
+        (0, 3),  (-1, 3), (-2, 2), (-3, 1),
+        (-3, 0), (-3, -1),(-2, -2),(-1, -3),
+    ];
+    const CARDINALS: [usize; 4] = [0, 4, 8, 12];
+
+    corners.clear();
+    let stride = width as isize;
+
+    for y in 3..height - 3 {
+        let row_base = y * width;
+        for x in 3..width - 3 {
+            let center_idx = row_base + x;
+            let center = img_data[center_idx];
+            let low = center.saturating_sub(threshold);
+            let high = center.saturating_add(threshold);
+
+            let mut darker = 0u8;
+            let mut brighter = 0u8;
+            for &ci in &CARDINALS {
+                let (dx, dy) = CIRCLE[ci];
+                let p = img_data[(center_idx as isize + dy * stride + dx) as usize];
+                if p < low { darker += 1; }
+                else if p > high { brighter += 1; }
+            }
+            if darker < 3 && brighter < 3 { continue; }
+
+            let mut circle = [0u8; 16];
+            for i in 0..16 {
+                let (dx, dy) = CIRCLE[i];
+                circle[i] = img_data[(center_idx as isize + dy * stride + dx) as usize];
+            }
+
+            let mut max_up = 0i32;
+            let mut max_lo = 0i32;
+            let mut up = 0i32;
+            let mut lo = 0i32;
+            let ci = center as i32;
+            let t = threshold as i32;
+            let hi = ci + t;
+            let low_i = ci - t;
+
+            macro_rules! check {
+                ($v:expr) => {{
+                    let v = $v as i32;
+                    if v > hi { up += 1; lo = 0; }
+                    else if v < low_i { lo += 1; up = 0; }
+                    else { up = 0; lo = 0; }
+                    if up > max_up { max_up = up; }
+                    if lo > max_lo { max_lo = lo; }
+                }};
+            }
+
+            check!(circle[0]);  check!(circle[1]);  check!(circle[2]);  check!(circle[3]);
+            check!(circle[4]);  check!(circle[5]);  check!(circle[6]);  check!(circle[7]);
+            check!(circle[8]);  check!(circle[9]);  check!(circle[10]); check!(circle[11]);
+            check!(circle[12]); check!(circle[13]); check!(circle[14]); check!(circle[15]);
+            check!(circle[0]);  check!(circle[1]);  check!(circle[2]);  check!(circle[3]);
+            check!(circle[4]);  check!(circle[5]);  check!(circle[6]);  check!(circle[7]);
+            check!(circle[8]);
+
+            if max_up < 9 && max_lo < 9 { continue; }
+
+            let mut lo_t = threshold as i32;
+            let mut hi_t = 255i32;
+            while hi_t - lo_t > 1 {
+                let mid_t = (hi_t + lo_t) / 2;
+                let mid_high = ci + mid_t;
+                let mid_low = ci - mid_t;
+
+                let mut m_up = 0i32;
+                let mut m_lo = 0i32;
+                let mut u_c = 0i32;
+                let mut l_c = 0i32;
+                for i in 0..16 {
+                    let val = circle[i % 16] as i32;
+                    if val > mid_high { u_c += 1; l_c = 0; }
+                    else if val < mid_low { l_c += 1; u_c = 0; }
+                    else { u_c = 0; l_c = 0; }
+                    if u_c > m_up { m_up = u_c; }
+                    if l_c > m_lo { m_lo = l_c; }
+                }
+                for i in 0..9 {
+                    let val = circle[i % 16] as i32;
+                    if val > mid_high { u_c += 1; l_c = 0; }
+                    else if val < mid_low { l_c += 1; u_c = 0; }
+                    else { u_c = 0; l_c = 0; }
+                    if u_c > m_up { m_up = u_c; }
+                    if l_c > m_lo { m_lo = l_c; }
+                }
+
+                if m_up >= 9 || m_lo >= 9 {
+                    lo_t = mid_t;
+                } else {
+                    hi_t = mid_t;
+                }
+            }
+
+            corners.push((x, y, lo_t as f32));
+        }
+    }
+}
+
 pub fn vxu_fast_corners_impl(
     context: vx_context,
     input: vx_image,
@@ -4745,118 +4863,11 @@ pub fn vxu_fast_corners_impl(
 
         let width = src.width;
         let height = src.height;
-
-        // FAST-9 corner detection
-        const CIRCLE_OFFSETS: [(isize, isize); 16] = [
-            (0, -3),
-            (1, -3),
-            (2, -2),
-            (3, -1),
-            (3, 0),
-            (3, 1),
-            (2, 2),
-            (1, 3),
-            (0, 3),
-            (-1, 3),
-            (-2, 2),
-            (-3, 1),
-            (-3, 0),
-            (-3, -1),
-            (-2, -2),
-            (-1, -3),
-        ];
+        let img_data = src.data();
 
         // Phase 1: Detect all FAST corners and compute strengths
-        let mut corner_list: Vec<(usize, usize, f32)> = Vec::new(); // (x, y, strength)
-
-        for y in 3..height - 3 {
-            for x in 3..width - 3 {
-                let center = src.get_pixel(x, y);
-
-                // Sample the circle pixels
-                let mut circle = [0u8; 16];
-                for (i, (dx, dy)) in CIRCLE_OFFSETS.iter().enumerate() {
-                    let px = (x as isize + dx) as usize;
-                    let py = (y as isize + dy) as usize;
-                    circle[i] = src.get_pixel(px, py);
-                }
-
-                // Full FAST-9 contiguous arc check (matching CTS reference)
-                // Check for 9+ contiguous pixels that are all brighter or all darker
-                // Use combined tracking like the CTS reference
-                let mut max_up = 0i32;
-                let mut max_lo = 0i32;
-                let mut up_count = 0i32;
-                let mut lo_count = 0i32;
-
-                for i in 0..25 {
-                    let val = circle[i % 16] as i32;
-                    if val > (center as i32 + threshold_val as i32) {
-                        up_count += 1;
-                        lo_count = 0;
-                    } else if val < (center as i32 - threshold_val as i32) {
-                        lo_count += 1;
-                        up_count = 0;
-                    } else {
-                        up_count = 0;
-                        lo_count = 0;
-                    }
-                    if up_count > max_up {
-                        max_up = up_count;
-                    }
-                    if lo_count > max_lo {
-                        max_lo = lo_count;
-                    }
-                }
-
-                if max_up < 9 && max_lo < 9 {
-                    continue; // Not a corner
-                }
-
-                // Compute corner strength using binary search (like reference)
-                let mut lo_t = threshold_val as i32;
-                let mut hi_t = 255i32;
-                while hi_t - lo_t > 1 {
-                    let mid_t = (hi_t + lo_t) / 2;
-                    let mid_high = center as i32 + mid_t;
-                    let mid_low = center as i32 - mid_t;
-
-                    // Check if still a corner at this threshold (combined tracking)
-                    let mut max_up = 0i32;
-                    let mut max_lo = 0i32;
-                    let mut up_count = 0i32;
-                    let mut lo_count = 0i32;
-                    for i in 0..25 {
-                        let val = circle[i % 16] as i32;
-                        if val > mid_high {
-                            up_count += 1;
-                            lo_count = 0;
-                        } else if val < mid_low {
-                            lo_count += 1;
-                            up_count = 0;
-                        } else {
-                            up_count = 0;
-                            lo_count = 0;
-                        }
-                        if up_count > max_up {
-                            max_up = up_count;
-                        }
-                        if lo_count > max_lo {
-                            max_lo = lo_count;
-                        }
-                    }
-
-                    if max_up >= 9 || max_lo >= 9 {
-                        lo_t = mid_t;
-                    } else {
-                        hi_t = mid_t;
-                    }
-                }
-                let strength = lo_t;
-
-                corner_list.push((x, y, strength as f32));
-            }
-        }
+        let mut corner_list: Vec<(usize, usize, f32)> = Vec::new();
+        fast9_optimized(img_data, width, height, threshold_val, &mut corner_list);
 
         // Phase 2: Non-maximum suppression (if requested)
         if do_nms {
