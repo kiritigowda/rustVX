@@ -4109,6 +4109,29 @@ pub fn vxu_scale_image_impl(
             _ => InterpolationType::Bilinear, // Default
         };
 
+        let use_fast_path = src.format == ImageFormat::Gray
+            && src.valid_start_x == 0 && src.valid_start_y == 0
+            && src.valid_end_x == src.width && src.valid_end_y == src.height
+            && !matches!(border, BorderMode::Constant(_));
+
+        if use_fast_path {
+            let dst_w = dst.width;
+            let dst_h = dst.height;
+            let src_data = src.data();
+            let dst_data = dst.data_mut();
+            match interpolation {
+                InterpolationType::NearestNeighbor => {
+                    crate::kernel_fast_paths::scale_image_nearest(src_data, src.width, src.height, dst_data, dst_w, dst_h);
+                    return copy_rust_to_c_image(&dst, output);
+                }
+                InterpolationType::Bilinear => {
+                    crate::kernel_fast_paths::scale_image_bilinear(src_data, src.width, src.height, dst_data, dst_w, dst_h);
+                    return copy_rust_to_c_image(&dst, output);
+                }
+                _ => {}
+            }
+        }
+
         match scale_image(&src, &mut dst, interpolation, border) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
@@ -6321,7 +6344,21 @@ fn magnitude_s16(grad_x: &Image, grad_y: &Image, mag: &mut Image) {
 /// If val < 0, add 256; then floor(val + 0.5); clamp to [0, 255]
 fn phase_s16(grad_x: &Image, grad_y: &Image, phase: &mut Image) {
     let width = grad_x.width();
-    let height = grad_x.height();
+    let height = grad_y.height();
+    let pixels = width * height;
+    if grad_x.format == ImageFormat::GrayS16 && grad_y.format == ImageFormat::GrayS16
+        && phase.format == ImageFormat::Gray {
+        let gx_data = grad_x.data();
+        let gy_data = grad_y.data();
+        let phase_data = phase.data_mut();
+        if gx_data.len() >= pixels * 2 && gy_data.len() >= pixels * 2 && phase_data.len() >= pixels {
+            crate::kernel_fast_paths::phase_s16_fast(
+                &gx_data[..pixels * 2], &gy_data[..pixels * 2],
+                &mut phase_data[..pixels], pixels,
+            );
+            return;
+        }
+    }
     let phase_data = phase.data_mut();
 
     for y in 0..height {
@@ -8288,6 +8325,30 @@ pub fn vxu_non_linear_filter_impl(
         let width = src.width;
         let height = src.height;
         let dst_data = dst.data_mut();
+
+        let mask_all_ones = mask_cols == 3 && mask_rows == 3 && origin_x == 1 && origin_y == 1
+            && mask_data.iter().all(|v| *v != 0);
+        let use_fast_path = src.format == ImageFormat::Gray
+            && src.valid_start_x == 0 && src.valid_start_y == 0
+            && src.valid_end_x == src.width && src.valid_end_y == src.height
+            && mask_all_ones
+            && !matches!(border_mode, BorderMode::Constant(_));
+
+        if use_fast_path {
+            let src_data = src.data();
+            if src_data.len() >= src.width * src.height && dst_data.len() >= src.width * src.height {
+                let mode = match function {
+                    90113 => crate::kernel_fast_paths::NonLinearMode::Min,
+                    90114 => crate::kernel_fast_paths::NonLinearMode::Max,
+                    _ => crate::kernel_fast_paths::NonLinearMode::Median,
+                };
+                crate::kernel_fast_paths::nonlinear_filter_3x3(
+                    &src_data[..src.width * src.height], &mut dst_data[..src.width * src.height],
+                    src.width, src.height, mode,
+                );
+                return copy_rust_to_c_image(&dst, output);
+            }
+        }
 
         for y in 0..height {
             for x in 0..width {
