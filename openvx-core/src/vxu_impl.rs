@@ -4110,14 +4110,15 @@ pub fn vxu_scale_image_impl(
         };
 
         // Try fast path for full-image scale (most common case)
-        // Only use fast path for U8 images with full valid region
+        // Only use fast path for U8 images with full valid region and non-Constant border
         let src_width = src.width;
         let src_height = src.height;
         let dst_width = dst.width;
         let dst_height = dst.height;
         let use_fast_path = src.format == ImageFormat::Gray
             && src.valid_start_x == 0 && src.valid_start_y == 0
-            && src.valid_end_x == src_width && src.valid_end_y == src_height;
+            && src.valid_end_x == src_width && src.valid_end_y == src_height
+            && !matches!(border, BorderMode::Constant(_));
 
         if use_fast_path {
             let src_data = src.data();
@@ -6303,34 +6304,39 @@ fn magnitude_s16(grad_x: &Image, grad_y: &Image, mag: &mut Image) {
 /// If val < 0, add 256; then floor(val + 0.5); clamp to [0, 255]
 fn phase_s16(grad_x: &Image, grad_y: &Image, phase: &mut Image) {
     let width = grad_x.width();
-    let height = grad_x.height();
+    let height = grad_y.height();
+    let pixels = width * height;
     let phase_data = phase.data_mut();
 
-    for y in 0..height {
-        for x in 0..width {
-            let gx = grad_x.get_pixel_s16(x, y) as f64;
-            let gy = grad_y.get_pixel_s16(x, y) as f64;
+    // Fast path: direct slice access for S16 data (little-endian)
+    let gx_data = grad_x.data();
+    let gy_data = grad_y.data();
 
-            // CTS reference: atan2(gy, gx) * 256 / (M_PI * 2)
-            let mut val = gy.atan2(gx) * 256.0 / (std::f64::consts::PI * 2.0);
-            if val < 0.0 {
-                val += 256.0;
-            }
-            let mut ival = (val + 0.5).floor() as i32;
-            if ival >= 256 {
-                ival -= 256;
-            }
-            let idx = y * width + x;
-            if let Some(p) = phase_data.get_mut(idx) {
-                *p = ival.clamp(0, 255) as u8;
+    if gx_data.len() >= pixels * 2 && gy_data.len() >= pixels * 2 && phase_data.len() >= pixels {
+        crate::kernel_fast_paths::phase_s16_fast(
+            &gx_data[..pixels * 2],
+            &gy_data[..pixels * 2],
+            &mut phase_data[..pixels],
+            pixels,
+        );
+    } else {
+        // Fallback: pixel-by-pixel with bounds checks
+        for y in 0..height {
+            for x in 0..width {
+                let gx = grad_x.get_pixel_s16(x, y) as f64;
+                let gy = grad_y.get_pixel_s16(x, y) as f64;
+                let mut val = gy.atan2(gx) * 256.0 / (std::f64::consts::PI * 2.0);
+                if val < 0.0 { val += 256.0; }
+                let mut ival = (val + 0.5).floor() as i32;
+                if ival >= 256 { ival -= 256; }
+                let idx = y * width + x;
+                if let Some(p) = phase_data.get_mut(idx) {
+                    *p = ival.clamp(0, 255) as u8;
+                }
             }
         }
     }
 }
-
-// ============================================================================
-// Arithmetic Operations
-// ============================================================================
 
 /// Pixel-wise addition with overflow policy support
 /// policy: 0 = WRAP, 1 = SATURATE (VX_CONVERT_POLICY_WRAP/SATURATE)
@@ -8266,6 +8272,30 @@ pub fn vxu_non_linear_filter_impl(
             Some(img) => img,
             None => return VX_ERROR_INVALID_PARAMETERS,
         };
+
+        let width = src.width;
+        let height = src.height;
+        let dst_data = dst.data_mut();
+
+        // Fast path for 3x3 all-ones mask with Replicate border (common NonLinearFilter case)
+        let is_3x3_all_ones = mask_rows == 3 && mask_cols == 3
+            && mask_data.iter().all(|&v| v != 0);
+        let is_replicate = matches!(border_mode, BorderMode::Replicate);
+        let src_data = src.data();
+        let pixels = width * height;
+
+        if is_3x3_all_ones && is_replicate && src_data.len() >= pixels && dst_data.len() >= pixels {
+            let mode = match function {
+                90113 => crate::kernel_fast_paths::NonLinearMode::Min,
+                90114 => crate::kernel_fast_paths::NonLinearMode::Max,
+                _ => crate::kernel_fast_paths::NonLinearMode::Median,
+            };
+            crate::kernel_fast_paths::nonlinear_filter_3x3(
+                &src_data[..pixels], &mut dst_data[..pixels],
+                width, height, mode,
+            );
+            return copy_rust_to_c_image(&dst, output);
+        }
 
         let width = src.width;
         let height = src.height;
