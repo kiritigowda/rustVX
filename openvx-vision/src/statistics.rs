@@ -322,30 +322,48 @@ pub fn equalize_histogram(src: &Image, dst: &Image) -> VxResult<()> {
 
 /// Compute integral image (summed area table)
 pub fn integral_image(src: &Image, dst: &Image) -> VxResult<()> {
-    let width = src.width();
-    let height = src.height();
+    let width = src.width() as usize;
+    let height = src.height() as usize;
     let src_data = src.data();
-    let mut dst_data = dst.data_mut();
-    let w = width as usize;
+    let mut dst_bytes = dst.data_mut();
 
-    // Compute integral image using 32-bit accumulator
-    let mut prev_row: Vec<u32> = vec![0; w];
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
 
-    for y in 0..height {
-        let row_offset = y as usize * w;
+    let pixels = width * height;
+    if src_data.len() < pixels || dst_bytes.len() < pixels * 4 {
+        return Err(openvx_core::VxStatus::ErrorInvalidDimension);
+    }
+
+    // Reinterpret the byte buffer as [u32] for native 32-bit stores.
+    // All rustVX targets are little-endian so this is correct for U32 LE.
+    let dst_u32: &mut [u32] = unsafe {
+        std::slice::from_raw_parts_mut(dst_bytes.as_mut_ptr() as *mut u32, pixels)
+    };
+
+    // First row
+    {
+        let src_row = &src_data[..width];
+        let dst_row = &mut dst_u32[..width];
         let mut row_sum: u32 = 0;
-        for x in 0..w {
-            row_sum += src_data[row_offset + x] as u32;
-            let integral_val = if y == 0 {
-                row_sum
-            } else {
-                row_sum + prev_row[x]
-            };
-            prev_row[x] = integral_val;
-            let idx = row_offset + x;
-            if idx < dst_data.len() {
-                dst_data[idx] = (integral_val.min(255) >> 8) as u8;
-            }
+        for x in 0..width {
+            row_sum += src_row[x] as u32;
+            dst_row[x] = row_sum;
+        }
+    }
+
+    // Subsequent rows with split_at_mut
+    for y in 1..height {
+        let src_row = &src_data[y * width..(y + 1) * width];
+        let (prev_rows, current_and_after) = dst_u32.split_at_mut(y * width);
+        let prev_row = &prev_rows[(y - 1) * width..y * width];
+        let dst_row = &mut current_and_after[..width];
+
+        let mut row_sum: u32 = 0;
+        for x in 0..width {
+            row_sum += src_row[x] as u32;
+            dst_row[x] = row_sum + prev_row[x];
         }
     }
 
