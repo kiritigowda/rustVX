@@ -1,10 +1,3 @@
-//! Fast-path kernel implementations that avoid per-pixel get_pixel() overhead.
-//!
-//! These are called from `vxu_impl.rs` after C images have been converted to
-//! Rust `Image` objects.  Keeping them in a separate module means we can grow
-//! this file without shifting the binary layout of hot functions inside
-//! `vxu_impl.rs` (Add, AbsDiff, etc.).
-
 use crate::vxu_impl::{Image, ImageFormat};
 use crate::VxStatus;
 
@@ -24,7 +17,6 @@ pub fn channel_combine_rgb(
     let b_data = b.data();
     let dst_data = dst.data_mut();
 
-    // Bounds checks – the caller already verified dimensions match.
     if r_data.len() < pixels || g_data.len() < pixels || b_data.len() < pixels {
         return Err(VxStatus::ErrorInvalidDimension);
     }
@@ -32,7 +24,6 @@ pub fn channel_combine_rgb(
         return Err(VxStatus::ErrorInvalidDimension);
     }
 
-    // Interleave three planes into one RGB buffer.
     for y in 0..height {
         let src_base = y * width;
         let dst_base = y * width * 3;
@@ -87,138 +78,159 @@ pub fn channel_combine_rgbx(
     Ok(())
 }
 
-/// Optimised 3×3 convolution for U8 output with Undefined border.
-/// `coeffs` are given in **OpenVX order** (already reversed by the caller).
+/// Fast nearest-neighbor scale with precomputed source positions.
+pub fn scale_image_nearest(
+    src_data: &[u8],
+    src_width: usize,
+    src_height: usize,
+    dst_data: &mut [u8],
+    dst_width: usize,
+    dst_height: usize,
+) {
+    let x_scale = src_width as f32 / dst_width as f32;
+    let y_scale = src_height as f32 / dst_height as f32;
+
+    let mut src_x_pos = vec![0usize; dst_width];
+    for x in 0..dst_width {
+        let src_x = (x as f32 + 0.5) * x_scale - 0.5;
+        src_x_pos[x] = (src_x.round() as isize).max(0).min(src_width as isize - 1) as usize;
+    }
+
+    for y in 0..dst_height {
+        let src_y = (y as f32 + 0.5) * y_scale - 0.5;
+        let src_y_clamped = (src_y.round() as isize).max(0).min(src_height as isize - 1) as usize;
+        let src_row_base = src_y_clamped * src_width;
+        let dst_row_base = y * dst_width;
+
+        for x in 0..dst_width {
+            dst_data[dst_row_base + x] = src_data[src_row_base + src_x_pos[x]];
+        }
+    }
+}
+
+/// Fast bilinear scale with precomputed fixed-point weights (Q8).
+pub fn scale_image_bilinear(
+    src_data: &[u8],
+    src_width: usize,
+    src_height: usize,
+    dst_data: &mut [u8],
+    dst_width: usize,
+    dst_height: usize,
+) {
+    let x_scale = src_width as f32 / dst_width as f32;
+    let y_scale = src_height as f32 / dst_height as f32;
+
+    const Q8: i32 = 8;
+    const Q8_SCALE: i32 = 1 << Q8;
+
+    let mut x0s = vec![0usize; dst_width];
+    let mut x1s = vec![0usize; dst_width];
+    let mut wxs = vec![0i32; dst_width];
+
+    for x in 0..dst_width {
+        let src_x = (x as f32 + 0.5) * x_scale - 0.5;
+        let x0 = src_x.floor() as i32;
+        let fx = src_x - x0 as f32;
+
+        let x0_clamped = x0.max(0).min(src_width as i32 - 1) as usize;
+        let x1_clamped = (x0 + 1).max(0).min(src_width as i32 - 1) as usize;
+        let wx = (fx * Q8_SCALE as f32) as i32;
+
+        x0s[x] = x0_clamped;
+        x1s[x] = x1_clamped;
+        wxs[x] = wx;
+    }
+
+    for y in 0..dst_height {
+        let src_y = (y as f32 + 0.5) * y_scale - 0.5;
+        let y0 = src_y.floor() as i32;
+        let fy = src_y - y0 as f32;
+        let wy = (fy * Q8_SCALE as f32) as i32;
+
+        let y0_clamped = y0.max(0).min(src_height as i32 - 1) as usize;
+        let y1_clamped = (y0 + 1).max(0).min(src_height as i32 - 1) as usize;
+
+        let row0_base = y0_clamped * src_width;
+        let row1_base = y1_clamped * src_width;
+        let dst_row_base = y * dst_width;
+
+        let wy_neg = Q8_SCALE - wy;
+
+        for x in 0..dst_width {
+            let wx = wxs[x];
+            let wx_neg = Q8_SCALE - wx;
+
+            let p00 = src_data[row0_base + x0s[x]] as i32;
+            let p10 = src_data[row0_base + x1s[x]] as i32;
+            let p01 = src_data[row1_base + x0s[x]] as i32;
+            let p11 = src_data[row1_base + x1s[x]] as i32;
+
+            let top = wx_neg * p00 + wx * p10;
+            let bot = wx_neg * p01 + wx * p11;
+            let val = (wy_neg * top + wy * bot) >> (Q8 + Q8);
+
+            dst_data[dst_row_base + x] = val.min(255).max(0) as u8;
+        }
+    }
+}
+
+/// Optimised 3×3 convolution for U8 images with Undefined border.
 pub fn convolve_3x3_u8_undefined(
-    src: &Image,
-    coeffs: &[i16],
-    scale: i32,
-    dst: &mut Image,
-) -> Result<(), VxStatus> {
-    let width = src.width();
-    let height = src.height();
-    let src_data = src.data();
-    let dst_data = dst.data_mut();
+    src_data: &[u8],
+    src_width: usize,
+    src_height: usize,
+    dst_data: &mut [u8],
+    coeff: &[i16; 9],
+    shift: u32,
+) {
+    // --- Inner region (no bounds checks) ---
+    for y in 1..src_height - 1 {
+        let row_m1 = &src_data[(y - 1) * src_width..y * src_width];
+        let row_0  = &src_data[y * src_width..(y + 1) * src_width];
+        let row_p1 = &src_data[(y + 1) * src_width..(y + 2) * src_width];
+        let dst_row = &mut dst_data[y * src_width..(y + 1) * src_width];
 
-    if width < 3 || height < 3 {
-        // Too small for a 3×3 kernel – caller should fall back to generic path.
-        return Err(VxStatus::ErrorInvalidDimension);
-    }
-
-    let w = width as isize;
-    let row = |y: usize| &src_data[y * width..(y + 1) * width];
-
-    // Inner region: no bounds checks needed.
-    for y in 1..height - 1 {
-        let ym1 = row(y - 1);
-        let y0 = row(y);
-        let yp1 = row(y + 1);
-        let dst_row = &mut dst_data[y * width..(y + 1) * width];
-
-        for x in 1..width - 1 {
-            let mut sum: i32 = 0;
-            // Row -1
-            sum += ym1[x - 1] as i32 * coeffs[0] as i32;
-            sum += ym1[x] as i32 * coeffs[1] as i32;
-            sum += ym1[x + 1] as i32 * coeffs[2] as i32;
-            // Row  0
-            sum += y0[x - 1] as i32 * coeffs[3] as i32;
-            sum += y0[x] as i32 * coeffs[4] as i32;
-            sum += y0[x + 1] as i32 * coeffs[5] as i32;
-            // Row +1
-            sum += yp1[x - 1] as i32 * coeffs[6] as i32;
-            sum += yp1[x] as i32 * coeffs[7] as i32;
-            sum += yp1[x + 1] as i32 * coeffs[8] as i32;
-
-            let val = (sum / scale).clamp(0, 255) as u8;
-            dst_row[x] = val;
+        for x in 1..src_width - 1 {
+            let sum = coeff[0] * row_m1[x - 1] as i16
+                    + coeff[1] * row_m1[x] as i16
+                    + coeff[2] * row_m1[x + 1] as i16
+                    + coeff[3] * row_0[x - 1] as i16
+                    + coeff[4] * row_0[x] as i16
+                    + coeff[5] * row_0[x + 1] as i16
+                    + coeff[6] * row_p1[x - 1] as i16
+                    + coeff[7] * row_p1[x] as i16
+                    + coeff[8] * row_p1[x + 1] as i16;
+            let shifted = sum >> shift;
+            dst_row[x] = shifted.clamp(0, 255) as u8;
         }
     }
 
-    // Edge handling (first/last row, first/last column) – for Undefined border
-    // we replicate the nearest valid pixel, which is what Khronos reference does
-    // for edges when border mode is Undefined.
-    // Top row
-    let y0 = 0;
-    let dst_row = &mut dst_data[y0 * width..(y0 + 1) * width];
-    for x in 0..width {
-        let mut sum: i32 = 0;
-        for ky in 0..3 {
-            let py = if y0 + ky == 0 { 0 } else { y0 + ky - 1 };
-            let src_row = row(py);
-            for kx in 0..3 {
-                let px = if x + kx == 0 { 0 } else if x + kx >= width { width - 1 } else { x + kx - 1 };
-                let c = coeffs[ky * 3 + kx] as i32;
-                sum += src_row[px] as i32 * c;
-            }
-        }
-        dst_row[x] = (sum / scale).clamp(0, 255) as u8;
-    }
+    // --- Edge pixels with replicate border ---
+    let xlast = src_width - 1;
+    let ylast = src_height - 1;
 
-    // Bottom row
-    let ylast = height - 1;
-    let dst_row = &mut dst_data[ylast * width..(ylast + 1) * width];
-    for x in 0..width {
-        let mut sum: i32 = 0;
-        for ky in 0..3 {
-            let py = if ylast + ky >= height + 1 { height - 1 } else if ylast + ky == 0 { 0 } else { ylast + ky - 1 };
-            let src_row = row(py);
-            for kx in 0..3 {
-                let px = if x + kx == 0 { 0 } else if x + kx >= width { width - 1 } else { x + kx - 1 };
-                let c = coeffs[ky * 3 + kx] as i32;
-                sum += src_row[px] as i32 * c;
-            }
-        }
-        dst_row[x] = (sum / scale).clamp(0, 255) as u8;
-    }
+    for y in 0..src_height {
+        for x in [0, xlast] {
+            if y > 0 && y < ylast && x > 0 && x < xlast { continue; }
 
-    // First & last column for inner rows
-    for y in 1..height - 1 {
-        let ym1 = row(y - 1);
-        let y0 = row(y);
-        let yp1 = row(y + 1);
-        let dst_row = &mut dst_data[y * width..(y + 1) * width];
+            let y0 = if y == 0 { 0 } else { y - 1 };
+            let y1 = y;
+            let y2 = if y == ylast { ylast } else { y + 1 };
+            let x0 = if x == 0 { 0 } else { x - 1 };
+            let x1 = x;
+            let x2 = if x == xlast { xlast } else { x + 1 };
 
-        // x = 0
-        {
-            let mut sum: i32 = 0;
-            for ky in 0..3 {
-                let py = y + ky - 1;
-                let src_row = match ky {
-                    0 => ym1,
-                    1 => y0,
-                    2 => yp1,
-                    _ => unreachable!(),
-                };
-                for kx in 0..3 {
-                    let px = if kx == 0 { 0 } else { kx - 1 };
-                    let c = coeffs[ky * 3 + kx] as i32;
-                    sum += src_row[px] as i32 * c;
-                }
-            }
-            dst_row[0] = (sum / scale).clamp(0, 255) as u8;
-        }
-
-        // x = width - 1
-        {
-            let mut sum: i32 = 0;
-            let xlast = width - 1;
-            for ky in 0..3 {
-                let src_row = match ky {
-                    0 => ym1,
-                    1 => y0,
-                    2 => yp1,
-                    _ => unreachable!(),
-                };
-                for kx in 0..3 {
-                    let px = if xlast + kx >= width + 1 { width - 1 } else { xlast + kx - 1 };
-                    let c = coeffs[ky * 3 + kx] as i32;
-                    sum += src_row[px] as i32 * c;
-                }
-            }
-            dst_row[xlast] = (sum / scale).clamp(0, 255) as u8;
+            let sum = coeff[0] * src_data[y0 * src_width + x0] as i16
+                    + coeff[1] * src_data[y0 * src_width + x1] as i16
+                    + coeff[2] * src_data[y0 * src_width + x2] as i16
+                    + coeff[3] * src_data[y1 * src_width + x0] as i16
+                    + coeff[4] * src_data[y1 * src_width + x1] as i16
+                    + coeff[5] * src_data[y1 * src_width + x2] as i16
+                    + coeff[6] * src_data[y2 * src_width + x0] as i16
+                    + coeff[7] * src_data[y2 * src_width + x1] as i16
+                    + coeff[8] * src_data[y2 * src_width + x2] as i16;
+            let shifted = sum >> shift;
+            dst_data[y * src_width + x] = shifted.clamp(0, 255) as u8;
         }
     }
-
-    Ok(())
 }

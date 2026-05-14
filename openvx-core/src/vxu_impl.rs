@@ -4109,6 +4109,38 @@ pub fn vxu_scale_image_impl(
             _ => InterpolationType::Bilinear, // Default
         };
 
+        // Try fast path for full-image scale (most common case)
+        // Only use fast path for U8 images with full valid region
+        let src_width = src.width;
+        let src_height = src.height;
+        let dst_width = dst.width;
+        let dst_height = dst.height;
+        let use_fast_path = src.format == ImageFormat::Gray
+            && src.valid_start_x == 0 && src.valid_start_y == 0
+            && src.valid_end_x == src_width && src.valid_end_y == src_height;
+
+        if use_fast_path {
+            let src_data = src.data();
+            let dst_data = dst.data_mut();
+            match interpolation {
+                InterpolationType::NearestNeighbor => {
+                    crate::kernel_fast_paths::scale_image_nearest(
+                        src_data, src_width, src_height,
+                        dst_data, dst_width, dst_height,
+                    );
+                    return copy_rust_to_c_image(&dst, output);
+                }
+                InterpolationType::Bilinear => {
+                    crate::kernel_fast_paths::scale_image_bilinear(
+                        src_data, src_width, src_height,
+                        dst_data, dst_width, dst_height,
+                    );
+                    return copy_rust_to_c_image(&dst, output);
+                }
+                _ => {} // Fall through to generic path for Area
+            }
+        }
+
         match scale_image(&src, &mut dst, interpolation, border) {
             Ok(_) => copy_rust_to_c_image(&dst, output),
             Err(_) => VX_ERROR_INVALID_PARAMETERS,
