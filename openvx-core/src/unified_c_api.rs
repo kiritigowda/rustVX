@@ -470,10 +470,21 @@ impl Clone for VxCDelay {
 
 /// Tensor data
 pub struct VxCTensor {
-    num_dims: usize,
-    dims: Vec<usize>,
-    data_type: vx_enum,
-    ref_count: AtomicUsize,
+    pub num_dims: usize,
+    pub dims: Vec<usize>,
+    pub data_type: vx_enum,
+    pub ref_count: AtomicUsize,
+}
+
+impl VxCTensor {
+    pub fn new(num_dims: usize, dims: Vec<usize>, data_type: vx_enum) -> Self {
+        VxCTensor {
+            num_dims,
+            dims,
+            data_type,
+            ref_count: AtomicUsize::new(1),
+        }
+    }
 }
 
 /// Meta format data
@@ -1077,6 +1088,12 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.sobel_3x3", vec![1, 2]), // [input, grad_x, grad_y]
                 ("org.khronos.openvx.laplacian_reconstruct", vec![2]),
                 ("org.khronos.openvx.non_linear_filter", vec![3]), // [input, matrix, border, output]
+                // Enhanced Vision kernels
+                ("org.khronos.openvx.copy", vec![1]), // [input, output] - param 1 is output
+                ("org.khronos.openvx.non_max_suppression", vec![3]), // [input, mask, win_size, output]
+                ("org.khronos.openvx.hough_lines_p", vec![6, 7]), // [input, rho, theta, threshold, line_length, line_gap, lines_array, num_lines]
+                ("org.khronos.openvx.match_template", vec![3]), // [src, templ, matching_method, output]
+                ("org.khronos.openvx.lbp", vec![3]), // [input, format, kernel_size, output]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
@@ -2511,14 +2528,15 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     // We'll validate required parameters in the dispatch function
     // For ChannelCombine, all plane params can be null except the output
     let is_channel_combine = kernel_name.contains("channel_combine");
+    let is_nms = kernel_name.contains("non_max_suppression");
     if param_ids.is_empty() || (param_ids[0].is_none() && !is_channel_combine) {
         return Some(VX_ERROR_INVALID_PARAMETERS);
     }
 
     for (idx, param_id_opt) in param_ids.iter().enumerate() {
         if let Some(param_id) = param_id_opt {
-            // Validate parameter is not null pointer (unless it's an optional param for ChannelCombine)
-            if *param_id == 0 && !is_channel_combine {
+            // Validate parameter is not null pointer (unless it's an optional param for ChannelCombine or non_max_suppression mask)
+            if *param_id == 0 && !is_channel_combine && !(is_nms && idx == 1) {
                 return Some(VX_ERROR_INVALID_PARAMETERS);
             }
             params.push(*param_id as vx_reference);
@@ -3129,6 +3147,122 @@ fn dispatch_kernel_with_border_impl(
                         unsafe { crate::c_api::vxGetContext(in1 as vx_reference) },
                         in1,
                         in2,
+                        output,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Copy (Enhanced Vision)
+        "org.khronos.openvx.copy" => {
+            if params.len() >= 2 {
+                let input = params[0];
+                let output = params[1];
+                if !input.is_null() && !output.is_null() {
+                    unsafe { crate::vxu_impl::vxu_copy_impl(input, output) }
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // NonMaxSuppression (Enhanced Vision)
+        "org.khronos.openvx.non_max_suppression" => {
+            if params.len() >= 4 {
+                let input = params[0] as vx_image;
+                let mask = params[1] as vx_image;
+                let win_size = if params.len() > 2 && !params[2].is_null() {
+                    params[2] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
+                let output = params[3] as vx_image;
+                if !input.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_non_max_suppression_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        mask,
+                        win_size,
+                        output,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // HoughLinesP (Enhanced Vision)
+        "org.khronos.openvx.hough_lines_p" => {
+            if params.len() >= 7 {
+                let input = params[0] as vx_image;
+                let rho = params[1] as vx_scalar;
+                let theta = params[2] as vx_scalar;
+                let threshold = params[3] as vx_scalar;
+                let line_length = params[4] as vx_scalar;
+                let line_gap = params[5] as vx_scalar;
+                let lines_array = params[6] as vx_array;
+                if !input.is_null() && !lines_array.is_null() {
+                    crate::vxu_impl::vxu_hough_lines_p_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        rho,
+                        theta,
+                        threshold,
+                        line_length,
+                        line_gap,
+                        lines_array,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // MatchTemplate (Enhanced Vision)
+        "org.khronos.openvx.match_template" => {
+            if params.len() >= 4 {
+                let src = params[0] as vx_image;
+                let templ = params[1] as vx_image;
+                let matching_method = if params.len() > 2 && !params[2].is_null() {
+                    params[2] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
+                let output = params[3] as vx_image;
+                if !src.is_null() && !templ.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_match_template_impl(
+                        unsafe { crate::c_api::vxGetContext(src as vx_reference) },
+                        src,
+                        templ,
+                        matching_method,
+                        output,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // LBP (Enhanced Vision)
+        "org.khronos.openvx.lbp" => {
+            if params.len() >= 4 {
+                let input = params[0] as vx_image;
+                let format = params[1] as vx_scalar;
+                let kernel_size = params[2] as vx_scalar;
+                let output = params[3] as vx_image;
+                if !input.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_lbp_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        format,
+                        kernel_size,
                         output,
                     )
                 } else {
@@ -4760,8 +4894,8 @@ pub const VX_TYPE_IMAGE: vx_enum = 0x80F;
 pub const VX_TYPE_REMAP: vx_enum = 0x810;
 pub const VX_TYPE_META_FORMAT: vx_enum = 0x812;
 pub const VX_TYPE_OBJECT_ARRAY: vx_enum = 0x813;
-pub const VX_TYPE_TENSOR: vx_enum = 0x814;
-pub const VX_TYPE_IMPORT: vx_enum = 0x815;
+pub const VX_TYPE_TENSOR: vx_enum = 0x815;
+pub const VX_TYPE_IMPORT: vx_enum = 0x814;
 pub const VX_TYPE_TARGET: vx_enum = 0x816;
 
 /// Border mode constants (computed using VX_ENUM_BASE formula)
@@ -5015,6 +5149,14 @@ pub extern "C" fn vxRegisterPyramidLevelImage(
 
 // Tensor registry
 static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Tensor data storage (raw bytes keyed by tensor address)
+static TENSOR_DATA: Lazy<Mutex<HashMap<usize, Vec<u8>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Tensor context association
+static TENSOR_CONTEXTS: Lazy<Mutex<HashMap<usize, u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Meta format registry
@@ -8331,13 +8473,64 @@ pub extern "C" fn vxCreateTensor(
     context: vx_context,
     num_dims: usize,
     dims: *const usize,
-    _data_type: i32,
-    _fixed_point_pos: i8,
+    data_type: i32,
+    fixed_point_pos: i8,
 ) -> vx_tensor {
     if context.is_null() || dims.is_null() || num_dims == 0 {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+
+    unsafe {
+        let dims_slice = std::slice::from_raw_parts(dims, num_dims);
+        let tensor = Box::into_raw(Box::new(VxCTensor::new(
+            num_dims,
+            dims_slice.to_vec(),
+            data_type,
+        )));
+        let addr = tensor as usize;
+
+        if let Ok(mut tensors) = TENSORS.lock() {
+            tensors.insert(addr, Arc::new(VxCTensor::new(
+                num_dims,
+                dims_slice.to_vec(),
+                data_type,
+            )));
+        }
+
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(addr, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(addr, VX_TYPE_TENSOR);
+        }
+
+        // Allocate tensor data buffer
+        let mut total_elements = 1usize;
+        for &d in dims_slice {
+            total_elements = total_elements.saturating_mul(d);
+        }
+        let element_size = match data_type {
+            VX_TYPE_INT8 | VX_TYPE_UINT8 => 1,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2,
+            VX_TYPE_INT32 | VX_TYPE_UINT32 | VX_TYPE_FLOAT32 => 4,
+            VX_TYPE_INT64 | VX_TYPE_UINT64 | VX_TYPE_FLOAT64 => 8,
+            VX_TYPE_BOOL => 1,
+            _ => 1,
+        };
+        let total_bytes = total_elements.saturating_mul(element_size);
+
+        if let Ok(mut tensor_data_map) = TENSOR_DATA.lock() {
+            tensor_data_map.insert(addr, vec![0u8; total_bytes]);
+        }
+
+        // Create context association (no separate REFERENCES table needed)
+        let context_id = context as usize as u64;
+        if let Ok(mut contexts) = TENSOR_CONTEXTS.lock() {
+            contexts.insert(addr, context_id);
+        }
+
+        tensor as vx_tensor
+    }
 }
 
 #[no_mangle]
@@ -8356,14 +8549,86 @@ pub extern "C" fn vxCreateTensorFromView(
 #[no_mangle]
 pub extern "C" fn vxQueryTensor(
     tensor: vx_tensor,
-    _attribute: i32,
+    attribute: vx_enum,
     ptr: *mut c_void,
-    _size: usize,
-) -> i32 {
+    size: vx_size,
+) -> vx_status {
     if tensor.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_PARAMETERS;
     }
-    -30
+    let addr = tensor as usize;
+    unsafe {
+        if let Ok(tensors) = TENSORS.lock() {
+            if let Some(t) = tensors.get(&addr) {
+                match attribute {
+                    VX_TENSOR_NUMBER_OF_DIMS => {
+                        if size != std::mem::size_of::<vx_size>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        *(ptr as *mut vx_size) = t.num_dims;
+                        return VX_SUCCESS;
+                    }
+                    VX_TENSOR_DIMS => {
+                        let bytes_needed = t.num_dims * std::mem::size_of::<vx_size>();
+                        if size < bytes_needed {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let dst = std::slice::from_raw_parts_mut(ptr as *mut vx_size, t.num_dims);
+                        for i in 0..t.num_dims {
+                            dst[i] = t.dims[i];
+                        }
+                        return VX_SUCCESS;
+                    }
+                    VX_TENSOR_DATA_TYPE => {
+                        if size != std::mem::size_of::<vx_enum>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        *(ptr as *mut vx_enum) = t.data_type;
+                        return VX_SUCCESS;
+                    }
+                    VX_TENSOR_FIXED_POINT_POSITION => {
+                        if size != std::mem::size_of::<vx_int8>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        *(ptr as *mut vx_int8) = 0;
+                        return VX_SUCCESS;
+                    }
+                    _ => return VX_ERROR_NOT_SUPPORTED,
+                }
+            }
+        }
+    }
+    VX_ERROR_INVALID_REFERENCE
+}
+
+/// Internal helper: copy tensor data from src to dst.
+pub fn copy_tensor_data(src: vx_reference, dst: vx_reference) -> vx_status {
+    let src_addr = src as usize;
+    let dst_addr = dst as usize;
+
+    unsafe {
+        if let Ok(tensors) = TENSORS.lock() {
+            if let (Some(src_t), Some(dst_t)) = (tensors.get(&src_addr), tensors.get(&dst_addr)) {
+                if src_t.num_dims != dst_t.num_dims || src_t.data_type != dst_t.data_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                for i in 0..src_t.num_dims {
+                    if src_t.dims[i] != dst_t.dims[i] {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                }
+                if let Ok(data_map) = TENSOR_DATA.lock() {
+                    if let (Some(src_data), Some(dst_data)) = (data_map.get(&src_addr), data_map.get(&dst_addr)) {
+                        if src_data.len() == dst_data.len() {
+                            std::ptr::copy_nonoverlapping(src_data.as_ptr(), dst_data.as_ptr() as *mut u8, src_data.len());
+                            return VX_SUCCESS;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    VX_ERROR_INVALID_PARAMETERS
 }
 
 #[no_mangle]
@@ -8423,18 +8688,38 @@ pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn vxCopyTensorPatch(
     tensor: vx_tensor,
-    _number_of_dims: vx_size,
+    number_of_dims: vx_size,
     _view_start: *const vx_size,
     _view_end: *const vx_size,
     _user_stride: *const vx_size,
-    _user_ptr: *mut c_void,
-    _usage: vx_enum,
+    user_ptr: *mut c_void,
+    usage: vx_enum,
     _user_memory_type: vx_enum,
 ) -> vx_status {
-    if tensor.is_null() {
+    if tensor.is_null() || user_ptr.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    VX_ERROR_NOT_IMPLEMENTED
+    let addr = tensor as usize;
+
+    unsafe {
+        if let Ok(tensors) = TENSORS.lock() {
+            if let Some(t) = tensors.get(&addr) {
+                if let Ok(tensor_data_map) = TENSOR_DATA.lock() {
+                    if let Some(data) = tensor_data_map.get(&addr) {
+                        let total_bytes = data.len();
+                        if usage == crate::c_api::VX_WRITE_ONLY {
+                            std::ptr::copy_nonoverlapping(user_ptr, data.as_ptr() as *mut c_void, total_bytes);
+                        } else {
+                            // VX_READ_ONLY or default
+                            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, total_bytes);
+                        }
+                        return VX_SUCCESS;
+                    }
+                }
+            }
+        }
+    }
+    VX_ERROR_INVALID_REFERENCE
 }
 
 /// `vxCopyNode` — create a node that copies one OpenVX object to another.
@@ -8451,8 +8736,7 @@ pub extern "C" fn vxCopyNode(
     input: vx_reference,
     output: vx_reference,
 ) -> vx_node {
-    let _ = (graph, input, output);
-    std::ptr::null_mut()
+    create_node_with_params(graph, "org.khronos.openvx.copy", &[input, output])
 }
 
 #[no_mangle]
@@ -10558,14 +10842,15 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
 pub extern "C" fn vxHoughLinesPNode(
     graph: vx_graph,
     input: vx_image,
-    lines_array: vx_array,
     hough_lines_params: *const vx_hough_lines_p_t,
+    lines_array: vx_array,
+    num_lines: vx_scalar,
 ) -> vx_node {
-    if graph.is_null() || input.is_null() || lines_array.is_null() || hough_lines_params.is_null() {
+    if graph.is_null() || input.is_null() || hough_lines_params.is_null() || lines_array.is_null() || num_lines.is_null() {
         return std::ptr::null_mut();
     }
 
-    // HoughLinesP has params: input, lines_array, rho, theta, threshold, line_length, line_gap
+    // HoughLinesP has params: input, rho, theta, threshold, line_length, line_gap, lines_array
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
@@ -12990,50 +13275,206 @@ ev_vxu_stub!(vxuBilateralFilter(
     dst: vx_tensor,
 ));
 
-ev_node_stub!(vxLBPNode(
+#[no_mangle]
+pub extern "C" fn vxLBPNode(
     graph: vx_graph,
     input: vx_image,
     format: vx_enum,
     kernel_size: vx_int8,
     output: vx_image,
-));
-ev_vxu_stub!(vxuLBP(
-    context: vx_context,
+) -> vx_node {
+    if graph.is_null() || input.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut format_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_ENUM,
+            &format as *const _ as *const c_void,
+        );
+        let mut kernel_size_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_INT8,
+            &kernel_size as *const _ as *const c_void,
+        );
+
+        if format_scalar.is_null() || kernel_size_scalar.is_null() {
+            vxReleaseScalar(&mut format_scalar);
+            vxReleaseScalar(&mut kernel_size_scalar);
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.lbp",
+            &[
+                input as vx_reference,
+                format_scalar as vx_reference,
+                kernel_size_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut format_scalar);
+        vxReleaseScalar(&mut kernel_size_scalar);
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuLBP(
+    _context: vx_context,
     input: vx_image,
     format: vx_enum,
     kernel_size: vx_int8,
     output: vx_image,
-));
+) -> vx_status {
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(input as vx_reference);
+        let mut format_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_ENUM,
+            &format as *const _ as *const c_void,
+            std::mem::size_of::<vx_enum>(),
+        );
+        let mut kernel_size_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_INT8,
+            &kernel_size as *const _ as *const c_void,
+            std::mem::size_of::<vx_int8>(),
+        );
+        let status = crate::vxu_impl::vxu_lbp_impl(ctx, input, format_scalar, kernel_size_scalar, output);
+        if !format_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut format_scalar);
+        }
+        if !kernel_size_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut kernel_size_scalar);
+        }
+        status
+    }
+}
 
-ev_node_stub!(vxMatchTemplateNode(
+#[no_mangle]
+pub extern "C" fn vxMatchTemplateNode(
     graph: vx_graph,
     src: vx_image,
     templ: vx_image,
     matching_method: vx_enum,
     output: vx_image,
-));
-ev_vxu_stub!(vxuMatchTemplate(
-    context: vx_context,
+) -> vx_node {
+    if graph.is_null() || src.is_null() || templ.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut method_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_ENUM,
+            &matching_method as *const _ as *const c_void,
+        );
+
+        if method_scalar.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.match_template",
+            &[
+                src as vx_reference,
+                templ as vx_reference,
+                method_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut method_scalar);
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuMatchTemplate(
+    _context: vx_context,
     src: vx_image,
     templ: vx_image,
     matching_method: vx_enum,
     output: vx_image,
-));
+) -> vx_status {
+    if src.is_null() || templ.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(src as vx_reference);
+        let mut method_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_ENUM,
+            &matching_method as *const _ as *const c_void,
+            std::mem::size_of::<vx_enum>(),
+        );
+        let status = crate::vxu_impl::vxu_match_template_impl(ctx, src, templ, method_scalar, output);
+        if !method_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut method_scalar);
+        }
+        status
+    }
+}
 
-ev_node_stub!(vxNonMaxSuppressionNode(
+#[no_mangle]
+pub extern "C" fn vxNonMaxSuppressionNode(
     graph: vx_graph,
     input: vx_image,
     mask: vx_image,
     win_size: vx_int32,
     output: vx_image,
-));
-ev_vxu_stub!(vxuNonMaxSuppression(
-    context: vx_context,
-    input: vx_image,
-    mask: vx_image,
-    win_size: vx_int32,
-    output: vx_image,
-));
+) -> vx_node {
+    if graph.is_null() || input.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut win_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_INT32,
+            &win_size as *const _ as *const c_void,
+        );
+
+        if win_scalar.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.non_max_suppression",
+            &[
+                input as vx_reference,
+                mask as vx_reference,
+                win_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut win_scalar);
+        node
+    }
+}
+// ev_vxu_stub! removed - replaced with real implementation below
 
 ev_node_stub!(vxHOGCellsNode(
     graph: vx_graph,
@@ -13080,14 +13521,95 @@ ev_vxu_stub!(vxuHOGFeatures(
 // has never been exported. Both stay as stubs in Phase 1; they will be
 // replaced with real implementations in a follow-up PR (the CTS Copy and
 // Houghlinesp tests are not in the Phase-1 filter).
-ev_vxu_stub!(vxuCopy(context: vx_context, input: vx_reference, output: vx_reference));
-ev_vxu_stub!(vxuHoughLinesP(
-    context: vx_context,
+#[no_mangle]
+pub extern "C" fn vxuCopy(
+    _context: vx_context,
+    input: vx_reference,
+    output: vx_reference,
+) -> vx_status {
+    unsafe { crate::vxu_impl::vxu_copy_impl(input, output) }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuNonMaxSuppression(
+    _context: vx_context,
+    input: vx_image,
+    mask: vx_image,
+    win_size: vx_int32,
+    output: vx_image,
+) -> vx_status {
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(input as vx_reference);
+        let mut win_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_INT32,
+            &win_size as *const _ as *const c_void,
+            std::mem::size_of::<vx_int32>(),
+        );
+        let status = crate::vxu_impl::vxu_non_max_suppression_impl(ctx, input, mask, win_scalar, output);
+        if !win_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut win_scalar);
+        }
+        status
+    }
+}
+#[no_mangle]
+pub extern "C" fn vxuHoughLinesP(
+    _context: vx_context,
     input: vx_image,
     params: *const vx_hough_lines_p_t,
     lines_array: vx_array,
     num_lines: vx_scalar,
-));
+) -> vx_status {
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(input as vx_reference);
+        let mut rho_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &(*params).rho as *const _ as *const c_void,
+            std::mem::size_of::<f32>(),
+        );
+        let mut theta_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &(*params).theta as *const _ as *const c_void,
+            std::mem::size_of::<f32>(),
+        );
+        let mut threshold_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_UINT32,
+            &(*params).threshold as *const _ as *const c_void,
+            std::mem::size_of::<vx_uint32>(),
+        );
+        let mut line_length_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_UINT32,
+            &(*params).line_length as *const _ as *const c_void,
+            std::mem::size_of::<vx_uint32>(),
+        );
+        let mut line_gap_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_UINT32,
+            &(*params).line_gap as *const _ as *const c_void,
+            std::mem::size_of::<vx_uint32>(),
+        );
+        let status = crate::vxu_impl::vxu_hough_lines_p_impl(
+            ctx, input,
+            rho_scalar,
+            theta_scalar,
+            threshold_scalar,
+            line_length_scalar,
+            line_gap_scalar,
+            lines_array,
+        );
+        if !rho_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut rho_scalar); }
+        if !theta_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut theta_scalar); }
+        if !threshold_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut threshold_scalar); }
+        if !line_length_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut line_length_scalar); }
+        if !line_gap_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut line_gap_scalar); }
+        status
+    }
+}
 
 // ---- Control flow ----
 ev_node_stub!(vxScalarOperationNode(

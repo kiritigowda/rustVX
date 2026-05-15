@@ -22,9 +22,12 @@ use crate::c_api::{
     vx_enum,
     vx_float32,
     vx_image,
+    vx_int32,
+    vx_lut,
     vx_map_id,
     vx_matrix,
     vx_pyramid,
+    vx_reference,
     vx_scalar,
     vx_size,
     vx_status,
@@ -37,7 +40,20 @@ use crate::c_api::{
     VX_ERROR_INVALID_REFERENCE,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_SUCCESS,
-};
+    VX_TYPE_UINT8,
+    VX_TYPE_INT8,
+    VX_TYPE_UINT16,
+    VX_TYPE_INT16,
+    VX_TYPE_UINT32,
+    VX_TYPE_INT32,
+    VX_TYPE_FLOAT32,
+    VX_TYPE_UINT64,
+    VX_TYPE_INT64,
+    VX_TYPE_FLOAT64,
+    VX_ARRAY_ITEMSIZE,
+    VX_THRESHOLD_VALUE,
+    VX_THRESHOLD_LOWER,
+    VX_THRESHOLD_UPPER,};
 use crate::unified_c_api::{vx_border_t, vx_distribution, vx_remap, VxCImage, VxCPyramid};
 use std::ffi::c_void;
 
@@ -299,7 +315,7 @@ impl Image {
 fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
     match df {
         0x38303055 => Some(ImageFormat::Gray), // VX_DF_IMAGE_U8 ('U008')
-        0x31305555 => Some(ImageFormat::GrayU16), // VX_DF_IMAGE_U16 ('U016')
+        0x31305555 => Some(ImageFormat::GrayU16), // 0x31303055u326 ('U016')
         0x53313053 => Some(ImageFormat::GrayS16), // VX_DF_IMAGE_S16 ('S016') - CORRECTED
         0x36313053 => Some(ImageFormat::GrayS16), // Alternative S16 format code
         0x32333055 => Some(ImageFormat::GrayU32), // VX_DF_IMAGE_U32 ('U032')
@@ -6744,6 +6760,1295 @@ pub fn vxu_max_impl(
     }
 }
 
+/// Enhanced Vision: Copy - copies data from input object to output object
+pub fn vxu_copy_impl(input: vx_reference, output: vx_reference) -> vx_status {
+    if input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    extern "C" {
+        fn vxQueryReference(ref_: vx_reference, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryArray(array: vx_array, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapArrayRange(array: vx_array, start: vx_size, end: vx_size, map_id: *mut vx_map_id, stride: *mut vx_size, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapArrayRange(array: vx_array, map_id: vx_map_id) -> vx_status;
+        fn vxAddArrayItems(array: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+        fn vxTruncateArray(array: vx_array, new_num_items: vx_size) -> vx_status;
+        fn vxQueryScalar(scalar: vx_scalar, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyMatrix(matrix: vx_matrix, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryMatrix(matrix: vx_matrix, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyConvolutionCoefficients(conv: vx_convolution, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryConvolution(conv: vx_convolution, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyDistribution(dist: vx_distribution, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryDistribution(dist: vx_distribution, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyLUT(lut: vx_lut, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryLUT(lut: vx_lut, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryThreshold(thresh: vx_threshold, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryRemap(remap: vx_remap, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryPyramid(pyramid: vx_pyramid, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxGetPyramidLevel(pyramid: vx_pyramid, index: u32) -> vx_image;
+        fn vxQueryObjectArray(obj_arr: vx_reference, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxGetObjectArrayItem(obj_arr: vx_reference, index: u32) -> vx_reference;
+        fn vxSetObjectArrayItem(obj_arr: vx_reference, index: u32, item: vx_reference) -> vx_status;
+        fn vxReleaseReference(ref_ptr: *mut vx_reference) -> vx_status;
+        fn vxReleaseImage(img: *mut vx_image) -> vx_status;
+    }
+
+    unsafe {
+        let mut ref_type: vx_enum = 0;
+        let status = vxQueryReference(input, crate::unified_c_api::VX_REFERENCE_ATTRIBUTE_TYPE, &mut ref_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+        if status != VX_SUCCESS {
+            return status;
+        }
+
+        match ref_type {
+            // Image copy using vxCopyImagePatch
+            crate::unified_c_api::VX_TYPE_IMAGE => {
+                let mut src_format: vx_df_image = 0;
+                let mut src_width: vx_uint32 = 0;
+                let mut src_height: vx_uint32 = 0;
+                let s1 = vxQueryImage(input as vx_image, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                let s2 = vxQueryImage(input as vx_image, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let s3 = vxQueryImage(input as vx_image, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_format: vx_df_image = 0;
+                let mut dst_width: vx_uint32 = 0;
+                let mut dst_height: vx_uint32 = 0;
+                let d1 = vxQueryImage(output as vx_image, crate::c_api::VX_IMAGE_FORMAT, &mut dst_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                let d2 = vxQueryImage(output as vx_image, crate::c_api::VX_IMAGE_WIDTH, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let d3 = vxQueryImage(output as vx_image, crate::c_api::VX_IMAGE_HEIGHT, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if src_format != dst_format || src_width != dst_width || src_height != dst_height {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // For simple U8 images, use map/unmap
+                let rect = crate::c_api::vx_rectangle_t {
+                    start_x: 0,
+                    start_y: 0,
+                    end_x: src_width as u32,
+                    end_y: src_height as u32,
+                };
+                let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+                let mut dst_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+                let mut src_ptr: *mut c_void = std::ptr::null_mut();
+                let mut dst_ptr: *mut c_void = std::ptr::null_mut();
+                let mut src_map_id: vx_map_id = 0;
+                let mut dst_map_id: vx_map_id = 0;
+
+                let s_map = vxMapImagePatch(
+                    input as vx_image,
+                    &rect as *const _ as *const c_void,
+                    0,
+                    &mut src_map_id,
+                    &mut src_addr as *mut _ as *mut c_void,
+                    &mut src_ptr as *mut *mut c_void,
+                    crate::c_api::VX_READ_ONLY,
+                    crate::c_api::VX_MEMORY_TYPE_HOST,
+                    0,
+                );
+                if s_map != VX_SUCCESS {
+                    return s_map;
+                }
+
+                let d_map = vxMapImagePatch(
+                    output as vx_image,
+                    &rect as *const _ as *const c_void,
+                    0,
+                    &mut dst_map_id,
+                    &mut dst_addr as *mut _ as *mut c_void,
+                    &mut dst_ptr as *mut *mut c_void,
+                    crate::c_api::VX_WRITE_ONLY,
+                    crate::c_api::VX_MEMORY_TYPE_HOST,
+                    0,
+                );
+                if d_map != VX_SUCCESS {
+                    vxUnmapImagePatch(input as vx_image, src_map_id);
+                    return d_map;
+                }
+
+                // Copy the data
+                let row_bytes = src_addr.stride_x * src_width as i32;
+                if row_bytes > 0 {
+                    for y in 0..src_height {
+                        let src_row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                        let dst_row = (dst_ptr as *mut u8).wrapping_add((y as i32 * dst_addr.stride_y) as usize);
+                        std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes as usize);
+                    }
+                }
+
+                vxUnmapImagePatch(output as vx_image, dst_map_id);
+                vxUnmapImagePatch(input as vx_image, src_map_id);
+                VX_SUCCESS
+            }
+
+            // Array copy
+            crate::unified_c_api::VX_TYPE_ARRAY => {
+                let mut item_type: vx_enum = 0;
+                let mut num_items: vx_size = 0;
+                let mut capacity: vx_size = 0;
+                let s1 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_ITEMTYPE, &mut item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                let s2 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_NUMITEMS, &mut num_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s3 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_CAPACITY, &mut capacity as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_item_type: vx_enum = 0;
+                let mut dst_capacity: vx_size = 0;
+                let d1 = vxQueryArray(output as vx_array, crate::c_api::VX_ARRAY_ITEMTYPE, &mut dst_item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                let d2 = vxQueryArray(output as vx_array, crate::c_api::VX_ARRAY_CAPACITY, &mut dst_capacity as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if item_type != dst_item_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_items > dst_capacity {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // Query item size directly from the array
+                let mut item_size: vx_size = 0;
+                let sz1 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_ITEMSIZE, &mut item_size as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if sz1 != VX_SUCCESS || item_size == 0 {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_items == 0 {
+                    // Just truncate destination to 0
+                    vxTruncateArray(output as vx_array, 0)
+                } else {
+                    let mut src_map_id: vx_map_id = 0;
+                    let mut src_stride: vx_size = 0;
+                    let mut src_ptr: *mut c_void = std::ptr::null_mut();
+                    let s_map = vxMapArrayRange(
+                        input as vx_array,
+                        0,
+                        num_items,
+                        &mut src_map_id,
+                        &mut src_stride,
+                        &mut src_ptr,
+                        crate::c_api::VX_READ_ONLY,
+                        crate::c_api::VX_MEMORY_TYPE_HOST,
+                        0,
+                    );
+                    if s_map != VX_SUCCESS {
+                        return s_map;
+                    }
+
+                    // Truncate destination and add items
+                    let t1 = vxTruncateArray(output as vx_array, 0);
+                    if t1 != VX_SUCCESS {
+                        vxUnmapArrayRange(input as vx_array, src_map_id);
+                        return t1;
+                    }
+
+                    let add_status = vxAddArrayItems(output as vx_array, num_items, src_ptr, src_stride);
+                    vxUnmapArrayRange(input as vx_array, src_map_id);
+                    add_status
+                }
+            }
+
+            // Scalar copy - read value from input, write to output
+            crate::unified_c_api::VX_TYPE_SCALAR => {
+                let mut data_type: vx_enum = 0;
+                let s1 = vxQueryScalar(input as vx_scalar, crate::c_api::VX_SCALAR_TYPE, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_data_type: vx_enum = 0;
+                let d1 = vxQueryScalar(output as vx_scalar, crate::c_api::VX_SCALAR_TYPE, &mut dst_data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if d1 != VX_SUCCESS || data_type != dst_data_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // Read input scalar value using internal data access
+                let src_val = {
+                    let s = &*(input as *const crate::c_api_data::VxCScalarData);
+                    s.data.clone()
+                };
+
+                // Write to output scalar
+                {
+                    let d = &mut *(output as *mut crate::c_api_data::VxCScalarData);
+                    d.data = src_val;
+                }
+                VX_SUCCESS
+            }
+
+            // Matrix copy
+            crate::unified_c_api::VX_TYPE_MATRIX => {
+                let mut rows: vx_size = 0;
+                let mut cols: vx_size = 0;
+                let mut data_type: vx_enum = 0;
+                let s1 = vxQueryMatrix(input as vx_matrix, crate::unified_c_api::VX_MATRIX_ROWS, &mut rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s2 = vxQueryMatrix(input as vx_matrix, crate::unified_c_api::VX_MATRIX_COLUMNS, &mut cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s3 = vxQueryMatrix(input as vx_matrix, crate::unified_c_api::VX_MATRIX_TYPE, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_rows: vx_size = 0;
+                let mut dst_cols: vx_size = 0;
+                let mut dst_type: vx_enum = 0;
+                let d1 = vxQueryMatrix(output as vx_matrix, crate::unified_c_api::VX_MATRIX_ROWS, &mut dst_rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d2 = vxQueryMatrix(output as vx_matrix, crate::unified_c_api::VX_MATRIX_COLUMNS, &mut dst_cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d3 = vxQueryMatrix(output as vx_matrix, crate::unified_c_api::VX_MATRIX_TYPE, &mut dst_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if rows != dst_rows || cols != dst_cols || data_type != dst_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let elem_size = if data_type == VX_TYPE_INT8 || data_type == VX_TYPE_UINT8 {
+                    1
+                } else if data_type == VX_TYPE_INT16 || data_type == VX_TYPE_UINT16 {
+                    2
+                } else if data_type == VX_TYPE_INT32 || data_type == VX_TYPE_UINT32 || data_type == VX_TYPE_FLOAT32 {
+                    4
+                } else if data_type == VX_TYPE_FLOAT64 {
+                    8
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+
+                let total_size = rows * cols * elem_size;
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyMatrix(input as vx_matrix, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyMatrix(output as vx_matrix, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // Convolution copy
+            crate::unified_c_api::VX_TYPE_CONVOLUTION => {
+                let mut rows: vx_size = 0;
+                let mut cols: vx_size = 0;
+                let s1 = vxQueryConvolution(input as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_ROWS, &mut rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s2 = vxQueryConvolution(input as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_COLUMNS, &mut cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_rows: vx_size = 0;
+                let mut dst_cols: vx_size = 0;
+                let d1 = vxQueryConvolution(output as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_ROWS, &mut dst_rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d2 = vxQueryConvolution(output as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_COLUMNS, &mut dst_cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if rows != dst_rows || cols != dst_cols {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let total_size = rows * cols * std::mem::size_of::<i16>();
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyConvolutionCoefficients(input as vx_convolution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyConvolutionCoefficients(output as vx_convolution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // Distribution copy
+            crate::unified_c_api::VX_TYPE_DISTRIBUTION => {
+                let mut num_bins: vx_size = 0;
+                let s1 = vxQueryDistribution(input as vx_distribution, crate::unified_c_api::VX_DISTRIBUTION_BINS, &mut num_bins as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_bins: vx_size = 0;
+                let d1 = vxQueryDistribution(output as vx_distribution, crate::unified_c_api::VX_DISTRIBUTION_BINS, &mut dst_bins as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_bins != dst_bins {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let total_size = num_bins * std::mem::size_of::<u32>();
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyDistribution(input as vx_distribution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyDistribution(output as vx_distribution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // LUT copy
+            crate::unified_c_api::VX_TYPE_LUT => {
+                let mut num_items: vx_size = 0;
+                let s1 = vxQueryLUT(input as vx_lut, crate::unified_c_api::VX_LUT_COUNT, &mut num_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_items: vx_size = 0;
+                let d1 = vxQueryLUT(output as vx_lut, crate::unified_c_api::VX_LUT_COUNT, &mut dst_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_items != dst_items {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let total_size = num_items * std::mem::size_of::<u8>();
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyLUT(input as vx_lut, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyLUT(output as vx_lut, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // Threshold copy — use direct struct access, vxQueryThreshold does not support VALUE/LOWER/UPPER
+            crate::unified_c_api::VX_TYPE_THRESHOLD => {
+                let src = &*(input as *const crate::c_api_data::VxCThresholdData);
+                let dst = &mut *(output as *mut crate::c_api_data::VxCThresholdData);
+                if src.thresh_type != dst.thresh_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                dst.value = src.value;
+                dst.lower = src.lower;
+                dst.upper = src.upper;
+                dst.true_value = src.true_value;
+                dst.false_value = src.false_value;
+                VX_SUCCESS
+            }
+
+            // Remap copy
+            crate::unified_c_api::VX_TYPE_REMAP => {
+                let mut src_width: vx_size = 0;
+                let mut src_height: vx_size = 0;
+                let mut dst_width: vx_size = 0;
+                let mut dst_height: vx_size = 0;
+                let s1 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s2 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s3 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_WIDTH, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s4 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_HEIGHT, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS || s4 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut d_src_width: vx_size = 0;
+                let mut d_src_height: vx_size = 0;
+                let mut d_dst_width: vx_size = 0;
+                let mut d_dst_height: vx_size = 0;
+                let d1 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_WIDTH, &mut d_src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d2 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_HEIGHT, &mut d_src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d3 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_WIDTH, &mut d_dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d4 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_HEIGHT, &mut d_dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS || d4 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if src_width != d_src_width || src_height != d_src_height || dst_width != d_dst_width || dst_height != d_dst_height {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // Use direct internal access for remap data
+                {
+                    let src = &*(input as *const crate::unified_c_api::VxCRemap);
+                    let dst = &mut *(output as *mut crate::unified_c_api::VxCRemap);
+                    if let Ok(mut dst_map) = dst.map_data.try_write() {
+                        if let Ok(src_map) = src.map_data.try_read() {
+                            dst_map.clone_from(&*src_map);
+                        }
+                    }
+                }
+                VX_SUCCESS
+            }
+
+            // Pyramid copy
+            crate::unified_c_api::VX_TYPE_PYRAMID => {
+                let mut levels: vx_size = 0;
+                let s1 = vxQueryPyramid(input as vx_pyramid, crate::unified_c_api::VX_PYRAMID_LEVELS, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_levels: vx_size = 0;
+                let d1 = vxQueryPyramid(output as vx_pyramid, crate::unified_c_api::VX_PYRAMID_LEVELS, &mut dst_levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || levels != dst_levels {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                for i in 0..levels as u32 {
+                    let src_level = vxGetPyramidLevel(input as vx_pyramid, i);
+                    let dst_level = vxGetPyramidLevel(output as vx_pyramid, i);
+                    if src_level.is_null() || dst_level.is_null() {
+                        return VX_ERROR_INVALID_REFERENCE;
+                    }
+                    let level_status = vxu_copy_impl(src_level as vx_reference, dst_level as vx_reference);
+                    let mut s = src_level;
+                    let mut d = dst_level;
+                    vxReleaseImage(&mut s);
+                    vxReleaseImage(&mut d);
+                    if level_status != VX_SUCCESS {
+                        return level_status;
+                    }
+                }
+                VX_SUCCESS
+            }
+
+            // ObjectArray copy
+            crate::unified_c_api::VX_TYPE_OBJECT_ARRAY => {
+                let mut count: vx_size = 0;
+                let s1 = vxQueryObjectArray(input, crate::unified_c_api::VX_OBJECT_ARRAY_NUMITEMS, &mut count as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                for i in 0..count {
+                    let src_item = vxGetObjectArrayItem(input, i as u32);
+                    if src_item.is_null() {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                    let set_status = vxSetObjectArrayItem(output, i as u32, src_item);
+                    let mut r = src_item;
+                    vxReleaseReference(&mut r);
+                    if set_status != VX_SUCCESS {
+                        return set_status;
+                    }
+                }
+                VX_SUCCESS
+            }
+
+            // Tensor copy
+            crate::unified_c_api::VX_TYPE_TENSOR => {
+                crate::unified_c_api::copy_tensor_data(input, output)
+            }
+
+            _ => VX_ERROR_NOT_IMPLEMENTED,
+        }
+    }
+}
+
+/// Enhanced Vision: NonMaxSuppression
+pub fn vxu_non_max_suppression_impl(_ctx: vx_context, input: vx_image, mask: vx_image, win_size: vx_scalar, output: vx_image) -> vx_status {
+    if input.is_null() || output.is_null() || win_size.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    extern "C" {
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+    }
+
+    unsafe {
+        // Read win_size from scalar data (direct vec access, INT32 is 4 bytes)
+        let ws_data = &*(win_size as *const crate::c_api_data::VxCScalarData);
+        if ws_data.data.len() != 4 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let wsize = i32::from_ne_bytes([ws_data.data[0], ws_data.data[1], ws_data.data[2], ws_data.data[3]]);
+
+        if wsize <= 0 || wsize % 2 == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let border = wsize / 2;
+
+        // Get image info
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(input, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(input, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(input, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut dst_format: vx_df_image = 0;
+        let d3 = vxQueryImage(output, crate::c_api::VX_IMAGE_FORMAT, &mut dst_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if d3 != VX_SUCCESS || src_format != dst_format {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Get valid region
+        let mut src_rect: crate::c_api::vx_rectangle_t = std::mem::zeroed();
+        let vr = vxGetValidRegionImage(input, &mut src_rect as *mut _ as *mut c_void);
+        if vr != VX_SUCCESS {
+            return vr;
+        }
+
+        let rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut dst_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut dst_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let mut dst_map_id: vx_map_id = 0;
+
+        let s_map = vxMapImagePatch(input, &rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        let d_map = vxMapImagePatch(output, &rect as *const _ as *const c_void, 0, &mut dst_map_id, &mut dst_addr as *mut _ as *mut c_void, &mut dst_ptr as *mut *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if d_map != VX_SUCCESS {
+            vxUnmapImagePatch(input, src_map_id);
+            return d_map;
+        }
+
+        // Mask info
+        let mut mask_ptr: *mut c_void = std::ptr::null_mut();
+        let mut mask_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut mask_map_id: vx_map_id = 0;
+        let mut has_mask = false;
+
+        if !mask.is_null() {
+            let m_map = vxMapImagePatch(mask, &rect as *const _ as *const c_void, 0, &mut mask_map_id, &mut mask_addr as *mut _ as *mut c_void, &mut mask_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+            if m_map == VX_SUCCESS {
+                has_mask = true;
+            }
+        }
+
+        let rect_start_x = src_rect.start_x as i32;
+        let rect_start_y = src_rect.start_y as i32;
+        let rect_width = (src_rect.end_x - src_rect.start_x) as i32;
+        let rect_height = (src_rect.end_y - src_rect.start_y) as i32;
+
+        if src_format == VX_DF_IMAGE_U8 as vx_df_image {
+            for x in (rect_start_x + border)..(rect_start_x + rect_width - border) {
+                for y in (rect_start_y + border)..(rect_start_y + rect_height - border) {
+                    let src_val = {
+                        let row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                        *row.add((x as i32 * src_addr.stride_x) as usize)
+                    } as i32;
+
+                    let mut mask_val: u8 = 0;
+                    if has_mask {
+                        let row = (mask_ptr as *mut u8).wrapping_add((y as i32 * mask_addr.stride_y) as usize);
+                        mask_val = *row.add((x as i32 * mask_addr.stride_x) as usize);
+                    }
+
+                    let dst_row = (dst_ptr as *mut u8).wrapping_add((y as i32 * dst_addr.stride_y) as usize);
+                    let dst_pixel = dst_row.add((x as i32 * dst_addr.stride_x) as usize);
+
+                    if mask_val != 0 {
+                        *dst_pixel = src_val as u8;
+                    } else {
+                        let mut flag = true;
+                        for i in -border..=border {
+                            for j in -border..=border {
+                                let nx = x + i;
+                                let ny = y + j;
+                                let neighbor_val = {
+                                    let row = (src_ptr as *mut u8).wrapping_add((ny as i32 * src_addr.stride_y) as usize);
+                                    *row.add((nx as i32 * src_addr.stride_x) as usize) as i32
+                                };
+
+                                let mut neighbor_mask: u8 = 0;
+                                if has_mask {
+                                    let row = (mask_ptr as *mut u8).wrapping_add((ny as i32 * mask_addr.stride_y) as usize);
+                                    neighbor_mask = *row.add((nx as i32 * mask_addr.stride_x) as usize);
+                                }
+
+                                if neighbor_mask == 0 {
+                                    let is_before = j < 0 || (j == 0 && i <= 0);
+                                    let is_after = j > 0 || (j == 0 && i > 0);
+                                    if (is_before && src_val < neighbor_val) || (is_after && src_val <= neighbor_val) {
+                                        flag = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !flag {
+                                break;
+                            }
+                        }
+
+                        if flag {
+                            *dst_pixel = src_val as u8;
+                        } else {
+                            *dst_pixel = 0;
+                        }
+                    }
+                }
+            }
+        } else if src_format == VX_DF_IMAGE_S16 as vx_df_image {
+            for x in (rect_start_x + border)..(rect_start_x + rect_width - border) {
+                for y in (rect_start_y + border)..(rect_start_y + rect_height - border) {
+                    let src_val = {
+                        let row = (src_ptr as *mut i16).wrapping_add((y as i32 * src_addr.stride_y) as usize / 2);
+                        *row.add((x as i32 * src_addr.stride_x) as usize / 2)
+                    } as i32;
+
+                    let mut mask_val: u8 = 0;
+                    if has_mask {
+                        let row = (mask_ptr as *mut u8).wrapping_add((y as i32 * mask_addr.stride_y) as usize);
+                        mask_val = *row.add((x as i32 * mask_addr.stride_x) as usize);
+                    }
+
+                    let dst_row = (dst_ptr as *mut i16).wrapping_add((y as i32 * dst_addr.stride_y) as usize / 2);
+                    let dst_pixel = dst_row.add((x as i32 * dst_addr.stride_x) as usize / 2);
+
+                    if mask_val != 0 {
+                        *dst_pixel = src_val as i16;
+                    } else {
+                        let mut flag = true;
+                        for i in -border..=border {
+                            for j in -border..=border {
+                                let nx = x + i;
+                                let ny = y + j;
+                                let neighbor_val = {
+                                    let row = (src_ptr as *mut i16).wrapping_add((ny as i32 * src_addr.stride_y) as usize / 2);
+                                    *row.add((nx as i32 * src_addr.stride_x) as usize / 2) as i32
+                                };
+
+                                let mut neighbor_mask: u8 = 0;
+                                if has_mask {
+                                    let row = (mask_ptr as *mut u8).wrapping_add((ny as i32 * mask_addr.stride_y) as usize);
+                                    neighbor_mask = *row.add((nx as i32 * mask_addr.stride_x) as usize);
+                                }
+
+                                if neighbor_mask == 0 {
+                                    let is_before = j < 0 || (j == 0 && i <= 0);
+                                    let is_after = j > 0 || (j == 0 && i > 0);
+                                    if (is_before && src_val < neighbor_val) || (is_after && src_val <= neighbor_val) {
+                                        flag = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !flag {
+                                break;
+                            }
+                        }
+
+                        if flag {
+                            *dst_pixel = src_val as i16;
+                        } else {
+                            *dst_pixel = i16::MIN;
+                        }
+                    }
+                }
+            }
+        } else {
+            vxUnmapImagePatch(output, dst_map_id);
+            vxUnmapImagePatch(input, src_map_id);
+            if has_mask {
+                vxUnmapImagePatch(mask, mask_map_id);
+            }
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        vxUnmapImagePatch(output, dst_map_id);
+        vxUnmapImagePatch(input, src_map_id);
+        if has_mask {
+            vxUnmapImagePatch(mask, mask_map_id);
+        }
+        VX_SUCCESS
+    }
+}
+
+/// Enhanced Vision: HoughLinesP stub
+
+fn read_scalar_f32(scalar: vx_scalar) -> Option<f32> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            Some(f32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+        } else {
+            None
+        }
+    }
+}
+
+fn read_scalar_u32(scalar: vx_scalar) -> Option<u32> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            Some(u32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+        } else {
+            None
+        }
+    }
+}
+
+/// Enhanced Vision: MatchTemplate
+/// Compares a template image against a source image and produces a comparison map.
+/// Output dimensions: (src_w - tpl_w + 1) x (src_h - tpl_h + 1), S16 format.
+pub fn vxu_match_template_impl(_ctx: vx_context, src: vx_image, templ: vx_image, matching_method_scalar: vx_scalar, output: vx_image) -> vx_status {
+    if src.is_null() || templ.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    extern "C" {
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+    }
+
+    unsafe {
+        // Read matching method from scalar
+        let method = if !matching_method_scalar.is_null() {
+            let s = &*(matching_method_scalar as *const crate::c_api_data::VxCScalarData);
+            if s.data.len() >= 4 {
+                i32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+            } else {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        } else {
+            return VX_ERROR_INVALID_PARAMETERS;
+        };
+
+        // Valid methods: VX_COMPARE_HAMMING=0x19000, VX_COMPARE_L1=0x19001,
+        // VX_COMPARE_L2=0x19002, VX_COMPARE_CCORR=0x19003,
+        // VX_COMPARE_L2_NORM=0x19004, VX_COMPARE_CCORR_NORM=0x19005
+        let valid_methods = [0x19000i32, 0x19001, 0x19002, 0x19003, 0x19004, 0x19005];
+        if !valid_methods.contains(&method) {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Get source image info
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(src, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(src, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(src, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Get template image info
+        let mut tpl_width: vx_uint32 = 0;
+        let mut tpl_height: vx_uint32 = 0;
+        let mut tpl_format: vx_df_image = 0;
+        let t1 = vxQueryImage(templ, crate::c_api::VX_IMAGE_WIDTH, &mut tpl_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let t2 = vxQueryImage(templ, crate::c_api::VX_IMAGE_HEIGHT, &mut tpl_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let t3 = vxQueryImage(templ, crate::c_api::VX_IMAGE_FORMAT, &mut tpl_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if t1 != VX_SUCCESS || t2 != VX_SUCCESS || t3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Both must be U8
+        if src_format != VX_DF_IMAGE_U8 || tpl_format != VX_DF_IMAGE_U8 {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        // Get output image info
+        let mut out_width: vx_uint32 = 0;
+        let mut out_height: vx_uint32 = 0;
+        let mut out_format: vx_df_image = 0;
+        let o1 = vxQueryImage(output, crate::c_api::VX_IMAGE_WIDTH, &mut out_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let o2 = vxQueryImage(output, crate::c_api::VX_IMAGE_HEIGHT, &mut out_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let o3 = vxQueryImage(output, crate::c_api::VX_IMAGE_FORMAT, &mut out_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if o1 != VX_SUCCESS || o2 != VX_SUCCESS || o3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Output must be S16
+        if out_format != VX_DF_IMAGE_S16 {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        // Expected output dimensions
+        let expected_w = src_width.saturating_sub(tpl_width).saturating_add(1);
+        let expected_h = src_height.saturating_sub(tpl_height).saturating_add(1);
+        if out_width != expected_w || out_height != expected_h {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Map source image
+        let src_rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let s_map = vxMapImagePatch(src, &src_rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        // Map template image
+        let tpl_rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: tpl_width,
+            end_y: tpl_height,
+        };
+        let mut tpl_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut tpl_ptr: *mut c_void = std::ptr::null_mut();
+        let mut tpl_map_id: vx_map_id = 0;
+        let t_map = vxMapImagePatch(templ, &tpl_rect as *const _ as *const c_void, 0, &mut tpl_map_id, &mut tpl_addr as *mut _ as *mut c_void, &mut tpl_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if t_map != VX_SUCCESS {
+            vxUnmapImagePatch(src, src_map_id);
+            return t_map;
+        }
+
+        // Map output image
+        let out_rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: out_width,
+            end_y: out_height,
+        };
+        let mut out_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut out_ptr: *mut c_void = std::ptr::null_mut();
+        let mut out_map_id: vx_map_id = 0;
+        let o_map = vxMapImagePatch(output, &out_rect as *const _ as *const c_void, 0, &mut out_map_id, &mut out_addr as *mut _ as *mut c_void, &mut out_ptr as *mut *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if o_map != VX_SUCCESS {
+            vxUnmapImagePatch(templ, tpl_map_id);
+            vxUnmapImagePatch(src, src_map_id);
+            return o_map;
+        }
+
+        let sw = src_width as usize;
+        let sh = src_height as usize;
+        let tw = tpl_width as usize;
+        let th = tpl_height as usize;
+        let ow = out_width as usize;
+        let oh = out_height as usize;
+        let tpl_pixels = (tw * th) as f64;
+
+        // Pre-compute template sum, sum of squares for normalized methods
+        let mut tpl_sum: f64 = 0.0;
+        let mut tpl_sum_sq: f64 = 0.0;
+        for ty in 0..th {
+            let tpl_row = (tpl_ptr as *mut u8).wrapping_add((ty as i32 * tpl_addr.stride_y) as usize);
+            for tx in 0..tw {
+                let tval = *tpl_row.add((tx as i32 * tpl_addr.stride_x) as usize) as f64;
+                tpl_sum += tval;
+                tpl_sum_sq += tval * tval;
+            }
+        }
+
+        // Compute match template for each position
+        for oy in 0..oh {
+            let out_row = (out_ptr as *mut i16).wrapping_add((oy as i32 * out_addr.stride_y) as usize / std::mem::size_of::<i16>());
+            for ox in 0..ow {
+                let sx = ox;
+                let sy = oy;
+
+                let mut sum: f64 = 0.0;
+                let mut sum_sq: f64 = 0.0;
+                let mut sum_prod: f64 = 0.0;
+
+                for ty in 0..th {
+                    let src_row = (src_ptr as *mut u8).wrapping_add(((sy + ty) as i32 * src_addr.stride_y) as usize);
+                    let tpl_row = (tpl_ptr as *mut u8).wrapping_add((ty as i32 * tpl_addr.stride_y) as usize);
+                    for tx in 0..tw {
+                        let sval = *src_row.add(((sx + tx) as i32 * src_addr.stride_x) as usize) as f64;
+                        let tval = *tpl_row.add((tx as i32 * tpl_addr.stride_x) as usize) as f64;
+
+                        match method {
+                            0x19000 => {
+                                // VX_COMPARE_HAMMING: XOR, average
+                                sum += (sval as u8 ^ tval as u8) as f64;
+                            }
+                            0x19001 => {
+                                // VX_COMPARE_L1: average of absolute differences
+                                sum += (sval - tval).abs();
+                            }
+                            0x19002 => {
+                                // VX_COMPARE_L2: average of squared differences
+                                sum += (sval - tval) * (sval - tval);
+                            }
+                            0x19003 => {
+                                // VX_COMPARE_CCORR: cross correlation
+                                sum += sval * tval;
+                            }
+                            0x19004 | 0x19005 => {
+                                // VX_COMPARE_L2_NORM or VX_COMPARE_CCORR_NORM
+                                sum_prod += sval * tval;
+                                sum += sval;
+                                sum_sq += sval * sval;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let result = match method {
+                    0x19000 => {
+                        // Hamming: average
+                        let val = sum / tpl_pixels;
+                        // Scale to S16 range, but keep reasonable values
+                        (val * 256.0) as i16
+                    }
+                    0x19001 => {
+                        // L1: average * 256 for S16
+                        let val = sum / tpl_pixels;
+                        (val * 256.0) as i16
+                    }
+                    0x19002 => {
+                        // L2: average * 256 for S16
+                        let val = sum / tpl_pixels;
+                        (val * 256.0) as i16
+                    }
+                    0x19003 => {
+                        // CCORR: sum * 2^15 / sqrt(tpl_sum_sq * img_sum_sq)
+                        // For unnormalized, just use the raw sum, scaled
+                        let val = sum / tpl_pixels;
+                        // Scale so peak is around 32767
+                        let scale = 32767.0 / 255.0;
+                        (val * scale) as i16
+                    }
+                    0x19004 => {
+                        // VX_COMPARE_L2_NORM
+                        // R = sum((T-I)^2) / sqrt(sum(T^2) * sum(I^2))
+                        let img_sum = sum;
+                        let img_sum_sq = sum_sq;
+                        let diff_sq = tpl_sum_sq + img_sum_sq - 2.0 * sum_prod;
+                        let denom = (tpl_sum_sq * img_sum_sq).sqrt();
+                        let val = if denom > 0.0 {
+                            diff_sq / denom
+                        } else {
+                            0.0
+                        };
+                        (val * 32767.0) as i16
+                    }
+                    0x19005 => {
+                        // VX_COMPARE_CCORR_NORM
+                        // R = sum(T*I) * 2^15 / sqrt(sum(T^2) * sum(I^2))
+                        let denom = (tpl_sum_sq * sum_sq).sqrt();
+                        let val = if denom > 0.0 {
+                            sum_prod * 32767.0 / denom
+                        } else {
+                            0.0
+                        };
+                        val as i16
+                    }
+                    _ => 0i16,
+                };
+
+                *out_row.add((ox as i32 * out_addr.stride_x) as usize / std::mem::size_of::<i16>()) = result;
+            }
+        }
+
+        vxUnmapImagePatch(output, out_map_id);
+        vxUnmapImagePatch(templ, tpl_map_id);
+        vxUnmapImagePatch(src, src_map_id);
+
+        VX_SUCCESS
+    }
+}
+
+pub fn vxu_hough_lines_p_impl(_ctx: vx_context, input: vx_image, rho_scalar: vx_scalar, theta_scalar: vx_scalar, threshold_scalar: vx_scalar, line_length_scalar: vx_scalar, line_gap_scalar: vx_scalar, lines_array: vx_array) -> vx_status {
+    if input.is_null() || lines_array.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    unsafe {
+        // Read scalar params
+        let rho = read_scalar_f32(rho_scalar);
+        let theta = read_scalar_f32(theta_scalar);
+        let threshold = read_scalar_u32(threshold_scalar);
+        let min_line_length = read_scalar_u32(line_length_scalar);
+        let max_line_gap = read_scalar_u32(line_gap_scalar);
+
+        if rho.is_none() || theta.is_none() || threshold.is_none() || min_line_length.is_none() || max_line_gap.is_none() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let rho = rho.unwrap();
+        let theta = theta.unwrap();
+        let threshold = threshold.unwrap() as i32;
+        let min_line_length = min_line_length.unwrap() as i32;
+        let max_line_gap = max_line_gap.unwrap() as i32;
+
+        if rho <= 0.0 || theta <= 0.0 || threshold <= 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        extern "C" {
+            fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+            fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+            fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+            fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+            fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+            fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+        }
+
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(input, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(input, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(input, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut src_rect: crate::c_api::vx_rectangle_t = std::mem::zeroed();
+        let vr = vxGetValidRegionImage(input, &mut src_rect as *mut _ as *mut c_void);
+        if vr != VX_SUCCESS {
+            return vr;
+        }
+
+        let rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let s_map = vxMapImagePatch(input, &rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        let w = src_width as i32;
+        let h = src_height as i32;
+
+        // Collect non-zero edge pixels
+        let mut points: Vec<(i32, i32)> = Vec::new();
+        for y in src_rect.start_y as i32..src_rect.end_y as i32 {
+            for x in src_rect.start_x as i32..src_rect.end_x as i32 {
+                let val = if src_format == 0x31303055u32 as vx_df_image {
+                    let row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                    let byte = *row.add((x as i32 * src_addr.stride_x) as usize / 8);
+                    (byte >> (x % 8)) & 1
+                } else {
+                    let row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                    *row.add((x as i32 * src_addr.stride_x) as usize)
+                };
+                if val != 0 {
+                    points.push((x, y));
+                }
+            }
+        }
+        vxUnmapImagePatch(input, src_map_id);
+
+        if points.is_empty() {
+            let _ = vxTruncateArray(lines_array, 0);
+            return VX_SUCCESS;
+        }
+
+        // HoughLinesP probabilistic algorithm
+        let max_rho = ((w * w + h * h) as f64).sqrt();
+        let num_rho = (max_rho / rho as f64).ceil() as i32 * 2 + 1;
+        let num_theta = (std::f64::consts::PI / theta as f64).ceil() as i32 + 1;
+
+        let mut accumulator: Vec<Vec<i32>> = vec![vec![0; num_theta as usize]; num_rho as usize];
+
+        // Build accumulator
+        for &(x, y) in &points {
+            for t in 0..num_theta {
+                let angle = t as f64 * theta as f64;
+                let r = (x as f64 * angle.cos() + y as f64 * angle.sin()) / rho as f64;
+                let r_idx = (r + num_rho as f64 / 2.0) as i32;
+                if r_idx >= 0 && r_idx < num_rho {
+                    accumulator[r_idx as usize][t as usize] += 1;
+                }
+            }
+        }
+
+        // Find lines using probabilistic approach
+        let mut lines: Vec<(f32, f32, f32, f32)> = Vec::new();
+        let mut used: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+
+        // Sort points randomly-ish for probabilistic behavior
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut rng_state = 42u64;
+        let mut rng = || {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state
+        };
+
+        // For each point not yet used, trace a line
+        for &(x, y) in &points {
+            if used.contains(&(x, y)) {
+                continue;
+            }
+
+            // Find best angle for this point
+            let mut best_theta = 0;
+            let mut best_votes = 0;
+            for t in 0..num_theta {
+                let angle = t as f64 * theta as f64;
+                let r = (x as f64 * angle.cos() + y as f64 * angle.sin()) / rho as f64;
+                let r_idx = (r + num_rho as f64 / 2.0) as i32;
+                if r_idx >= 0 && r_idx < num_rho {
+                    let votes = accumulator[r_idx as usize][t as usize];
+                    if votes > best_votes {
+                        best_votes = votes;
+                        best_theta = t;
+                    }
+                }
+            }
+
+            if best_votes < threshold {
+                continue;
+            }
+
+            let angle = best_theta as f64 * theta as f64;
+            // Line direction is perpendicular to the normal (cos θ, sin θ)
+            let dx = -angle.sin();
+            let dy = angle.cos();
+
+            // Trace forward and backward from (x, y)
+            let mut line_points_forward: Vec<(i32, i32)> = Vec::new();
+            let mut line_points_backward: Vec<(i32, i32)> = Vec::new();
+
+            // Forward direction
+            let mut cx = x as f64;
+            let mut cy = y as f64;
+            for step in 0..(w.max(h) * 2) {
+                let nx = (cx + dx) as i32;
+                let ny = (cy + dy) as i32;
+                if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                    break;
+                }
+                // Check if pixel is edge
+                let is_edge = points.iter().any(|&(px, py)| px == nx && py == ny);
+                if is_edge {
+                    line_points_forward.push((nx, ny));
+                    cx += dx;
+                    cy += dy;
+                } else {
+                    // Gap check
+                    let gap_count = (1..=max_line_gap).find(|&g| {
+                        let gx = (cx + dx * (g + 1) as f64) as i32;
+                        let gy = (cy + dy * (g + 1) as f64) as i32;
+                        gx >= 0 && gx < w && gy >= 0 && gy < h && points.iter().any(|&(px, py)| px == gx && py == gy)
+                    });
+                    if let Some(gap) = gap_count {
+                        cx += dx * (gap + 1) as f64;
+                        cy += dy * (gap + 1) as f64;
+                        let nx = cx as i32;
+                        let ny = cy as i32;
+                        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+                            line_points_forward.push((nx, ny));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Backward direction
+            let mut cx = x as f64;
+            let mut cy = y as f64;
+            for step in 0..(w.max(h) * 2) {
+                let nx = (cx - dx) as i32;
+                let ny = (cy - dy) as i32;
+                if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                    break;
+                }
+                let is_edge = points.iter().any(|&(px, py)| px == nx && py == ny);
+                if is_edge {
+                    line_points_backward.push((nx, ny));
+                    cx -= dx;
+                    cy -= dy;
+                } else {
+                    let gap_count = (1..=max_line_gap).find(|&g| {
+                        let gx = (cx - dx * (g + 1) as f64) as i32;
+                        let gy = (cy - dy * (g + 1) as f64) as i32;
+                        gx >= 0 && gx < w && gy >= 0 && gy < h && points.iter().any(|&(px, py)| px == gx && py == gy)
+                    });
+                    if let Some(gap) = gap_count {
+                        cx -= dx * (gap + 1) as f64;
+                        cy -= dy * (gap + 1) as f64;
+                        let nx = cx as i32;
+                        let ny = cy as i32;
+                        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+                            line_points_backward.push((nx, ny));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Combine points
+            let mut all_points = line_points_backward.clone();
+            all_points.reverse();
+            all_points.push((x, y));
+            all_points.extend(line_points_forward);
+
+            if all_points.len() < min_line_length as usize {
+                continue;
+            }
+
+            // Mark points as used
+            for &(px, py) in &all_points {
+                used.insert((px, py));
+            }
+
+            // Create line segment from first to last point
+            if let (Some(&(sx, sy)), Some(&(ex, ey))) = (all_points.first(), all_points.last()) {
+                lines.push((sx as f32, sy as f32, ex as f32, ey as f32));
+            }
+        }
+
+        // Truncate array and add lines
+        let status = vxTruncateArray(lines_array, 0);
+        if status != VX_SUCCESS {
+            return status;
+        }
+
+        #[repr(C)]
+        struct VxLine2d {
+            start_x: f32,
+            start_y: f32,
+            end_x: f32,
+            end_y: f32,
+        }
+
+        let line_items: Vec<VxLine2d> = lines.iter().map(|(sx, sy, ex, ey)| VxLine2d {
+            start_x: *sx,
+            start_y: *sy,
+            end_x: *ex,
+            end_y: *ey,
+        }).collect();
+
+        if !line_items.is_empty() {
+            let add_status = vxAddArrayItems(lines_array, line_items.len(), line_items.as_ptr() as *const c_void, std::mem::size_of::<VxLine2d>());
+            if add_status != VX_SUCCESS {
+                return add_status;
+            }
+        }
+
+        VX_SUCCESS
+    }
+}
+
+
 /// Pixel-wise multiplication with scale, overflow and rounding policies
 /// overflow_policy: 0 = WRAP, 1 = SATURATE
 /// rounding_policy: 1 = TO_ZERO, 2 = TO_NEAREST_EVEN
@@ -9196,5 +10501,274 @@ pub fn vxu_half_scale_gaussian_impl(
         }
 
         copy_rust_to_c_image(&dst, output)
+    }
+}
+
+/// OpenVX LBP format enum constants
+const VX_LBP: vx_enum = 0x18000;
+const VX_MLBP: vx_enum = 0x18001;
+const VX_ULBP: vx_enum = 0x18002;
+
+fn read_scalar_enum_from_scalar(scalar: vx_scalar) -> Option<vx_enum> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            Some(i32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+        } else if s.data.len() >= 2 {
+            Some(i16::from_le_bytes([s.data[0], s.data[1]]) as i32)
+        } else if s.data.len() >= 1 {
+            Some(s.data[0] as i32)
+        } else {
+            None
+        }
+    }
+}
+
+fn read_scalar_i8(scalar: vx_scalar) -> Option<i8> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if !s.data.is_empty() {
+            Some(s.data[0] as i8)
+        } else {
+            None
+        }
+    }
+}
+
+/// Count bit transitions in an 8-bit circular pattern
+fn lbp_uniform_value(pattern: u8) -> u8 {
+    let mut transitions = 0u8;
+    let mut prev_bit = (pattern >> 7) & 1;
+    for i in 0..8 {
+        let bit = (pattern >> i) & 1;
+        if bit != prev_bit {
+            transitions += 1;
+        }
+        prev_bit = bit;
+    }
+    if transitions <= 2 {
+        pattern
+    } else {
+        9 // non-uniform pattern value
+    }
+}
+
+/// Enhanced Vision: LBP (Local Binary Patterns)
+pub fn vxu_lbp_impl(_ctx: vx_context, input: vx_image, format_scalar: vx_scalar, kernel_size_scalar: vx_scalar, output: vx_image) -> vx_status {
+    if input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let format = read_scalar_enum_from_scalar(format_scalar).unwrap_or(VX_LBP);
+    let kernel_size = read_scalar_i8(kernel_size_scalar).unwrap_or(3);
+
+    if kernel_size != 3 && kernel_size != 5 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    extern "C" {
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+    }
+
+    unsafe {
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(input, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(input, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(input, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut dst_width: vx_uint32 = 0;
+        let mut dst_height: vx_uint32 = 0;
+        let mut dst_format: vx_df_image = 0;
+        let d1 = vxQueryImage(output, crate::c_api::VX_IMAGE_WIDTH, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let d2 = vxQueryImage(output, crate::c_api::VX_IMAGE_HEIGHT, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let d3 = vxQueryImage(output, crate::c_api::VX_IMAGE_FORMAT, &mut dst_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        if src_format != VX_DF_IMAGE_U8 as vx_df_image || dst_format != VX_DF_IMAGE_U8 as vx_df_image {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+        if src_width != dst_width || src_height != dst_height {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut src_rect: crate::c_api::vx_rectangle_t = std::mem::zeroed();
+        let vr = vxGetValidRegionImage(input, &mut src_rect as *mut _ as *mut c_void);
+        if vr != VX_SUCCESS {
+            return vr;
+        }
+
+        let rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut dst_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut dst_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let mut dst_map_id: vx_map_id = 0;
+
+        let s_map = vxMapImagePatch(input, &rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        let d_map = vxMapImagePatch(output, &rect as *const _ as *const c_void, 0, &mut dst_map_id, &mut dst_addr as *mut _ as *mut c_void, &mut dst_ptr as *mut *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if d_map != VX_SUCCESS {
+            vxUnmapImagePatch(input, src_map_id);
+            return d_map;
+        }
+
+        let width = src_width as i32;
+        let height = src_height as i32;
+        let border = (kernel_size / 2) as i32;
+
+        // Sampling offsets matching the OpenVX reference implementation (c_model/c_lbp.c)
+        // In the reference, (x, y) are in C-order where y increases downward.
+        // g[0..7] are the 8 neighbor values in counter-clockwise order from top-left.
+        //
+        // For 3x3 (ksize=3):
+        //   g[0]=src[x-1,y-1], g[1]=src[x,y-1], g[2]=src[x+1,y-1],
+        //   g[3]=src[x+1,y],   g[4]=src[x+1,y+1], g[5]=src[x,y+1],
+        //   g[6]=src[x-1,y+1], g[7]=src[x-1,y]
+        //
+        // For 5x5 Standard/Uniform (ksize=5):
+        //   g[0]=src[x-1,y-1], g[1]=src[x,y-2], g[2]=src[x+1,y-1],
+        //   g[3]=src[x+2,y],   g[4]=src[x+1,y+1], g[5]=src[x,y+2],
+        //   g[6]=src[x-1,y+1], g[7]=src[x-2,y]
+        //
+        // For 5x5 Modified (ksize=5) - MLBP only supports ksize=5:
+        //   g[0]=src[x-2,y-2], g[1]=src[x,y-2], g[2]=src[x+2,y-2],
+        //   g[3]=src[x+2,y],   g[4]=src[x+2,y+2], g[5]=src[x,y+2],
+        //   g[6]=src[x-2,y+2], g[7]=src[x-2,y]
+        //
+        // We store offsets as (dy, dx) pairs.
+        let (offsets_std, offsets_mlbp) = if kernel_size == 3 {
+            (
+                [
+                    (-1, -1), (-1, 0), (-1, 1),
+                    (0, 1), (1, 1), (1, 0),
+                    (1, -1), (0, -1),
+                ],
+                None, // MLBP not supported for 3x3
+            )
+        } else {
+            (
+                [
+                    (-1, -1), (-2, 0), (-1, 1),
+                    (0, 2), (1, 1), (2, 0),
+                    (1, -1), (0, -2),
+                ],
+                Some([
+                    (-2, -2), (-2, 0), (-2, 2),
+                    (0, 2), (2, 2), (2, 0),
+                    (2, -2), (0, -2),
+                ]),
+            )
+        };
+
+        if format == VX_MLBP && offsets_mlbp.is_none() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Only process interior pixels (same as reference)
+        let y_start = border;
+        let y_end = height - border;
+        let x_start = border;
+        let x_end = width - border;
+
+        for y in 0..height {
+            for x in 0..width {
+                let mut output_val: u8 = 0;
+
+                if y >= y_start && y < y_end && x >= x_start && x < x_end {
+                    let src_row = (src_ptr as *mut u8).wrapping_add((y * src_addr.stride_y) as usize);
+                    let center_val = *src_row.add((x * src_addr.stride_x) as usize);
+
+                    let mut pattern: u8 = 0;
+
+                    if format == VX_MLBP {
+                        // Modified LBP: compare each neighbor against the average of all 8 neighbors
+                        // Reference: avg = (g[0]+g[1]+g[2]+g[3]+g[4]+g[5]+g[6]+g[7]+1)/8
+                        //            sum += ((g[p] > avg) * (1 << p));
+                        let mlbp_offsets = offsets_mlbp.unwrap();
+                        let mut g: [u8; 8] = [0; 8];
+                        for (i, (dy, dx)) in mlbp_offsets.iter().enumerate() {
+                            let ny = y + dy;
+                            let nx = x + dx;
+                            let row = (src_ptr as *mut u8).wrapping_add((ny * src_addr.stride_y) as usize);
+                            g[i] = *row.add((nx * src_addr.stride_x) as usize);
+                        }
+                        let avg = ((g[0] as i32 + g[1] as i32 + g[2] as i32 + g[3] as i32 + g[4] as i32 + g[5] as i32 + g[6] as i32 + g[7] as i32 + 1) / 8) as u8;
+                        for p in 0..8 {
+                            if g[p] > avg {
+                                pattern |= 1 << p;
+                            }
+                        }
+                        output_val = pattern;
+                    } else {
+                        // Standard LBP or Uniform LBP
+                        let offsets = offsets_std;
+                        let mut g: [u8; 8] = [0; 8];
+                        for (i, (dy, dx)) in offsets.iter().enumerate() {
+                            let ny = y + dy;
+                            let nx = x + dx;
+                            let row = (src_ptr as *mut u8).wrapping_add((ny * src_addr.stride_y) as usize);
+                            g[i] = *row.add((nx * src_addr.stride_x) as usize);
+                        }
+
+                        for p in 0..8 {
+                            if g[p] >= center_val {
+                                pattern |= 1 << p;
+                            }
+                        }
+
+                        if format == VX_ULBP {
+                            // Count transitions (same as reference c_lbp.c)
+                            let mut transitions = 0u8;
+                            let mut prev_bit = if g[7] >= center_val { 1 } else { 0 };
+                            for p in 0..8 {
+                                let bit = if g[p] >= center_val { 1 } else { 0 };
+                                transitions += (bit != prev_bit) as u8;
+                                prev_bit = bit;
+                            }
+                            if transitions <= 2 {
+                                output_val = pattern;
+                            } else {
+                                output_val = 9;
+                            }
+                        } else {
+                            output_val = pattern;
+                        }
+                    }
+                }
+
+                let dst_row = (dst_ptr as *mut u8).wrapping_add((y * dst_addr.stride_y) as usize);
+                *dst_row.add((x * dst_addr.stride_x) as usize) = output_val;
+            }
+        }
+
+        vxUnmapImagePatch(output, dst_map_id);
+        vxUnmapImagePatch(input, src_map_id);
+        VX_SUCCESS
     }
 }
