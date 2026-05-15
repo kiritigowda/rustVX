@@ -7652,8 +7652,9 @@ pub fn vxu_hough_lines_p_impl(_ctx: vx_context, input: vx_image, rho_scalar: vx_
             }
 
             let angle = best_theta as f64 * theta as f64;
-            let dx = angle.cos();
-            let dy = angle.sin();
+            // Line direction is perpendicular to the normal (cos θ, sin θ)
+            let dx = -angle.sin();
+            let dy = angle.cos();
 
             // Trace forward and backward from (x, y)
             let mut line_points_forward: Vec<(i32, i32)> = Vec::new();
