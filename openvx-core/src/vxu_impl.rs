@@ -10503,3 +10503,272 @@ pub fn vxu_half_scale_gaussian_impl(
         copy_rust_to_c_image(&dst, output)
     }
 }
+
+/// OpenVX LBP format enum constants
+const VX_LBP: vx_enum = 0x18000;
+const VX_MLBP: vx_enum = 0x18001;
+const VX_ULBP: vx_enum = 0x18002;
+
+fn read_scalar_enum_from_scalar(scalar: vx_scalar) -> Option<vx_enum> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            Some(i32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+        } else if s.data.len() >= 2 {
+            Some(i16::from_le_bytes([s.data[0], s.data[1]]) as i32)
+        } else if s.data.len() >= 1 {
+            Some(s.data[0] as i32)
+        } else {
+            None
+        }
+    }
+}
+
+fn read_scalar_i8(scalar: vx_scalar) -> Option<i8> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if !s.data.is_empty() {
+            Some(s.data[0] as i8)
+        } else {
+            None
+        }
+    }
+}
+
+/// Count bit transitions in an 8-bit circular pattern
+fn lbp_uniform_value(pattern: u8) -> u8 {
+    let mut transitions = 0u8;
+    let mut prev_bit = (pattern >> 7) & 1;
+    for i in 0..8 {
+        let bit = (pattern >> i) & 1;
+        if bit != prev_bit {
+            transitions += 1;
+        }
+        prev_bit = bit;
+    }
+    if transitions <= 2 {
+        pattern
+    } else {
+        9 // non-uniform pattern value
+    }
+}
+
+/// Enhanced Vision: LBP (Local Binary Patterns)
+pub fn vxu_lbp_impl(_ctx: vx_context, input: vx_image, format_scalar: vx_scalar, kernel_size_scalar: vx_scalar, output: vx_image) -> vx_status {
+    if input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let format = read_scalar_enum_from_scalar(format_scalar).unwrap_or(VX_LBP);
+    let kernel_size = read_scalar_i8(kernel_size_scalar).unwrap_or(3);
+
+    if kernel_size != 3 && kernel_size != 5 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    extern "C" {
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+    }
+
+    unsafe {
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(input, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(input, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(input, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut dst_width: vx_uint32 = 0;
+        let mut dst_height: vx_uint32 = 0;
+        let mut dst_format: vx_df_image = 0;
+        let d1 = vxQueryImage(output, crate::c_api::VX_IMAGE_WIDTH, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let d2 = vxQueryImage(output, crate::c_api::VX_IMAGE_HEIGHT, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let d3 = vxQueryImage(output, crate::c_api::VX_IMAGE_FORMAT, &mut dst_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        if src_format != VX_DF_IMAGE_U8 as vx_df_image || dst_format != VX_DF_IMAGE_U8 as vx_df_image {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+        if src_width != dst_width || src_height != dst_height {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut src_rect: crate::c_api::vx_rectangle_t = std::mem::zeroed();
+        let vr = vxGetValidRegionImage(input, &mut src_rect as *mut _ as *mut c_void);
+        if vr != VX_SUCCESS {
+            return vr;
+        }
+
+        let rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut dst_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut dst_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let mut dst_map_id: vx_map_id = 0;
+
+        let s_map = vxMapImagePatch(input, &rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        let d_map = vxMapImagePatch(output, &rect as *const _ as *const c_void, 0, &mut dst_map_id, &mut dst_addr as *mut _ as *mut c_void, &mut dst_ptr as *mut *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if d_map != VX_SUCCESS {
+            vxUnmapImagePatch(input, src_map_id);
+            return d_map;
+        }
+
+        let width = src_width as i32;
+        let height = src_height as i32;
+        let border = (kernel_size / 2) as i32;
+
+        // Sampling offsets matching the OpenVX reference implementation (c_model/c_lbp.c)
+        // In the reference, (x, y) are in C-order where y increases downward.
+        // g[0..7] are the 8 neighbor values in counter-clockwise order from top-left.
+        //
+        // For 3x3 (ksize=3):
+        //   g[0]=src[x-1,y-1], g[1]=src[x,y-1], g[2]=src[x+1,y-1],
+        //   g[3]=src[x+1,y],   g[4]=src[x+1,y+1], g[5]=src[x,y+1],
+        //   g[6]=src[x-1,y+1], g[7]=src[x-1,y]
+        //
+        // For 5x5 Standard/Uniform (ksize=5):
+        //   g[0]=src[x-1,y-1], g[1]=src[x,y-2], g[2]=src[x+1,y-1],
+        //   g[3]=src[x+2,y],   g[4]=src[x+1,y+1], g[5]=src[x,y+2],
+        //   g[6]=src[x-1,y+1], g[7]=src[x-2,y]
+        //
+        // For 5x5 Modified (ksize=5) - MLBP only supports ksize=5:
+        //   g[0]=src[x-2,y-2], g[1]=src[x,y-2], g[2]=src[x+2,y-2],
+        //   g[3]=src[x+2,y],   g[4]=src[x+2,y+2], g[5]=src[x,y+2],
+        //   g[6]=src[x-2,y+2], g[7]=src[x-2,y]
+        //
+        // We store offsets as (dy, dx) pairs.
+        let (offsets_std, offsets_mlbp) = if kernel_size == 3 {
+            (
+                [
+                    (-1, -1), (-1, 0), (-1, 1),
+                    (0, 1), (1, 1), (1, 0),
+                    (1, -1), (0, -1),
+                ],
+                None, // MLBP not supported for 3x3
+            )
+        } else {
+            (
+                [
+                    (-1, -1), (-2, 0), (-1, 1),
+                    (0, 2), (1, 1), (2, 0),
+                    (1, -1), (0, -2),
+                ],
+                Some([
+                    (-2, -2), (-2, 0), (-2, 2),
+                    (0, 2), (2, 2), (2, 0),
+                    (2, -2), (0, -2),
+                ]),
+            )
+        };
+
+        if format == VX_MLBP && offsets_mlbp.is_none() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Only process interior pixels (same as reference)
+        let y_start = border;
+        let y_end = height - border;
+        let x_start = border;
+        let x_end = width - border;
+
+        for y in 0..height {
+            for x in 0..width {
+                let mut output_val: u8 = 0;
+
+                if y >= y_start && y < y_end && x >= x_start && x < x_end {
+                    let src_row = (src_ptr as *mut u8).wrapping_add((y * src_addr.stride_y) as usize);
+                    let center_val = *src_row.add((x * src_addr.stride_x) as usize);
+
+                    let mut pattern: u8 = 0;
+
+                    if format == VX_MLBP {
+                        // Modified LBP: compare each neighbor against the average of all 8 neighbors
+                        // Reference: avg = (g[0]+g[1]+g[2]+g[3]+g[4]+g[5]+g[6]+g[7]+1)/8
+                        //            sum += ((g[p] > avg) * (1 << p));
+                        let mlbp_offsets = offsets_mlbp.unwrap();
+                        let mut g: [u8; 8] = [0; 8];
+                        for (i, (dy, dx)) in mlbp_offsets.iter().enumerate() {
+                            let ny = y + dy;
+                            let nx = x + dx;
+                            let row = (src_ptr as *mut u8).wrapping_add((ny * src_addr.stride_y) as usize);
+                            g[i] = *row.add((nx * src_addr.stride_x) as usize);
+                        }
+                        let avg = ((g[0] as i32 + g[1] as i32 + g[2] as i32 + g[3] as i32 + g[4] as i32 + g[5] as i32 + g[6] as i32 + g[7] as i32 + 1) / 8) as u8;
+                        for p in 0..8 {
+                            if g[p] > avg {
+                                pattern |= 1 << p;
+                            }
+                        }
+                        output_val = pattern;
+                    } else {
+                        // Standard LBP or Uniform LBP
+                        let offsets = offsets_std;
+                        let mut g: [u8; 8] = [0; 8];
+                        for (i, (dy, dx)) in offsets.iter().enumerate() {
+                            let ny = y + dy;
+                            let nx = x + dx;
+                            let row = (src_ptr as *mut u8).wrapping_add((ny * src_addr.stride_y) as usize);
+                            g[i] = *row.add((nx * src_addr.stride_x) as usize);
+                        }
+
+                        for p in 0..8 {
+                            if g[p] >= center_val {
+                                pattern |= 1 << p;
+                            }
+                        }
+
+                        if format == VX_ULBP {
+                            // Count transitions (same as reference c_lbp.c)
+                            let mut transitions = 0u8;
+                            let mut prev_bit = if g[7] >= center_val { 1 } else { 0 };
+                            for p in 0..8 {
+                                let bit = if g[p] >= center_val { 1 } else { 0 };
+                                transitions += (bit != prev_bit) as u8;
+                                prev_bit = bit;
+                            }
+                            if transitions <= 2 {
+                                output_val = pattern;
+                            } else {
+                                output_val = 9;
+                            }
+                        } else {
+                            output_val = pattern;
+                        }
+                    }
+                }
+
+                let dst_row = (dst_ptr as *mut u8).wrapping_add((y * dst_addr.stride_y) as usize);
+                *dst_row.add((x * dst_addr.stride_x) as usize) = output_val;
+            }
+        }
+
+        vxUnmapImagePatch(output, dst_map_id);
+        vxUnmapImagePatch(input, src_map_id);
+        VX_SUCCESS
+    }
+}
