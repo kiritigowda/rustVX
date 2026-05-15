@@ -1081,6 +1081,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.copy", vec![1]), // [input, output] - param 1 is output
                 ("org.khronos.openvx.non_max_suppression", vec![3]), // [input, mask, win_size, output]
                 ("org.khronos.openvx.hough_lines_p", vec![6, 7]), // [input, rho, theta, threshold, line_length, line_gap, lines_array, num_lines]
+                ("org.khronos.openvx.lbp", vec![3]), // [input, format, kernel_size, output]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
@@ -3203,6 +3204,28 @@ fn dispatch_kernel_with_border_impl(
                         line_length,
                         line_gap,
                         lines_array,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // LBP (Enhanced Vision)
+        "org.khronos.openvx.lbp" => {
+            if params.len() >= 4 {
+                let input = params[0] as vx_image;
+                let format = params[1] as vx_scalar;
+                let kernel_size = params[2] as vx_scalar;
+                let output = params[3] as vx_image;
+                if !input.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_lbp_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        format,
+                        kernel_size,
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -13063,20 +13086,90 @@ ev_vxu_stub!(vxuBilateralFilter(
     dst: vx_tensor,
 ));
 
-ev_node_stub!(vxLBPNode(
+#[no_mangle]
+pub extern "C" fn vxLBPNode(
     graph: vx_graph,
     input: vx_image,
     format: vx_enum,
     kernel_size: vx_int8,
     output: vx_image,
-));
-ev_vxu_stub!(vxuLBP(
-    context: vx_context,
+) -> vx_node {
+    if graph.is_null() || input.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut format_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_ENUM,
+            &format as *const _ as *const c_void,
+        );
+        let mut kernel_size_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_INT8,
+            &kernel_size as *const _ as *const c_void,
+        );
+
+        if format_scalar.is_null() || kernel_size_scalar.is_null() {
+            vxReleaseScalar(&mut format_scalar);
+            vxReleaseScalar(&mut kernel_size_scalar);
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.lbp",
+            &[
+                input as vx_reference,
+                format_scalar as vx_reference,
+                kernel_size_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut format_scalar);
+        vxReleaseScalar(&mut kernel_size_scalar);
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuLBP(
+    _context: vx_context,
     input: vx_image,
     format: vx_enum,
     kernel_size: vx_int8,
     output: vx_image,
-));
+) -> vx_status {
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(input as vx_reference);
+        let mut format_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_ENUM,
+            &format as *const _ as *const c_void,
+            std::mem::size_of::<vx_enum>(),
+        );
+        let mut kernel_size_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_INT8,
+            &kernel_size as *const _ as *const c_void,
+            std::mem::size_of::<vx_int8>(),
+        );
+        let status = crate::vxu_impl::vxu_lbp_impl(ctx, input, format_scalar, kernel_size_scalar, output);
+        if !format_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut format_scalar);
+        }
+        if !kernel_size_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut kernel_size_scalar);
+        }
+        status
+    }
+}
 
 ev_node_stub!(vxMatchTemplateNode(
     graph: vx_graph,
