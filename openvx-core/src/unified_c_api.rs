@@ -1081,6 +1081,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.copy", vec![1]), // [input, output] - param 1 is output
                 ("org.khronos.openvx.non_max_suppression", vec![3]), // [input, mask, win_size, output]
                 ("org.khronos.openvx.hough_lines_p", vec![6, 7]), // [input, rho, theta, threshold, line_length, line_gap, lines_array, num_lines]
+                ("org.khronos.openvx.match_template", vec![3]), // [src, templ, matching_method, output]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
@@ -3203,6 +3204,32 @@ fn dispatch_kernel_with_border_impl(
                         line_length,
                         line_gap,
                         lines_array,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // MatchTemplate (Enhanced Vision)
+        "org.khronos.openvx.match_template" => {
+            if params.len() >= 4 {
+                let src = params[0] as vx_image;
+                let templ = params[1] as vx_image;
+                let matching_method = if params.len() > 2 && !params[2].is_null() {
+                    params[2] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
+                let output = params[3] as vx_image;
+                if !src.is_null() && !templ.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_match_template_impl(
+                        unsafe { crate::c_api::vxGetContext(src as vx_reference) },
+                        src,
+                        templ,
+                        matching_method,
+                        output,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -13078,20 +13105,76 @@ ev_vxu_stub!(vxuLBP(
     output: vx_image,
 ));
 
-ev_node_stub!(vxMatchTemplateNode(
+#[no_mangle]
+pub extern "C" fn vxMatchTemplateNode(
     graph: vx_graph,
     src: vx_image,
     templ: vx_image,
     matching_method: vx_enum,
     output: vx_image,
-));
-ev_vxu_stub!(vxuMatchTemplate(
-    context: vx_context,
+) -> vx_node {
+    if graph.is_null() || src.is_null() || templ.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut method_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_ENUM,
+            &matching_method as *const _ as *const c_void,
+        );
+
+        if method_scalar.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.match_template",
+            &[
+                src as vx_reference,
+                templ as vx_reference,
+                method_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut method_scalar);
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuMatchTemplate(
+    _context: vx_context,
     src: vx_image,
     templ: vx_image,
     matching_method: vx_enum,
     output: vx_image,
-));
+) -> vx_status {
+    if src.is_null() || templ.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(src as vx_reference);
+        let mut method_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_ENUM,
+            &matching_method as *const _ as *const c_void,
+            std::mem::size_of::<vx_enum>(),
+        );
+        let status = crate::vxu_impl::vxu_match_template_impl(ctx, src, templ, method_scalar, output);
+        if !method_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut method_scalar);
+        }
+        status
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn vxNonMaxSuppressionNode(

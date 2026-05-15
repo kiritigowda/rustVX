@@ -7500,6 +7500,271 @@ fn read_scalar_u32(scalar: vx_scalar) -> Option<u32> {
     }
 }
 
+/// Enhanced Vision: MatchTemplate
+/// Compares a template image against a source image and produces a comparison map.
+/// Output dimensions: (src_w - tpl_w + 1) x (src_h - tpl_h + 1), S16 format.
+pub fn vxu_match_template_impl(_ctx: vx_context, src: vx_image, templ: vx_image, matching_method_scalar: vx_scalar, output: vx_image) -> vx_status {
+    if src.is_null() || templ.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    extern "C" {
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+    }
+
+    unsafe {
+        // Read matching method from scalar
+        let method = if !matching_method_scalar.is_null() {
+            let s = &*(matching_method_scalar as *const crate::c_api_data::VxCScalarData);
+            if s.data.len() >= 4 {
+                i32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+            } else {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        } else {
+            return VX_ERROR_INVALID_PARAMETERS;
+        };
+
+        // Valid methods: VX_COMPARE_HAMMING=0x19000, VX_COMPARE_L1=0x19001,
+        // VX_COMPARE_L2=0x19002, VX_COMPARE_CCORR=0x19003,
+        // VX_COMPARE_L2_NORM=0x19004, VX_COMPARE_CCORR_NORM=0x19005
+        let valid_methods = [0x19000i32, 0x19001, 0x19002, 0x19003, 0x19004, 0x19005];
+        if !valid_methods.contains(&method) {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Get source image info
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(src, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(src, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(src, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Get template image info
+        let mut tpl_width: vx_uint32 = 0;
+        let mut tpl_height: vx_uint32 = 0;
+        let mut tpl_format: vx_df_image = 0;
+        let t1 = vxQueryImage(templ, crate::c_api::VX_IMAGE_WIDTH, &mut tpl_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let t2 = vxQueryImage(templ, crate::c_api::VX_IMAGE_HEIGHT, &mut tpl_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let t3 = vxQueryImage(templ, crate::c_api::VX_IMAGE_FORMAT, &mut tpl_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if t1 != VX_SUCCESS || t2 != VX_SUCCESS || t3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Both must be U8
+        if src_format != VX_DF_IMAGE_U8 || tpl_format != VX_DF_IMAGE_U8 {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        // Get output image info
+        let mut out_width: vx_uint32 = 0;
+        let mut out_height: vx_uint32 = 0;
+        let mut out_format: vx_df_image = 0;
+        let o1 = vxQueryImage(output, crate::c_api::VX_IMAGE_WIDTH, &mut out_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let o2 = vxQueryImage(output, crate::c_api::VX_IMAGE_HEIGHT, &mut out_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let o3 = vxQueryImage(output, crate::c_api::VX_IMAGE_FORMAT, &mut out_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if o1 != VX_SUCCESS || o2 != VX_SUCCESS || o3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Output must be S16
+        if out_format != VX_DF_IMAGE_S16 {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        // Expected output dimensions
+        let expected_w = src_width.saturating_sub(tpl_width).saturating_add(1);
+        let expected_h = src_height.saturating_sub(tpl_height).saturating_add(1);
+        if out_width != expected_w || out_height != expected_h {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Map source image
+        let src_rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let s_map = vxMapImagePatch(src, &src_rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        // Map template image
+        let tpl_rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: tpl_width,
+            end_y: tpl_height,
+        };
+        let mut tpl_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut tpl_ptr: *mut c_void = std::ptr::null_mut();
+        let mut tpl_map_id: vx_map_id = 0;
+        let t_map = vxMapImagePatch(templ, &tpl_rect as *const _ as *const c_void, 0, &mut tpl_map_id, &mut tpl_addr as *mut _ as *mut c_void, &mut tpl_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if t_map != VX_SUCCESS {
+            vxUnmapImagePatch(src, src_map_id);
+            return t_map;
+        }
+
+        // Map output image
+        let out_rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: out_width,
+            end_y: out_height,
+        };
+        let mut out_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut out_ptr: *mut c_void = std::ptr::null_mut();
+        let mut out_map_id: vx_map_id = 0;
+        let o_map = vxMapImagePatch(output, &out_rect as *const _ as *const c_void, 0, &mut out_map_id, &mut out_addr as *mut _ as *mut c_void, &mut out_ptr as *mut *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if o_map != VX_SUCCESS {
+            vxUnmapImagePatch(templ, tpl_map_id);
+            vxUnmapImagePatch(src, src_map_id);
+            return o_map;
+        }
+
+        let sw = src_width as usize;
+        let sh = src_height as usize;
+        let tw = tpl_width as usize;
+        let th = tpl_height as usize;
+        let ow = out_width as usize;
+        let oh = out_height as usize;
+        let tpl_pixels = (tw * th) as f64;
+
+        // Pre-compute template sum, sum of squares for normalized methods
+        let mut tpl_sum: f64 = 0.0;
+        let mut tpl_sum_sq: f64 = 0.0;
+        for ty in 0..th {
+            let tpl_row = (tpl_ptr as *mut u8).wrapping_add((ty as i32 * tpl_addr.stride_y) as usize);
+            for tx in 0..tw {
+                let tval = *tpl_row.add((tx as i32 * tpl_addr.stride_x) as usize) as f64;
+                tpl_sum += tval;
+                tpl_sum_sq += tval * tval;
+            }
+        }
+
+        // Compute match template for each position
+        for oy in 0..oh {
+            let out_row = (out_ptr as *mut i16).wrapping_add((oy as i32 * out_addr.stride_y) as usize / std::mem::size_of::<i16>());
+            for ox in 0..ow {
+                let sx = ox;
+                let sy = oy;
+
+                let mut sum: f64 = 0.0;
+                let mut sum_sq: f64 = 0.0;
+                let mut sum_prod: f64 = 0.0;
+
+                for ty in 0..th {
+                    let src_row = (src_ptr as *mut u8).wrapping_add(((sy + ty) as i32 * src_addr.stride_y) as usize);
+                    let tpl_row = (tpl_ptr as *mut u8).wrapping_add((ty as i32 * tpl_addr.stride_y) as usize);
+                    for tx in 0..tw {
+                        let sval = *src_row.add(((sx + tx) as i32 * src_addr.stride_x) as usize) as f64;
+                        let tval = *tpl_row.add((tx as i32 * tpl_addr.stride_x) as usize) as f64;
+
+                        match method {
+                            0x19000 => {
+                                // VX_COMPARE_HAMMING: XOR, average
+                                sum += (sval as u8 ^ tval as u8) as f64;
+                            }
+                            0x19001 => {
+                                // VX_COMPARE_L1: average of absolute differences
+                                sum += (sval - tval).abs();
+                            }
+                            0x19002 => {
+                                // VX_COMPARE_L2: average of squared differences
+                                sum += (sval - tval) * (sval - tval);
+                            }
+                            0x19003 => {
+                                // VX_COMPARE_CCORR: cross correlation
+                                sum += sval * tval;
+                            }
+                            0x19004 | 0x19005 => {
+                                // VX_COMPARE_L2_NORM or VX_COMPARE_CCORR_NORM
+                                sum_prod += sval * tval;
+                                sum += sval;
+                                sum_sq += sval * sval;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let result = match method {
+                    0x19000 => {
+                        // Hamming: average
+                        let val = sum / tpl_pixels;
+                        // Scale to S16 range, but keep reasonable values
+                        (val * 256.0) as i16
+                    }
+                    0x19001 => {
+                        // L1: average * 256 for S16
+                        let val = sum / tpl_pixels;
+                        (val * 256.0) as i16
+                    }
+                    0x19002 => {
+                        // L2: average * 256 for S16
+                        let val = sum / tpl_pixels;
+                        (val * 256.0) as i16
+                    }
+                    0x19003 => {
+                        // CCORR: sum * 2^15 / sqrt(tpl_sum_sq * img_sum_sq)
+                        // For unnormalized, just use the raw sum, scaled
+                        let val = sum / tpl_pixels;
+                        // Scale so peak is around 32767
+                        let scale = 32767.0 / 255.0;
+                        (val * scale) as i16
+                    }
+                    0x19004 => {
+                        // VX_COMPARE_L2_NORM
+                        // R = sum((T-I)^2) / sqrt(sum(T^2) * sum(I^2))
+                        let img_sum = sum;
+                        let img_sum_sq = sum_sq;
+                        let diff_sq = tpl_sum_sq + img_sum_sq - 2.0 * sum_prod;
+                        let denom = (tpl_sum_sq * img_sum_sq).sqrt();
+                        let val = if denom > 0.0 {
+                            diff_sq / denom
+                        } else {
+                            0.0
+                        };
+                        (val * 32767.0) as i16
+                    }
+                    0x19005 => {
+                        // VX_COMPARE_CCORR_NORM
+                        // R = sum(T*I) * 2^15 / sqrt(sum(T^2) * sum(I^2))
+                        let denom = (tpl_sum_sq * sum_sq).sqrt();
+                        let val = if denom > 0.0 {
+                            sum_prod * 32767.0 / denom
+                        } else {
+                            0.0
+                        };
+                        val as i16
+                    }
+                    _ => 0i16,
+                };
+
+                *out_row.add((ox as i32 * out_addr.stride_x) as usize / std::mem::size_of::<i16>()) = result;
+            }
+        }
+
+        vxUnmapImagePatch(output, out_map_id);
+        vxUnmapImagePatch(templ, tpl_map_id);
+        vxUnmapImagePatch(src, src_map_id);
+
+        VX_SUCCESS
+    }
+}
+
 pub fn vxu_hough_lines_p_impl(_ctx: vx_context, input: vx_image, rho_scalar: vx_scalar, theta_scalar: vx_scalar, threshold_scalar: vx_scalar, line_length_scalar: vx_scalar, line_gap_scalar: vx_scalar, lines_array: vx_array) -> vx_status {
     if input.is_null() || lines_array.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
