@@ -566,14 +566,12 @@ jobs:
   # Currently covers: Copy, NonMaxSuppression, HoughLinesP,
   # MatchTemplate, LBP, plus the baseline Min/Max.
   #
-  # Note: Copy has 3 pre-existing VX_TYPE_TENSOR failures
-  # (vxCreateTensor not fully implemented — infrastructure work
-  # tracked separately). 103/106 tests pass overall.
+  # All 106 Enhanced Vision tests pass (36 Copy + 33 NMS + 15 HoughLinesP
+  # + 11 MatchTemplate + 11 LBP + Min/Max).
   enhanced-vision:
-    name: "enhanced-vision (Copy/NMS/HoughLinesP/MatchTemplate/LBP/Min/Max)"
+    name: "enhanced-vision (106/106 passing)"
     runs-on: ubuntu-22.04
     needs: build
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
