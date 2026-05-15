@@ -7235,7 +7235,7 @@ pub fn vxu_copy_impl(input: vx_reference, output: vx_reference) -> vx_status {
 
             // Tensor copy
             crate::unified_c_api::VX_TYPE_TENSOR => {
-                VX_ERROR_NOT_IMPLEMENTED
+                crate::unified_c_api::copy_tensor_data(input, output)
             }
 
             _ => VX_ERROR_NOT_IMPLEMENTED,

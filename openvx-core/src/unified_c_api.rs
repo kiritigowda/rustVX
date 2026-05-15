@@ -470,10 +470,21 @@ impl Clone for VxCDelay {
 
 /// Tensor data
 pub struct VxCTensor {
-    num_dims: usize,
-    dims: Vec<usize>,
-    data_type: vx_enum,
-    ref_count: AtomicUsize,
+    pub num_dims: usize,
+    pub dims: Vec<usize>,
+    pub data_type: vx_enum,
+    pub ref_count: AtomicUsize,
+}
+
+impl VxCTensor {
+    pub fn new(num_dims: usize, dims: Vec<usize>, data_type: vx_enum) -> Self {
+        VxCTensor {
+            num_dims,
+            dims,
+            data_type,
+            ref_count: AtomicUsize::new(1),
+        }
+    }
 }
 
 /// Meta format data
@@ -4883,8 +4894,8 @@ pub const VX_TYPE_IMAGE: vx_enum = 0x80F;
 pub const VX_TYPE_REMAP: vx_enum = 0x810;
 pub const VX_TYPE_META_FORMAT: vx_enum = 0x812;
 pub const VX_TYPE_OBJECT_ARRAY: vx_enum = 0x813;
-pub const VX_TYPE_TENSOR: vx_enum = 0x814;
-pub const VX_TYPE_IMPORT: vx_enum = 0x815;
+pub const VX_TYPE_TENSOR: vx_enum = 0x815;
+pub const VX_TYPE_IMPORT: vx_enum = 0x814;
 pub const VX_TYPE_TARGET: vx_enum = 0x816;
 
 /// Border mode constants (computed using VX_ENUM_BASE formula)
@@ -5138,6 +5149,14 @@ pub extern "C" fn vxRegisterPyramidLevelImage(
 
 // Tensor registry
 static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Tensor data storage (raw bytes keyed by tensor address)
+static TENSOR_DATA: Lazy<Mutex<HashMap<usize, Vec<u8>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Tensor context association
+static TENSOR_CONTEXTS: Lazy<Mutex<HashMap<usize, u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Meta format registry
@@ -8454,13 +8473,64 @@ pub extern "C" fn vxCreateTensor(
     context: vx_context,
     num_dims: usize,
     dims: *const usize,
-    _data_type: i32,
-    _fixed_point_pos: i8,
+    data_type: i32,
+    fixed_point_pos: i8,
 ) -> vx_tensor {
     if context.is_null() || dims.is_null() || num_dims == 0 {
         return std::ptr::null_mut();
     }
-    std::ptr::null_mut()
+
+    unsafe {
+        let dims_slice = std::slice::from_raw_parts(dims, num_dims);
+        let tensor = Box::into_raw(Box::new(VxCTensor::new(
+            num_dims,
+            dims_slice.to_vec(),
+            data_type,
+        )));
+        let addr = tensor as usize;
+
+        if let Ok(mut tensors) = TENSORS.lock() {
+            tensors.insert(addr, Arc::new(VxCTensor::new(
+                num_dims,
+                dims_slice.to_vec(),
+                data_type,
+            )));
+        }
+
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(addr, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(addr, VX_TYPE_TENSOR);
+        }
+
+        // Allocate tensor data buffer
+        let mut total_elements = 1usize;
+        for &d in dims_slice {
+            total_elements = total_elements.saturating_mul(d);
+        }
+        let element_size = match data_type {
+            VX_TYPE_INT8 | VX_TYPE_UINT8 => 1,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2,
+            VX_TYPE_INT32 | VX_TYPE_UINT32 | VX_TYPE_FLOAT32 => 4,
+            VX_TYPE_INT64 | VX_TYPE_UINT64 | VX_TYPE_FLOAT64 => 8,
+            VX_TYPE_BOOL => 1,
+            _ => 1,
+        };
+        let total_bytes = total_elements.saturating_mul(element_size);
+
+        if let Ok(mut tensor_data_map) = TENSOR_DATA.lock() {
+            tensor_data_map.insert(addr, vec![0u8; total_bytes]);
+        }
+
+        // Create context association (no separate REFERENCES table needed)
+        let context_id = context as usize as u64;
+        if let Ok(mut contexts) = TENSOR_CONTEXTS.lock() {
+            contexts.insert(addr, context_id);
+        }
+
+        tensor as vx_tensor
+    }
 }
 
 #[no_mangle]
@@ -8479,14 +8549,86 @@ pub extern "C" fn vxCreateTensorFromView(
 #[no_mangle]
 pub extern "C" fn vxQueryTensor(
     tensor: vx_tensor,
-    _attribute: i32,
+    attribute: vx_enum,
     ptr: *mut c_void,
-    _size: usize,
-) -> i32 {
+    size: vx_size,
+) -> vx_status {
     if tensor.is_null() || ptr.is_null() {
-        return -2;
+        return VX_ERROR_INVALID_PARAMETERS;
     }
-    -30
+    let addr = tensor as usize;
+    unsafe {
+        if let Ok(tensors) = TENSORS.lock() {
+            if let Some(t) = tensors.get(&addr) {
+                match attribute {
+                    VX_TENSOR_NUMBER_OF_DIMS => {
+                        if size != std::mem::size_of::<vx_size>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        *(ptr as *mut vx_size) = t.num_dims;
+                        return VX_SUCCESS;
+                    }
+                    VX_TENSOR_DIMS => {
+                        let bytes_needed = t.num_dims * std::mem::size_of::<vx_size>();
+                        if size < bytes_needed {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        let dst = std::slice::from_raw_parts_mut(ptr as *mut vx_size, t.num_dims);
+                        for i in 0..t.num_dims {
+                            dst[i] = t.dims[i];
+                        }
+                        return VX_SUCCESS;
+                    }
+                    VX_TENSOR_DATA_TYPE => {
+                        if size != std::mem::size_of::<vx_enum>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        *(ptr as *mut vx_enum) = t.data_type;
+                        return VX_SUCCESS;
+                    }
+                    VX_TENSOR_FIXED_POINT_POSITION => {
+                        if size != std::mem::size_of::<vx_int8>() {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                        *(ptr as *mut vx_int8) = 0;
+                        return VX_SUCCESS;
+                    }
+                    _ => return VX_ERROR_NOT_SUPPORTED,
+                }
+            }
+        }
+    }
+    VX_ERROR_INVALID_REFERENCE
+}
+
+/// Internal helper: copy tensor data from src to dst.
+pub fn copy_tensor_data(src: vx_reference, dst: vx_reference) -> vx_status {
+    let src_addr = src as usize;
+    let dst_addr = dst as usize;
+
+    unsafe {
+        if let Ok(tensors) = TENSORS.lock() {
+            if let (Some(src_t), Some(dst_t)) = (tensors.get(&src_addr), tensors.get(&dst_addr)) {
+                if src_t.num_dims != dst_t.num_dims || src_t.data_type != dst_t.data_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                for i in 0..src_t.num_dims {
+                    if src_t.dims[i] != dst_t.dims[i] {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                }
+                if let Ok(data_map) = TENSOR_DATA.lock() {
+                    if let (Some(src_data), Some(dst_data)) = (data_map.get(&src_addr), data_map.get(&dst_addr)) {
+                        if src_data.len() == dst_data.len() {
+                            std::ptr::copy_nonoverlapping(src_data.as_ptr(), dst_data.as_ptr() as *mut u8, src_data.len());
+                            return VX_SUCCESS;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    VX_ERROR_INVALID_PARAMETERS
 }
 
 #[no_mangle]
@@ -8546,18 +8688,38 @@ pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn vxCopyTensorPatch(
     tensor: vx_tensor,
-    _number_of_dims: vx_size,
+    number_of_dims: vx_size,
     _view_start: *const vx_size,
     _view_end: *const vx_size,
     _user_stride: *const vx_size,
-    _user_ptr: *mut c_void,
-    _usage: vx_enum,
+    user_ptr: *mut c_void,
+    usage: vx_enum,
     _user_memory_type: vx_enum,
 ) -> vx_status {
-    if tensor.is_null() {
+    if tensor.is_null() || user_ptr.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
     }
-    VX_ERROR_NOT_IMPLEMENTED
+    let addr = tensor as usize;
+
+    unsafe {
+        if let Ok(tensors) = TENSORS.lock() {
+            if let Some(t) = tensors.get(&addr) {
+                if let Ok(tensor_data_map) = TENSOR_DATA.lock() {
+                    if let Some(data) = tensor_data_map.get(&addr) {
+                        let total_bytes = data.len();
+                        if usage == crate::c_api::VX_WRITE_ONLY {
+                            std::ptr::copy_nonoverlapping(user_ptr, data.as_ptr() as *mut c_void, total_bytes);
+                        } else {
+                            // VX_READ_ONLY or default
+                            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, total_bytes);
+                        }
+                        return VX_SUCCESS;
+                    }
+                }
+            }
+        }
+    }
+    VX_ERROR_INVALID_REFERENCE
 }
 
 /// `vxCopyNode` — create a node that copies one OpenVX object to another.
