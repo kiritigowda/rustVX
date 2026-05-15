@@ -353,6 +353,10 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.laplacian_pyramid", 0x2A, 3),
         ("org.khronos.openvx.laplacian_reconstruct", 0x2B, 3),
         ("org.khronos.openvx.non_linear_filter", 0x2C, 4),
+        // Enhanced Vision kernels
+        ("org.khronos.openvx.copy", 0x35, 3),
+        ("org.khronos.openvx.non_max_suppression", 0x36, 4),
+        ("org.khronos.openvx.hough_lines_p", 0x34, 7),
         // OpenVX 1.0.2 addition
         ("org.khronos.openvx.weighted_average", 0x40, 4),
         // OpenVX 1.1 extensions

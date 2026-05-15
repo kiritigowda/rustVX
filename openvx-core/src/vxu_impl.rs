@@ -22,9 +22,12 @@ use crate::c_api::{
     vx_enum,
     vx_float32,
     vx_image,
+    vx_int32,
+    vx_lut,
     vx_map_id,
     vx_matrix,
     vx_pyramid,
+    vx_reference,
     vx_scalar,
     vx_size,
     vx_status,
@@ -37,7 +40,20 @@ use crate::c_api::{
     VX_ERROR_INVALID_REFERENCE,
     VX_ERROR_NOT_IMPLEMENTED,
     VX_SUCCESS,
-};
+    VX_TYPE_UINT8,
+    VX_TYPE_INT8,
+    VX_TYPE_UINT16,
+    VX_TYPE_INT16,
+    VX_TYPE_UINT32,
+    VX_TYPE_INT32,
+    VX_TYPE_FLOAT32,
+    VX_TYPE_UINT64,
+    VX_TYPE_INT64,
+    VX_TYPE_FLOAT64,
+    VX_ARRAY_ITEMSIZE,
+    VX_THRESHOLD_VALUE,
+    VX_THRESHOLD_LOWER,
+    VX_THRESHOLD_UPPER,};
 use crate::unified_c_api::{vx_border_t, vx_distribution, vx_remap, VxCImage, VxCPyramid};
 use std::ffi::c_void;
 
@@ -6743,6 +6759,500 @@ pub fn vxu_max_impl(
         }
     }
 }
+
+/// Enhanced Vision: Copy - copies data from input object to output object
+pub fn vxu_copy_impl(input: vx_reference, output: vx_reference) -> vx_status {
+    if input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+
+    extern "C" {
+        fn vxQueryReference(ref_: vx_reference, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryArray(array: vx_array, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapArrayRange(array: vx_array, start: vx_size, end: vx_size, map_id: *mut vx_map_id, stride: *mut vx_size, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapArrayRange(array: vx_array, map_id: vx_map_id) -> vx_status;
+        fn vxAddArrayItems(array: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+        fn vxTruncateArray(array: vx_array, new_num_items: vx_size) -> vx_status;
+        fn vxQueryScalar(scalar: vx_scalar, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyMatrix(matrix: vx_matrix, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryMatrix(matrix: vx_matrix, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyConvolutionCoefficients(conv: vx_convolution, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryConvolution(conv: vx_convolution, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyDistribution(dist: vx_distribution, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryDistribution(dist: vx_distribution, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxCopyLUT(lut: vx_lut, ptr: *mut c_void, usage: vx_enum, mem_type: vx_enum) -> vx_status;
+        fn vxQueryLUT(lut: vx_lut, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryThreshold(thresh: vx_threshold, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryRemap(remap: vx_remap, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxQueryPyramid(pyramid: vx_pyramid, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxGetPyramidLevel(pyramid: vx_pyramid, index: u32) -> vx_image;
+        fn vxQueryObjectArray(obj_arr: vx_reference, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxGetObjectArrayItem(obj_arr: vx_reference, index: u32) -> vx_reference;
+        fn vxSetObjectArrayItem(obj_arr: vx_reference, index: u32, item: vx_reference) -> vx_status;
+        fn vxReleaseReference(ref_ptr: *mut vx_reference) -> vx_status;
+        fn vxReleaseImage(img: *mut vx_image) -> vx_status;
+    }
+
+    unsafe {
+        let mut ref_type: vx_enum = 0;
+        let status = vxQueryReference(input, crate::unified_c_api::VX_REFERENCE_ATTRIBUTE_TYPE, &mut ref_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+        if status != VX_SUCCESS {
+            return status;
+        }
+
+        match ref_type {
+            // Image copy using vxCopyImagePatch
+            crate::unified_c_api::VX_TYPE_IMAGE => {
+                let mut src_format: vx_df_image = 0;
+                let mut src_width: vx_uint32 = 0;
+                let mut src_height: vx_uint32 = 0;
+                let s1 = vxQueryImage(input as vx_image, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                let s2 = vxQueryImage(input as vx_image, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let s3 = vxQueryImage(input as vx_image, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_format: vx_df_image = 0;
+                let mut dst_width: vx_uint32 = 0;
+                let mut dst_height: vx_uint32 = 0;
+                let d1 = vxQueryImage(output as vx_image, crate::c_api::VX_IMAGE_FORMAT, &mut dst_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+                let d2 = vxQueryImage(output as vx_image, crate::c_api::VX_IMAGE_WIDTH, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                let d3 = vxQueryImage(output as vx_image, crate::c_api::VX_IMAGE_HEIGHT, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if src_format != dst_format || src_width != dst_width || src_height != dst_height {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // For simple U8 images, use map/unmap
+                let rect = crate::c_api::vx_rectangle_t {
+                    start_x: 0,
+                    start_y: 0,
+                    end_x: src_width as u32,
+                    end_y: src_height as u32,
+                };
+                let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+                let mut dst_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+                let mut src_ptr: *mut c_void = std::ptr::null_mut();
+                let mut dst_ptr: *mut c_void = std::ptr::null_mut();
+                let mut src_map_id: vx_map_id = 0;
+                let mut dst_map_id: vx_map_id = 0;
+
+                let s_map = vxMapImagePatch(
+                    input as vx_image,
+                    &rect as *const _ as *const c_void,
+                    0,
+                    &mut src_map_id,
+                    &mut src_addr as *mut _ as *mut c_void,
+                    &mut src_ptr as *mut *mut c_void,
+                    crate::c_api::VX_READ_ONLY,
+                    crate::c_api::VX_MEMORY_TYPE_HOST,
+                    0,
+                );
+                if s_map != VX_SUCCESS {
+                    return s_map;
+                }
+
+                let d_map = vxMapImagePatch(
+                    output as vx_image,
+                    &rect as *const _ as *const c_void,
+                    0,
+                    &mut dst_map_id,
+                    &mut dst_addr as *mut _ as *mut c_void,
+                    &mut dst_ptr as *mut *mut c_void,
+                    crate::c_api::VX_WRITE_ONLY,
+                    crate::c_api::VX_MEMORY_TYPE_HOST,
+                    0,
+                );
+                if d_map != VX_SUCCESS {
+                    vxUnmapImagePatch(input as vx_image, src_map_id);
+                    return d_map;
+                }
+
+                // Copy the data
+                let row_bytes = src_addr.stride_x * src_width as i32;
+                if row_bytes > 0 {
+                    for y in 0..src_height {
+                        let src_row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                        let dst_row = (dst_ptr as *mut u8).wrapping_add((y as i32 * dst_addr.stride_y) as usize);
+                        std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes as usize);
+                    }
+                }
+
+                vxUnmapImagePatch(output as vx_image, dst_map_id);
+                vxUnmapImagePatch(input as vx_image, src_map_id);
+                VX_SUCCESS
+            }
+
+            // Array copy
+            crate::unified_c_api::VX_TYPE_ARRAY => {
+                let mut item_type: vx_enum = 0;
+                let mut num_items: vx_size = 0;
+                let mut capacity: vx_size = 0;
+                let s1 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_ITEMTYPE, &mut item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                let s2 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_NUMITEMS, &mut num_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s3 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_CAPACITY, &mut capacity as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_item_type: vx_enum = 0;
+                let mut dst_capacity: vx_size = 0;
+                let d1 = vxQueryArray(output as vx_array, crate::c_api::VX_ARRAY_ITEMTYPE, &mut dst_item_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                let d2 = vxQueryArray(output as vx_array, crate::c_api::VX_ARRAY_CAPACITY, &mut dst_capacity as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if item_type != dst_item_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_items > dst_capacity {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // Query item size directly from the array
+                let mut item_size: vx_size = 0;
+                let sz1 = vxQueryArray(input as vx_array, crate::c_api::VX_ARRAY_ITEMSIZE, &mut item_size as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if sz1 != VX_SUCCESS || item_size == 0 {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_items == 0 {
+                    // Just truncate destination to 0
+                    vxTruncateArray(output as vx_array, 0)
+                } else {
+                    let mut src_map_id: vx_map_id = 0;
+                    let mut src_stride: vx_size = 0;
+                    let mut src_ptr: *mut c_void = std::ptr::null_mut();
+                    let s_map = vxMapArrayRange(
+                        input as vx_array,
+                        0,
+                        num_items,
+                        &mut src_map_id,
+                        &mut src_stride,
+                        &mut src_ptr,
+                        crate::c_api::VX_READ_ONLY,
+                        crate::c_api::VX_MEMORY_TYPE_HOST,
+                        0,
+                    );
+                    if s_map != VX_SUCCESS {
+                        return s_map;
+                    }
+
+                    // Truncate destination and add items
+                    let t1 = vxTruncateArray(output as vx_array, 0);
+                    if t1 != VX_SUCCESS {
+                        vxUnmapArrayRange(input as vx_array, src_map_id);
+                        return t1;
+                    }
+
+                    let add_status = vxAddArrayItems(output as vx_array, num_items, src_ptr, src_stride);
+                    vxUnmapArrayRange(input as vx_array, src_map_id);
+                    add_status
+                }
+            }
+
+            // Scalar copy - read value from input, write to output
+            crate::unified_c_api::VX_TYPE_SCALAR => {
+                let mut data_type: vx_enum = 0;
+                let s1 = vxQueryScalar(input as vx_scalar, crate::c_api::VX_SCALAR_TYPE, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_data_type: vx_enum = 0;
+                let d1 = vxQueryScalar(output as vx_scalar, crate::c_api::VX_SCALAR_TYPE, &mut dst_data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if d1 != VX_SUCCESS || data_type != dst_data_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // Read input scalar value using internal data access
+                let src_val = {
+                    let s = &*(input as *const crate::c_api_data::VxCScalarData);
+                    s.data.clone()
+                };
+
+                // Write to output scalar
+                {
+                    let d = &mut *(output as *mut crate::c_api_data::VxCScalarData);
+                    d.data = src_val;
+                }
+                VX_SUCCESS
+            }
+
+            // Matrix copy
+            crate::unified_c_api::VX_TYPE_MATRIX => {
+                let mut rows: vx_size = 0;
+                let mut cols: vx_size = 0;
+                let mut data_type: vx_enum = 0;
+                let s1 = vxQueryMatrix(input as vx_matrix, crate::unified_c_api::VX_MATRIX_ROWS, &mut rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s2 = vxQueryMatrix(input as vx_matrix, crate::unified_c_api::VX_MATRIX_COLUMNS, &mut cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s3 = vxQueryMatrix(input as vx_matrix, crate::unified_c_api::VX_MATRIX_TYPE, &mut data_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_rows: vx_size = 0;
+                let mut dst_cols: vx_size = 0;
+                let mut dst_type: vx_enum = 0;
+                let d1 = vxQueryMatrix(output as vx_matrix, crate::unified_c_api::VX_MATRIX_ROWS, &mut dst_rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d2 = vxQueryMatrix(output as vx_matrix, crate::unified_c_api::VX_MATRIX_COLUMNS, &mut dst_cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d3 = vxQueryMatrix(output as vx_matrix, crate::unified_c_api::VX_MATRIX_TYPE, &mut dst_type as *mut _ as *mut c_void, std::mem::size_of::<vx_enum>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if rows != dst_rows || cols != dst_cols || data_type != dst_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let elem_size = if data_type == VX_TYPE_INT8 || data_type == VX_TYPE_UINT8 {
+                    1
+                } else if data_type == VX_TYPE_INT16 || data_type == VX_TYPE_UINT16 {
+                    2
+                } else if data_type == VX_TYPE_INT32 || data_type == VX_TYPE_UINT32 || data_type == VX_TYPE_FLOAT32 {
+                    4
+                } else if data_type == VX_TYPE_FLOAT64 {
+                    8
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+
+                let total_size = rows * cols * elem_size;
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyMatrix(input as vx_matrix, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyMatrix(output as vx_matrix, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // Convolution copy
+            crate::unified_c_api::VX_TYPE_CONVOLUTION => {
+                let mut rows: vx_size = 0;
+                let mut cols: vx_size = 0;
+                let s1 = vxQueryConvolution(input as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_ROWS, &mut rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s2 = vxQueryConvolution(input as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_COLUMNS, &mut cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_rows: vx_size = 0;
+                let mut dst_cols: vx_size = 0;
+                let d1 = vxQueryConvolution(output as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_ROWS, &mut dst_rows as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d2 = vxQueryConvolution(output as vx_convolution, crate::unified_c_api::VX_CONVOLUTION_COLUMNS, &mut dst_cols as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if rows != dst_rows || cols != dst_cols {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let total_size = rows * cols * std::mem::size_of::<i16>();
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyConvolutionCoefficients(input as vx_convolution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyConvolutionCoefficients(output as vx_convolution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // Distribution copy
+            crate::unified_c_api::VX_TYPE_DISTRIBUTION => {
+                let mut num_bins: vx_size = 0;
+                let s1 = vxQueryDistribution(input as vx_distribution, crate::unified_c_api::VX_DISTRIBUTION_BINS, &mut num_bins as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_bins: vx_size = 0;
+                let d1 = vxQueryDistribution(output as vx_distribution, crate::unified_c_api::VX_DISTRIBUTION_BINS, &mut dst_bins as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_bins != dst_bins {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let total_size = num_bins * std::mem::size_of::<u32>();
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyDistribution(input as vx_distribution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyDistribution(output as vx_distribution, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // LUT copy
+            crate::unified_c_api::VX_TYPE_LUT => {
+                let mut num_items: vx_size = 0;
+                let s1 = vxQueryLUT(input as vx_lut, crate::unified_c_api::VX_LUT_COUNT, &mut num_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_items: vx_size = 0;
+                let d1 = vxQueryLUT(output as vx_lut, crate::unified_c_api::VX_LUT_COUNT, &mut dst_items as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if num_items != dst_items {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let total_size = num_items * std::mem::size_of::<u8>();
+                let mut buffer = vec![0u8; total_size];
+                let read_status = vxCopyLUT(input as vx_lut, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST);
+                if read_status != VX_SUCCESS {
+                    return read_status;
+                }
+                vxCopyLUT(output as vx_lut, buffer.as_mut_ptr() as *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST)
+            }
+
+            // Threshold copy — use direct struct access, vxQueryThreshold does not support VALUE/LOWER/UPPER
+            crate::unified_c_api::VX_TYPE_THRESHOLD => {
+                let src = &*(input as *const crate::c_api_data::VxCThresholdData);
+                let dst = &mut *(output as *mut crate::c_api_data::VxCThresholdData);
+                if src.thresh_type != dst.thresh_type {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+                dst.value = src.value;
+                dst.lower = src.lower;
+                dst.upper = src.upper;
+                dst.true_value = src.true_value;
+                dst.false_value = src.false_value;
+                VX_SUCCESS
+            }
+
+            // Remap copy
+            crate::unified_c_api::VX_TYPE_REMAP => {
+                let mut src_width: vx_size = 0;
+                let mut src_height: vx_size = 0;
+                let mut dst_width: vx_size = 0;
+                let mut dst_height: vx_size = 0;
+                let s1 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s2 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s3 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_WIDTH, &mut dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let s4 = vxQueryRemap(input as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_HEIGHT, &mut dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS || s4 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut d_src_width: vx_size = 0;
+                let mut d_src_height: vx_size = 0;
+                let mut d_dst_width: vx_size = 0;
+                let mut d_dst_height: vx_size = 0;
+                let d1 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_WIDTH, &mut d_src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d2 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_SOURCE_HEIGHT, &mut d_src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d3 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_WIDTH, &mut d_dst_width as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                let d4 = vxQueryRemap(output as vx_remap, crate::unified_c_api::VX_REMAP_DESTINATION_HEIGHT, &mut d_dst_height as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || d2 != VX_SUCCESS || d3 != VX_SUCCESS || d4 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                if src_width != d_src_width || src_height != d_src_height || dst_width != d_dst_width || dst_height != d_dst_height {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                // Use direct internal access for remap data
+                {
+                    let src = &*(input as *const crate::unified_c_api::VxCRemap);
+                    let dst = &mut *(output as *mut crate::unified_c_api::VxCRemap);
+                    if let Ok(mut dst_map) = dst.map_data.try_write() {
+                        if let Ok(src_map) = src.map_data.try_read() {
+                            dst_map.clone_from(&*src_map);
+                        }
+                    }
+                }
+                VX_SUCCESS
+            }
+
+            // Pyramid copy
+            crate::unified_c_api::VX_TYPE_PYRAMID => {
+                let mut levels: vx_size = 0;
+                let s1 = vxQueryPyramid(input as vx_pyramid, crate::unified_c_api::VX_PYRAMID_LEVELS, &mut levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                let mut dst_levels: vx_size = 0;
+                let d1 = vxQueryPyramid(output as vx_pyramid, crate::unified_c_api::VX_PYRAMID_LEVELS, &mut dst_levels as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if d1 != VX_SUCCESS || levels != dst_levels {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                for i in 0..levels as u32 {
+                    let src_level = vxGetPyramidLevel(input as vx_pyramid, i);
+                    let dst_level = vxGetPyramidLevel(output as vx_pyramid, i);
+                    if src_level.is_null() || dst_level.is_null() {
+                        return VX_ERROR_INVALID_REFERENCE;
+                    }
+                    let level_status = vxu_copy_impl(src_level as vx_reference, dst_level as vx_reference);
+                    let mut s = src_level;
+                    let mut d = dst_level;
+                    vxReleaseImage(&mut s);
+                    vxReleaseImage(&mut d);
+                    if level_status != VX_SUCCESS {
+                        return level_status;
+                    }
+                }
+                VX_SUCCESS
+            }
+
+            // ObjectArray copy
+            crate::unified_c_api::VX_TYPE_OBJECT_ARRAY => {
+                let mut count: vx_size = 0;
+                let s1 = vxQueryObjectArray(input, crate::unified_c_api::VX_OBJECT_ARRAY_NUMITEMS, &mut count as *mut _ as *mut c_void, std::mem::size_of::<vx_size>());
+                if s1 != VX_SUCCESS {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                }
+
+                for i in 0..count {
+                    let src_item = vxGetObjectArrayItem(input, i as u32);
+                    if src_item.is_null() {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                    let set_status = vxSetObjectArrayItem(output, i as u32, src_item);
+                    let mut r = src_item;
+                    vxReleaseReference(&mut r);
+                    if set_status != VX_SUCCESS {
+                        return set_status;
+                    }
+                }
+                VX_SUCCESS
+            }
+
+            // Tensor copy
+            crate::unified_c_api::VX_TYPE_TENSOR => {
+                VX_ERROR_NOT_IMPLEMENTED
+            }
+
+            _ => VX_ERROR_NOT_IMPLEMENTED,
+        }
+    }
+}
+
+/// Enhanced Vision: NonMaxSuppression stub
+pub fn vxu_non_max_suppression_impl(_ctx: vx_context, _input: vx_image, _mask: vx_image, _win_size: vx_scalar, _output: vx_image) -> vx_status {
+    VX_ERROR_NOT_IMPLEMENTED
+}
+
+/// Enhanced Vision: HoughLinesP stub
+pub fn vxu_hough_lines_p_impl(_ctx: vx_context, _input: vx_image, _rho: vx_scalar, _theta: vx_scalar, _threshold: vx_scalar, _min_line_length: vx_scalar, _max_line_gap: vx_scalar, _lines_array: vx_array) -> vx_status {
+    VX_ERROR_NOT_IMPLEMENTED
+}
+
 
 /// Pixel-wise multiplication with scale, overflow and rounding policies
 /// overflow_policy: 0 = WRAP, 1 = SATURATE

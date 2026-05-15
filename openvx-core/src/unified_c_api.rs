@@ -1077,6 +1077,10 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.sobel_3x3", vec![1, 2]), // [input, grad_x, grad_y]
                 ("org.khronos.openvx.laplacian_reconstruct", vec![2]),
                 ("org.khronos.openvx.non_linear_filter", vec![3]), // [input, matrix, border, output]
+                // Enhanced Vision kernels
+                ("org.khronos.openvx.copy", vec![1]), // [input, output] - param 1 is output
+                ("org.khronos.openvx.non_max_suppression", vec![3]), // [input, mask, win_size, output]
+                ("org.khronos.openvx.hough_lines_p", vec![6]), // [input, rho, theta, threshold, line_length, line_gap, lines_array]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
@@ -3130,6 +3134,74 @@ fn dispatch_kernel_with_border_impl(
                         in1,
                         in2,
                         output,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Copy (Enhanced Vision)
+        "org.khronos.openvx.copy" => {
+            if params.len() >= 2 {
+                let input = params[0];
+                let output = params[1];
+                if !input.is_null() && !output.is_null() {
+                    unsafe { crate::vxu_impl::vxu_copy_impl(input, output) }
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // NonMaxSuppression (Enhanced Vision)
+        "org.khronos.openvx.non_max_suppression" => {
+            if params.len() >= 4 {
+                let input = params[0] as vx_image;
+                let mask = params[1] as vx_image;
+                let win_size = if params.len() > 2 && !params[2].is_null() {
+                    params[2] as vx_scalar
+                } else {
+                    std::ptr::null_mut()
+                };
+                let output = params[3] as vx_image;
+                if !input.is_null() && !mask.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_non_max_suppression_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        mask,
+                        win_size,
+                        output,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // HoughLinesP (Enhanced Vision)
+        "org.khronos.openvx.hough_lines_p" => {
+            if params.len() >= 7 {
+                let input = params[0] as vx_image;
+                let rho = params[1] as vx_scalar;
+                let theta = params[2] as vx_scalar;
+                let threshold = params[3] as vx_scalar;
+                let line_length = params[4] as vx_scalar;
+                let line_gap = params[5] as vx_scalar;
+                let lines_array = params[6] as vx_array;
+                if !input.is_null() && !lines_array.is_null() {
+                    crate::vxu_impl::vxu_hough_lines_p_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        rho,
+                        theta,
+                        threshold,
+                        line_length,
+                        line_gap,
+                        lines_array,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -8451,8 +8523,7 @@ pub extern "C" fn vxCopyNode(
     input: vx_reference,
     output: vx_reference,
 ) -> vx_node {
-    let _ = (graph, input, output);
-    std::ptr::null_mut()
+    create_node_with_params(graph, "org.khronos.openvx.copy", &[input, output])
 }
 
 #[no_mangle]
@@ -13027,13 +13098,7 @@ ev_node_stub!(vxNonMaxSuppressionNode(
     win_size: vx_int32,
     output: vx_image,
 ));
-ev_vxu_stub!(vxuNonMaxSuppression(
-    context: vx_context,
-    input: vx_image,
-    mask: vx_image,
-    win_size: vx_int32,
-    output: vx_image,
-));
+// ev_vxu_stub! removed - replaced with real implementation below
 
 ev_node_stub!(vxHOGCellsNode(
     graph: vx_graph,
@@ -13080,7 +13145,38 @@ ev_vxu_stub!(vxuHOGFeatures(
 // has never been exported. Both stay as stubs in Phase 1; they will be
 // replaced with real implementations in a follow-up PR (the CTS Copy and
 // Houghlinesp tests are not in the Phase-1 filter).
-ev_vxu_stub!(vxuCopy(context: vx_context, input: vx_reference, output: vx_reference));
+#[no_mangle]
+pub extern "C" fn vxuCopy(
+    _context: vx_context,
+    input: vx_reference,
+    output: vx_reference,
+) -> vx_status {
+    unsafe { crate::vxu_impl::vxu_copy_impl(input, output) }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuNonMaxSuppression(
+    _context: vx_context,
+    input: vx_image,
+    mask: vx_image,
+    win_size: vx_int32,
+    output: vx_image,
+) -> vx_status {
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(input as vx_reference);
+        let mut win_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_INT32,
+            &win_size as *const _ as *const c_void,
+            std::mem::size_of::<vx_int32>(),
+        );
+        let status = crate::vxu_impl::vxu_non_max_suppression_impl(ctx, input, mask, win_scalar, output);
+        if !win_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut win_scalar);
+        }
+        status
+    }
+}
 ev_vxu_stub!(vxuHoughLinesP(
     context: vx_context,
     input: vx_image,
