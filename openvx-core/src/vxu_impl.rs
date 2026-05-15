@@ -315,7 +315,7 @@ impl Image {
 fn df_image_to_format(df: vx_df_image) -> Option<ImageFormat> {
     match df {
         0x38303055 => Some(ImageFormat::Gray), // VX_DF_IMAGE_U8 ('U008')
-        0x31305555 => Some(ImageFormat::GrayU16), // VX_DF_IMAGE_U16 ('U016')
+        0x31305555 => Some(ImageFormat::GrayU16), // 0x31303055u326 ('U016')
         0x53313053 => Some(ImageFormat::GrayS16), // VX_DF_IMAGE_S16 ('S016') - CORRECTED
         0x36313053 => Some(ImageFormat::GrayS16), // Alternative S16 format code
         0x32333055 => Some(ImageFormat::GrayU32), // VX_DF_IMAGE_U32 ('U032')
@@ -7243,14 +7243,543 @@ pub fn vxu_copy_impl(input: vx_reference, output: vx_reference) -> vx_status {
     }
 }
 
-/// Enhanced Vision: NonMaxSuppression stub
-pub fn vxu_non_max_suppression_impl(_ctx: vx_context, _input: vx_image, _mask: vx_image, _win_size: vx_scalar, _output: vx_image) -> vx_status {
-    VX_ERROR_NOT_IMPLEMENTED
+/// Enhanced Vision: NonMaxSuppression
+pub fn vxu_non_max_suppression_impl(_ctx: vx_context, input: vx_image, mask: vx_image, win_size: vx_scalar, output: vx_image) -> vx_status {
+    if input.is_null() || output.is_null() || win_size.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    extern "C" {
+        fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+        fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+        fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+    }
+
+    unsafe {
+        // Read win_size from scalar data (direct vec access, INT32 is 4 bytes)
+        let ws_data = &*(win_size as *const crate::c_api_data::VxCScalarData);
+        if ws_data.data.len() != 4 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let wsize = i32::from_ne_bytes([ws_data.data[0], ws_data.data[1], ws_data.data[2], ws_data.data[3]]);
+
+        if wsize <= 0 || wsize % 2 == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let border = wsize / 2;
+
+        // Get image info
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(input, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(input, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(input, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut dst_format: vx_df_image = 0;
+        let d3 = vxQueryImage(output, crate::c_api::VX_IMAGE_FORMAT, &mut dst_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if d3 != VX_SUCCESS || src_format != dst_format {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Get valid region
+        let mut src_rect: crate::c_api::vx_rectangle_t = std::mem::zeroed();
+        let vr = vxGetValidRegionImage(input, &mut src_rect as *mut _ as *mut c_void);
+        if vr != VX_SUCCESS {
+            return vr;
+        }
+
+        let rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut dst_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut dst_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let mut dst_map_id: vx_map_id = 0;
+
+        let s_map = vxMapImagePatch(input, &rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        let d_map = vxMapImagePatch(output, &rect as *const _ as *const c_void, 0, &mut dst_map_id, &mut dst_addr as *mut _ as *mut c_void, &mut dst_ptr as *mut *mut c_void, crate::c_api::VX_WRITE_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if d_map != VX_SUCCESS {
+            vxUnmapImagePatch(input, src_map_id);
+            return d_map;
+        }
+
+        // Mask info
+        let mut mask_ptr: *mut c_void = std::ptr::null_mut();
+        let mut mask_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut mask_map_id: vx_map_id = 0;
+        let mut has_mask = false;
+
+        if !mask.is_null() {
+            let m_map = vxMapImagePatch(mask, &rect as *const _ as *const c_void, 0, &mut mask_map_id, &mut mask_addr as *mut _ as *mut c_void, &mut mask_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+            if m_map == VX_SUCCESS {
+                has_mask = true;
+            }
+        }
+
+        let rect_start_x = src_rect.start_x as i32;
+        let rect_start_y = src_rect.start_y as i32;
+        let rect_width = (src_rect.end_x - src_rect.start_x) as i32;
+        let rect_height = (src_rect.end_y - src_rect.start_y) as i32;
+
+        if src_format == VX_DF_IMAGE_U8 as vx_df_image {
+            for x in (rect_start_x + border)..(rect_start_x + rect_width - border) {
+                for y in (rect_start_y + border)..(rect_start_y + rect_height - border) {
+                    let src_val = {
+                        let row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                        *row.add((x as i32 * src_addr.stride_x) as usize)
+                    } as i32;
+
+                    let mut mask_val: u8 = 0;
+                    if has_mask {
+                        let row = (mask_ptr as *mut u8).wrapping_add((y as i32 * mask_addr.stride_y) as usize);
+                        mask_val = *row.add((x as i32 * mask_addr.stride_x) as usize);
+                    }
+
+                    let dst_row = (dst_ptr as *mut u8).wrapping_add((y as i32 * dst_addr.stride_y) as usize);
+                    let dst_pixel = dst_row.add((x as i32 * dst_addr.stride_x) as usize);
+
+                    if mask_val != 0 {
+                        *dst_pixel = src_val as u8;
+                    } else {
+                        let mut flag = true;
+                        for i in -border..=border {
+                            for j in -border..=border {
+                                let nx = x + i;
+                                let ny = y + j;
+                                let neighbor_val = {
+                                    let row = (src_ptr as *mut u8).wrapping_add((ny as i32 * src_addr.stride_y) as usize);
+                                    *row.add((nx as i32 * src_addr.stride_x) as usize) as i32
+                                };
+
+                                let mut neighbor_mask: u8 = 0;
+                                if has_mask {
+                                    let row = (mask_ptr as *mut u8).wrapping_add((ny as i32 * mask_addr.stride_y) as usize);
+                                    neighbor_mask = *row.add((nx as i32 * mask_addr.stride_x) as usize);
+                                }
+
+                                if neighbor_mask == 0 {
+                                    let is_before = j < 0 || (j == 0 && i <= 0);
+                                    let is_after = j > 0 || (j == 0 && i > 0);
+                                    if (is_before && src_val < neighbor_val) || (is_after && src_val <= neighbor_val) {
+                                        flag = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !flag {
+                                break;
+                            }
+                        }
+
+                        if flag {
+                            *dst_pixel = src_val as u8;
+                        } else {
+                            *dst_pixel = 0;
+                        }
+                    }
+                }
+            }
+        } else if src_format == VX_DF_IMAGE_S16 as vx_df_image {
+            for x in (rect_start_x + border)..(rect_start_x + rect_width - border) {
+                for y in (rect_start_y + border)..(rect_start_y + rect_height - border) {
+                    let src_val = {
+                        let row = (src_ptr as *mut i16).wrapping_add((y as i32 * src_addr.stride_y) as usize / 2);
+                        *row.add((x as i32 * src_addr.stride_x) as usize / 2)
+                    } as i32;
+
+                    let mut mask_val: u8 = 0;
+                    if has_mask {
+                        let row = (mask_ptr as *mut u8).wrapping_add((y as i32 * mask_addr.stride_y) as usize);
+                        mask_val = *row.add((x as i32 * mask_addr.stride_x) as usize);
+                    }
+
+                    let dst_row = (dst_ptr as *mut i16).wrapping_add((y as i32 * dst_addr.stride_y) as usize / 2);
+                    let dst_pixel = dst_row.add((x as i32 * dst_addr.stride_x) as usize / 2);
+
+                    if mask_val != 0 {
+                        *dst_pixel = src_val as i16;
+                    } else {
+                        let mut flag = true;
+                        for i in -border..=border {
+                            for j in -border..=border {
+                                let nx = x + i;
+                                let ny = y + j;
+                                let neighbor_val = {
+                                    let row = (src_ptr as *mut i16).wrapping_add((ny as i32 * src_addr.stride_y) as usize / 2);
+                                    *row.add((nx as i32 * src_addr.stride_x) as usize / 2) as i32
+                                };
+
+                                let mut neighbor_mask: u8 = 0;
+                                if has_mask {
+                                    let row = (mask_ptr as *mut u8).wrapping_add((ny as i32 * mask_addr.stride_y) as usize);
+                                    neighbor_mask = *row.add((nx as i32 * mask_addr.stride_x) as usize);
+                                }
+
+                                if neighbor_mask == 0 {
+                                    let is_before = j < 0 || (j == 0 && i <= 0);
+                                    let is_after = j > 0 || (j == 0 && i > 0);
+                                    if (is_before && src_val < neighbor_val) || (is_after && src_val <= neighbor_val) {
+                                        flag = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !flag {
+                                break;
+                            }
+                        }
+
+                        if flag {
+                            *dst_pixel = src_val as i16;
+                        } else {
+                            *dst_pixel = i16::MIN;
+                        }
+                    }
+                }
+            }
+        } else {
+            vxUnmapImagePatch(output, dst_map_id);
+            vxUnmapImagePatch(input, src_map_id);
+            if has_mask {
+                vxUnmapImagePatch(mask, mask_map_id);
+            }
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        vxUnmapImagePatch(output, dst_map_id);
+        vxUnmapImagePatch(input, src_map_id);
+        if has_mask {
+            vxUnmapImagePatch(mask, mask_map_id);
+        }
+        VX_SUCCESS
+    }
 }
 
 /// Enhanced Vision: HoughLinesP stub
-pub fn vxu_hough_lines_p_impl(_ctx: vx_context, _input: vx_image, _rho: vx_scalar, _theta: vx_scalar, _threshold: vx_scalar, _min_line_length: vx_scalar, _max_line_gap: vx_scalar, _lines_array: vx_array) -> vx_status {
-    VX_ERROR_NOT_IMPLEMENTED
+
+fn read_scalar_f32(scalar: vx_scalar) -> Option<f32> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            Some(f32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+        } else {
+            None
+        }
+    }
+}
+
+fn read_scalar_u32(scalar: vx_scalar) -> Option<u32> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            Some(u32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+        } else {
+            None
+        }
+    }
+}
+
+pub fn vxu_hough_lines_p_impl(_ctx: vx_context, input: vx_image, rho_scalar: vx_scalar, theta_scalar: vx_scalar, threshold_scalar: vx_scalar, line_length_scalar: vx_scalar, line_gap_scalar: vx_scalar, lines_array: vx_array) -> vx_status {
+    if input.is_null() || lines_array.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    unsafe {
+        // Read scalar params
+        let rho = read_scalar_f32(rho_scalar);
+        let theta = read_scalar_f32(theta_scalar);
+        let threshold = read_scalar_u32(threshold_scalar);
+        let min_line_length = read_scalar_u32(line_length_scalar);
+        let max_line_gap = read_scalar_u32(line_gap_scalar);
+
+        if rho.is_none() || theta.is_none() || threshold.is_none() || min_line_length.is_none() || max_line_gap.is_none() {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let rho = rho.unwrap();
+        let theta = theta.unwrap();
+        let threshold = threshold.unwrap() as i32;
+        let min_line_length = min_line_length.unwrap() as i32;
+        let max_line_gap = max_line_gap.unwrap() as i32;
+
+        if rho <= 0.0 || theta <= 0.0 || threshold <= 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        extern "C" {
+            fn vxQueryImage(image: vx_image, attribute: vx_enum, ptr: *mut c_void, size: vx_size) -> vx_status;
+            fn vxMapImagePatch(image: vx_image, rect: *const c_void, plane_index: u32, map_id: *mut vx_map_id, addr: *mut c_void, ptr: *mut *mut c_void, usage: vx_enum, mem_type: vx_enum, flags: u32) -> vx_status;
+            fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+            fn vxGetValidRegionImage(image: vx_image, rect: *mut c_void) -> vx_status;
+            fn vxTruncateArray(arr: vx_array, new_num_items: vx_size) -> vx_status;
+            fn vxAddArrayItems(arr: vx_array, count: vx_size, ptr: *const c_void, stride: vx_size) -> vx_status;
+        }
+
+        let mut src_width: vx_uint32 = 0;
+        let mut src_height: vx_uint32 = 0;
+        let mut src_format: vx_df_image = 0;
+        let s1 = vxQueryImage(input, crate::c_api::VX_IMAGE_WIDTH, &mut src_width as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s2 = vxQueryImage(input, crate::c_api::VX_IMAGE_HEIGHT, &mut src_height as *mut _ as *mut c_void, std::mem::size_of::<vx_uint32>());
+        let s3 = vxQueryImage(input, crate::c_api::VX_IMAGE_FORMAT, &mut src_format as *mut _ as *mut c_void, std::mem::size_of::<vx_df_image>());
+        if s1 != VX_SUCCESS || s2 != VX_SUCCESS || s3 != VX_SUCCESS {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut src_rect: crate::c_api::vx_rectangle_t = std::mem::zeroed();
+        let vr = vxGetValidRegionImage(input, &mut src_rect as *mut _ as *mut c_void);
+        if vr != VX_SUCCESS {
+            return vr;
+        }
+
+        let rect = crate::c_api::vx_rectangle_t {
+            start_x: 0,
+            start_y: 0,
+            end_x: src_width,
+            end_y: src_height,
+        };
+
+        let mut src_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+        let mut src_ptr: *mut c_void = std::ptr::null_mut();
+        let mut src_map_id: vx_map_id = 0;
+        let s_map = vxMapImagePatch(input, &rect as *const _ as *const c_void, 0, &mut src_map_id, &mut src_addr as *mut _ as *mut c_void, &mut src_ptr as *mut *mut c_void, crate::c_api::VX_READ_ONLY, crate::c_api::VX_MEMORY_TYPE_HOST, 0);
+        if s_map != VX_SUCCESS {
+            return s_map;
+        }
+
+        let w = src_width as i32;
+        let h = src_height as i32;
+
+        // Collect non-zero edge pixels
+        let mut points: Vec<(i32, i32)> = Vec::new();
+        for y in src_rect.start_y as i32..src_rect.end_y as i32 {
+            for x in src_rect.start_x as i32..src_rect.end_x as i32 {
+                let val = if src_format == 0x31303055u32 as vx_df_image {
+                    let row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                    let byte = *row.add((x as i32 * src_addr.stride_x) as usize / 8);
+                    (byte >> (x % 8)) & 1
+                } else {
+                    let row = (src_ptr as *mut u8).wrapping_add((y as i32 * src_addr.stride_y) as usize);
+                    *row.add((x as i32 * src_addr.stride_x) as usize)
+                };
+                if val != 0 {
+                    points.push((x, y));
+                }
+            }
+        }
+        vxUnmapImagePatch(input, src_map_id);
+
+        if points.is_empty() {
+            let _ = vxTruncateArray(lines_array, 0);
+            return VX_SUCCESS;
+        }
+
+        // HoughLinesP probabilistic algorithm
+        let max_rho = ((w * w + h * h) as f64).sqrt();
+        let num_rho = (max_rho / rho as f64).ceil() as i32 * 2 + 1;
+        let num_theta = (std::f64::consts::PI / theta as f64).ceil() as i32 + 1;
+
+        let mut accumulator: Vec<Vec<i32>> = vec![vec![0; num_theta as usize]; num_rho as usize];
+
+        // Build accumulator
+        for &(x, y) in &points {
+            for t in 0..num_theta {
+                let angle = t as f64 * theta as f64;
+                let r = (x as f64 * angle.cos() + y as f64 * angle.sin()) / rho as f64;
+                let r_idx = (r + num_rho as f64 / 2.0) as i32;
+                if r_idx >= 0 && r_idx < num_rho {
+                    accumulator[r_idx as usize][t as usize] += 1;
+                }
+            }
+        }
+
+        // Find lines using probabilistic approach
+        let mut lines: Vec<(f32, f32, f32, f32)> = Vec::new();
+        let mut used: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+
+        // Sort points randomly-ish for probabilistic behavior
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut rng_state = 42u64;
+        let mut rng = || {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state
+        };
+
+        // For each point not yet used, trace a line
+        for &(x, y) in &points {
+            if used.contains(&(x, y)) {
+                continue;
+            }
+
+            // Find best angle for this point
+            let mut best_theta = 0;
+            let mut best_votes = 0;
+            for t in 0..num_theta {
+                let angle = t as f64 * theta as f64;
+                let r = (x as f64 * angle.cos() + y as f64 * angle.sin()) / rho as f64;
+                let r_idx = (r + num_rho as f64 / 2.0) as i32;
+                if r_idx >= 0 && r_idx < num_rho {
+                    let votes = accumulator[r_idx as usize][t as usize];
+                    if votes > best_votes {
+                        best_votes = votes;
+                        best_theta = t;
+                    }
+                }
+            }
+
+            if best_votes < threshold {
+                continue;
+            }
+
+            let angle = best_theta as f64 * theta as f64;
+            let dx = angle.cos();
+            let dy = angle.sin();
+
+            // Trace forward and backward from (x, y)
+            let mut line_points_forward: Vec<(i32, i32)> = Vec::new();
+            let mut line_points_backward: Vec<(i32, i32)> = Vec::new();
+
+            // Forward direction
+            let mut cx = x as f64;
+            let mut cy = y as f64;
+            for step in 0..(w.max(h) * 2) {
+                let nx = (cx + dx) as i32;
+                let ny = (cy + dy) as i32;
+                if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                    break;
+                }
+                // Check if pixel is edge
+                let is_edge = points.iter().any(|&(px, py)| px == nx && py == ny);
+                if is_edge {
+                    line_points_forward.push((nx, ny));
+                    cx += dx;
+                    cy += dy;
+                } else {
+                    // Gap check
+                    let gap_count = (1..=max_line_gap).find(|&g| {
+                        let gx = (cx + dx * (g + 1) as f64) as i32;
+                        let gy = (cy + dy * (g + 1) as f64) as i32;
+                        gx >= 0 && gx < w && gy >= 0 && gy < h && points.iter().any(|&(px, py)| px == gx && py == gy)
+                    });
+                    if let Some(gap) = gap_count {
+                        cx += dx * (gap + 1) as f64;
+                        cy += dy * (gap + 1) as f64;
+                        let nx = cx as i32;
+                        let ny = cy as i32;
+                        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+                            line_points_forward.push((nx, ny));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Backward direction
+            let mut cx = x as f64;
+            let mut cy = y as f64;
+            for step in 0..(w.max(h) * 2) {
+                let nx = (cx - dx) as i32;
+                let ny = (cy - dy) as i32;
+                if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                    break;
+                }
+                let is_edge = points.iter().any(|&(px, py)| px == nx && py == ny);
+                if is_edge {
+                    line_points_backward.push((nx, ny));
+                    cx -= dx;
+                    cy -= dy;
+                } else {
+                    let gap_count = (1..=max_line_gap).find(|&g| {
+                        let gx = (cx - dx * (g + 1) as f64) as i32;
+                        let gy = (cy - dy * (g + 1) as f64) as i32;
+                        gx >= 0 && gx < w && gy >= 0 && gy < h && points.iter().any(|&(px, py)| px == gx && py == gy)
+                    });
+                    if let Some(gap) = gap_count {
+                        cx -= dx * (gap + 1) as f64;
+                        cy -= dy * (gap + 1) as f64;
+                        let nx = cx as i32;
+                        let ny = cy as i32;
+                        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+                            line_points_backward.push((nx, ny));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Combine points
+            let mut all_points = line_points_backward.clone();
+            all_points.reverse();
+            all_points.push((x, y));
+            all_points.extend(line_points_forward);
+
+            if all_points.len() < min_line_length as usize {
+                continue;
+            }
+
+            // Mark points as used
+            for &(px, py) in &all_points {
+                used.insert((px, py));
+            }
+
+            // Create line segment from first to last point
+            if let (Some(&(sx, sy)), Some(&(ex, ey))) = (all_points.first(), all_points.last()) {
+                lines.push((sx as f32, sy as f32, ex as f32, ey as f32));
+            }
+        }
+
+        // Truncate array and add lines
+        let status = vxTruncateArray(lines_array, 0);
+        if status != VX_SUCCESS {
+            return status;
+        }
+
+        #[repr(C)]
+        struct VxLine2d {
+            start_x: f32,
+            start_y: f32,
+            end_x: f32,
+            end_y: f32,
+        }
+
+        let line_items: Vec<VxLine2d> = lines.iter().map(|(sx, sy, ex, ey)| VxLine2d {
+            start_x: *sx,
+            start_y: *sy,
+            end_x: *ex,
+            end_y: *ey,
+        }).collect();
+
+        if !line_items.is_empty() {
+            let add_status = vxAddArrayItems(lines_array, line_items.len(), line_items.as_ptr() as *const c_void, std::mem::size_of::<VxLine2d>());
+            if add_status != VX_SUCCESS {
+                return add_status;
+            }
+        }
+
+        VX_SUCCESS
+    }
 }
 
 

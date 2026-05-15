@@ -1080,7 +1080,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 // Enhanced Vision kernels
                 ("org.khronos.openvx.copy", vec![1]), // [input, output] - param 1 is output
                 ("org.khronos.openvx.non_max_suppression", vec![3]), // [input, mask, win_size, output]
-                ("org.khronos.openvx.hough_lines_p", vec![6]), // [input, rho, theta, threshold, line_length, line_gap, lines_array]
+                ("org.khronos.openvx.hough_lines_p", vec![6, 7]), // [input, rho, theta, threshold, line_length, line_gap, lines_array, num_lines]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
@@ -2515,14 +2515,15 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     // We'll validate required parameters in the dispatch function
     // For ChannelCombine, all plane params can be null except the output
     let is_channel_combine = kernel_name.contains("channel_combine");
+    let is_nms = kernel_name.contains("non_max_suppression");
     if param_ids.is_empty() || (param_ids[0].is_none() && !is_channel_combine) {
         return Some(VX_ERROR_INVALID_PARAMETERS);
     }
 
     for (idx, param_id_opt) in param_ids.iter().enumerate() {
         if let Some(param_id) = param_id_opt {
-            // Validate parameter is not null pointer (unless it's an optional param for ChannelCombine)
-            if *param_id == 0 && !is_channel_combine {
+            // Validate parameter is not null pointer (unless it's an optional param for ChannelCombine or non_max_suppression mask)
+            if *param_id == 0 && !is_channel_combine && !(is_nms && idx == 1) {
                 return Some(VX_ERROR_INVALID_PARAMETERS);
             }
             params.push(*param_id as vx_reference);
@@ -3167,7 +3168,7 @@ fn dispatch_kernel_with_border_impl(
                     std::ptr::null_mut()
                 };
                 let output = params[3] as vx_image;
-                if !input.is_null() && !mask.is_null() && !output.is_null() {
+                if !input.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_non_max_suppression_impl(
                         unsafe { crate::c_api::vxGetContext(input as vx_reference) },
                         input,
@@ -10629,14 +10630,15 @@ pub extern "C" fn vxCannyEdgeDetectorNode(
 pub extern "C" fn vxHoughLinesPNode(
     graph: vx_graph,
     input: vx_image,
-    lines_array: vx_array,
     hough_lines_params: *const vx_hough_lines_p_t,
+    lines_array: vx_array,
+    num_lines: vx_scalar,
 ) -> vx_node {
-    if graph.is_null() || input.is_null() || lines_array.is_null() || hough_lines_params.is_null() {
+    if graph.is_null() || input.is_null() || hough_lines_params.is_null() || lines_array.is_null() || num_lines.is_null() {
         return std::ptr::null_mut();
     }
 
-    // HoughLinesP has params: input, lines_array, rho, theta, threshold, line_length, line_gap
+    // HoughLinesP has params: input, rho, theta, threshold, line_length, line_gap, lines_array
     let context = crate::c_api::vxGetContext(graph as vx_reference);
     if context.is_null() {
         return std::ptr::null_mut();
@@ -13091,13 +13093,49 @@ ev_vxu_stub!(vxuMatchTemplate(
     output: vx_image,
 ));
 
-ev_node_stub!(vxNonMaxSuppressionNode(
+#[no_mangle]
+pub extern "C" fn vxNonMaxSuppressionNode(
     graph: vx_graph,
     input: vx_image,
     mask: vx_image,
     win_size: vx_int32,
     output: vx_image,
-));
+) -> vx_node {
+    if graph.is_null() || input.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut win_scalar = vxCreateScalar(
+            context,
+            VX_TYPE_INT32,
+            &win_size as *const _ as *const c_void,
+        );
+
+        if win_scalar.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.non_max_suppression",
+            &[
+                input as vx_reference,
+                mask as vx_reference,
+                win_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut win_scalar);
+        node
+    }
+}
 // ev_vxu_stub! removed - replaced with real implementation below
 
 ev_node_stub!(vxHOGCellsNode(
@@ -13177,13 +13215,63 @@ pub extern "C" fn vxuNonMaxSuppression(
         status
     }
 }
-ev_vxu_stub!(vxuHoughLinesP(
-    context: vx_context,
+#[no_mangle]
+pub extern "C" fn vxuHoughLinesP(
+    _context: vx_context,
     input: vx_image,
     params: *const vx_hough_lines_p_t,
     lines_array: vx_array,
     num_lines: vx_scalar,
-));
+) -> vx_status {
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(input as vx_reference);
+        let mut rho_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &(*params).rho as *const _ as *const c_void,
+            std::mem::size_of::<f32>(),
+        );
+        let mut theta_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &(*params).theta as *const _ as *const c_void,
+            std::mem::size_of::<f32>(),
+        );
+        let mut threshold_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_UINT32,
+            &(*params).threshold as *const _ as *const c_void,
+            std::mem::size_of::<vx_uint32>(),
+        );
+        let mut line_length_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_UINT32,
+            &(*params).line_length as *const _ as *const c_void,
+            std::mem::size_of::<vx_uint32>(),
+        );
+        let mut line_gap_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_UINT32,
+            &(*params).line_gap as *const _ as *const c_void,
+            std::mem::size_of::<vx_uint32>(),
+        );
+        let status = crate::vxu_impl::vxu_hough_lines_p_impl(
+            ctx, input,
+            rho_scalar,
+            theta_scalar,
+            threshold_scalar,
+            line_length_scalar,
+            line_gap_scalar,
+            lines_array,
+        );
+        if !rho_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut rho_scalar); }
+        if !theta_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut theta_scalar); }
+        if !threshold_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut threshold_scalar); }
+        if !line_length_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut line_length_scalar); }
+        if !line_gap_scalar.is_null() { crate::c_api_data::vxReleaseScalar(&mut line_gap_scalar); }
+        status
+    }
+}
 
 // ---- Control flow ----
 ev_node_stub!(vxScalarOperationNode(
