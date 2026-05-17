@@ -1094,6 +1094,10 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.hough_lines_p", vec![6, 7]), // [input, rho, theta, threshold, line_length, line_gap, lines_array, num_lines]
                 ("org.khronos.openvx.match_template", vec![3]), // [src, templ, matching_method, output]
                 ("org.khronos.openvx.lbp", vec![3]), // [input, format, kernel_size, output]
+                ("org.khronos.openvx.hog_cells", vec![4, 5]), // [input, cell_width, cell_height, num_bins, magnitudes, bins]
+                ("org.khronos.openvx.hog_features", vec![5]), // [input, magnitudes, bins, params, hog_param_size, features]
+                // BilateralFilter (Enhanced Vision)
+                ("org.khronos.openvx.bilateral_filter", vec![4]), // [src, diameter, sigma_space, sigma_values, dst]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
@@ -3272,6 +3276,165 @@ fn dispatch_kernel_with_border_impl(
                 VX_ERROR_INVALID_PARAMETERS
             }
         }
+        // HOGCells (Enhanced Vision)
+        "org.khronos.openvx.hog_cells" => {
+            if params.len() >= 6 {
+                let input = params[0] as vx_image;
+                let cell_width = if params.len() > 1 && !params[1].is_null() {
+                    unsafe {
+                        let s = &*(params[1] as vx_scalar as *const crate::c_api_data::VxCScalarData);
+                        if s.data.len() >= 4 {
+                            i32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                    }
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+                let cell_height = if params.len() > 2 && !params[2].is_null() {
+                    unsafe {
+                        let s = &*(params[2] as vx_scalar as *const crate::c_api_data::VxCScalarData);
+                        if s.data.len() >= 4 {
+                            i32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                    }
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+                let num_bins = if params.len() > 3 && !params[3].is_null() {
+                    unsafe {
+                        let s = &*(params[3] as vx_scalar as *const crate::c_api_data::VxCScalarData);
+                        if s.data.len() >= 4 {
+                            i32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                    }
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+                let magnitudes = params[4] as vx_tensor;
+                let bins = params[5] as vx_tensor;
+                if !input.is_null() && !magnitudes.is_null() && !bins.is_null() {
+                    crate::vxu_impl::vxu_hog_cells_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        cell_width,
+                        cell_height,
+                        num_bins,
+                        magnitudes as vx_reference,
+                        bins as vx_reference,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // HOGFeatures (Enhanced Vision)
+        "org.khronos.openvx.hog_features" => {
+            if params.len() >= 7 {
+                let input = params[0] as vx_image;
+                let magnitudes = params[1] as vx_tensor;
+                let bins = params[2] as vx_tensor;
+                let params_ptr = if !params[3].is_null() {
+                    params[3] as *const c_void
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+                let hog_param_size = if params.len() > 4 && !params[4].is_null() {
+                    unsafe {
+                        let s = &*(params[4] as vx_scalar as *const crate::c_api_data::VxCScalarData);
+                        if s.data.len() >= 8 {
+                            usize::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3], s.data[4], s.data[5], s.data[6], s.data[7]])
+                        } else if s.data.len() >= 4 {
+                            u32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]) as usize
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                    }
+                } else {
+                    std::mem::size_of::<crate::vxu_impl::vx_hog_t>()
+                };
+                let features = params[5] as vx_tensor;
+                if !input.is_null() && !magnitudes.is_null() && !bins.is_null() && !features.is_null() {
+                    crate::vxu_impl::vxu_hog_features_impl(
+                        unsafe { crate::c_api::vxGetContext(input as vx_reference) },
+                        input,
+                        magnitudes as vx_reference,
+                        bins as vx_reference,
+                        params_ptr,
+                        hog_param_size,
+                        features as vx_reference,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // BilateralFilter (Enhanced Vision)
+        "org.khronos.openvx.bilateral_filter" => {
+            if params.len() >= 5 {
+                let src = params[0];
+                let diameter = if params.len() > 1 && !params[1].is_null() {
+                    unsafe {
+                        let s = &*(params[1] as vx_scalar as *const crate::c_api_data::VxCScalarData);
+                        if s.data.len() >= 4 {
+                            i32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                    }
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+                let sigma_space = if params.len() > 2 && !params[2].is_null() {
+                    unsafe {
+                        let s = &*(params[2] as vx_scalar as *const crate::c_api_data::VxCScalarData);
+                        if s.data.len() >= 4 {
+                            f32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                    }
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+                let sigma_values = if params.len() > 3 && !params[3].is_null() {
+                    unsafe {
+                        let s = &*(params[3] as vx_scalar as *const crate::c_api_data::VxCScalarData);
+                        if s.data.len() >= 4 {
+                            f32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]])
+                        } else {
+                            return VX_ERROR_INVALID_PARAMETERS;
+                        }
+                    }
+                } else {
+                    return VX_ERROR_INVALID_PARAMETERS;
+                };
+                let dst = params[4];
+                if !src.is_null() && !dst.is_null() {
+                    crate::vxu_impl::vxu_bilateral_filter_impl(
+                        unsafe { crate::c_api::vxGetContext(src) },
+                        src,
+                        diameter,
+                        sigma_space,
+                        sigma_values,
+                        dst,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
         // Multiply
         "org.khronos.openvx.multiply" => {
             if params.len() >= 6 {
@@ -5148,11 +5311,11 @@ pub extern "C" fn vxRegisterPyramidLevelImage(
 }
 
 // Tensor registry
-static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> =
+pub static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Tensor data storage (raw bytes keyed by tensor address)
-static TENSOR_DATA: Lazy<Mutex<HashMap<usize, Vec<u8>>>> =
+pub static TENSOR_DATA: Lazy<Mutex<HashMap<usize, Vec<u8>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Tensor context association
@@ -13257,23 +13420,117 @@ macro_rules! ev_vxu_stub {
     };
 }
 
-// ---- Image kernels still missing ----
-ev_node_stub!(vxBilateralFilterNode(
+#[no_mangle]
+pub extern "C" fn vxBilateralFilterNode(
     graph: vx_graph,
     src: vx_tensor,
     diameter: vx_int32,
     sigma_space: vx_float32,
     sigma_values: vx_float32,
     dst: vx_tensor,
-));
-ev_vxu_stub!(vxuBilateralFilter(
-    context: vx_context,
+) -> vx_node {
+    if graph.is_null() || src.is_null() || dst.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut diameter_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            context,
+            crate::c_api::VX_TYPE_INT32,
+            &diameter as *const _ as *const c_void,
+            std::mem::size_of::<vx_int32>(),
+        );
+        let mut sigma_space_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            context,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &sigma_space as *const _ as *const c_void,
+            std::mem::size_of::<vx_float32>(),
+        );
+        let mut sigma_values_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            context,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &sigma_values as *const _ as *const c_void,
+            std::mem::size_of::<vx_float32>(),
+        );
+
+        if diameter_scalar.is_null() || sigma_space_scalar.is_null() || sigma_values_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut diameter_scalar);
+            crate::c_api_data::vxReleaseScalar(&mut sigma_space_scalar);
+            crate::c_api_data::vxReleaseScalar(&mut sigma_values_scalar);
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.bilateral_filter",
+            &[
+                src as vx_reference,
+                diameter_scalar as vx_reference,
+                sigma_space_scalar as vx_reference,
+                sigma_values_scalar as vx_reference,
+                dst as vx_reference,
+            ],
+        );
+
+        crate::c_api_data::vxReleaseScalar(&mut diameter_scalar);
+        crate::c_api_data::vxReleaseScalar(&mut sigma_space_scalar);
+        crate::c_api_data::vxReleaseScalar(&mut sigma_values_scalar);
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuBilateralFilter(
+    _context: vx_context,
     src: vx_tensor,
     diameter: vx_int32,
     sigma_space: vx_float32,
     sigma_values: vx_float32,
     dst: vx_tensor,
-));
+) -> vx_status {
+    if src.is_null() || dst.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    unsafe {
+        let ctx = crate::c_api::vxGetContext(src as vx_reference);
+        let mut diameter_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_INT32,
+            &diameter as *const _ as *const c_void,
+            std::mem::size_of::<vx_int32>(),
+        );
+        let mut sigma_space_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &sigma_space as *const _ as *const c_void,
+            std::mem::size_of::<vx_float32>(),
+        );
+        let mut sigma_values_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            ctx,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &sigma_values as *const _ as *const c_void,
+            std::mem::size_of::<vx_float32>(),
+        );
+        let status = crate::vxu_impl::vxu_bilateral_filter_impl(
+            ctx, src as vx_reference, diameter, sigma_space, sigma_values, dst as vx_reference,
+        );
+        if !diameter_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut diameter_scalar);
+        }
+        if !sigma_space_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut sigma_space_scalar);
+        }
+        if !sigma_values_scalar.is_null() {
+            crate::c_api_data::vxReleaseScalar(&mut sigma_values_scalar);
+        }
+        status
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn vxLBPNode(
@@ -13476,7 +13733,8 @@ pub extern "C" fn vxNonMaxSuppressionNode(
 }
 // ev_vxu_stub! removed - replaced with real implementation below
 
-ev_node_stub!(vxHOGCellsNode(
+#[no_mangle]
+pub extern "C" fn vxHOGCellsNode(
     graph: vx_graph,
     input: vx_image,
     cell_width: vx_int32,
@@ -13484,35 +13742,98 @@ ev_node_stub!(vxHOGCellsNode(
     num_bins: vx_int32,
     magnitudes: vx_tensor,
     bins: vx_tensor,
-));
-ev_vxu_stub!(vxuHOGCells(
-    context: vx_context,
-    input: vx_image,
-    cell_width: vx_int32,
-    cell_height: vx_int32,
-    num_bins: vx_int32,
-    magnitudes: vx_tensor,
-    bins: vx_tensor,
-));
+) -> vx_node {
+    if graph.is_null() || input.is_null() || magnitudes.is_null() || bins.is_null() {
+        return std::ptr::null_mut();
+    }
 
-ev_node_stub!(vxHOGFeaturesNode(
-    graph: vx_graph,
-    input: vx_image,
-    magnitudes: vx_tensor,
-    bins: vx_tensor,
-    params: *const c_void,
-    hog_param_size: vx_size,
-    features: vx_tensor,
-));
-ev_vxu_stub!(vxuHOGFeatures(
-    context: vx_context,
-    input: vx_image,
-    magnitudes: vx_tensor,
-    bins: vx_tensor,
-    params: *const c_void,
-    hog_param_size: vx_size,
-    features: vx_tensor,
-));
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut cell_width_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_INT32,
+            &cell_width as *const _ as *const c_void,
+        );
+        let mut cell_height_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_INT32,
+            &cell_height as *const _ as *const c_void,
+        );
+        let mut num_bins_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_INT32,
+            &num_bins as *const _ as *const c_void,
+        );
+
+        if cell_width_scalar.is_null() || cell_height_scalar.is_null() || num_bins_scalar.is_null() {
+            vxReleaseScalar(&mut cell_width_scalar);
+            vxReleaseScalar(&mut cell_height_scalar);
+            vxReleaseScalar(&mut num_bins_scalar);
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.hog_cells",
+            &[
+                input as vx_reference,
+                cell_width_scalar as vx_reference,
+                cell_height_scalar as vx_reference,
+                num_bins_scalar as vx_reference,
+                magnitudes as vx_reference,
+                bins as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut cell_width_scalar);
+        vxReleaseScalar(&mut cell_height_scalar);
+        vxReleaseScalar(&mut num_bins_scalar);
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuHOGCells(
+    _context: vx_context,
+    _input: vx_image,
+    _cell_width: vx_int32,
+    _cell_height: vx_int32,
+    _num_bins: vx_int32,
+    _magnitudes: vx_tensor,
+    _bins: vx_tensor,
+) -> vx_status {
+    VX_ERROR_NOT_IMPLEMENTED
+}
+
+#[no_mangle]
+pub extern "C" fn vxHOGFeaturesNode(
+    _graph: vx_graph,
+    _input: vx_image,
+    _magnitudes: vx_tensor,
+    _bins: vx_tensor,
+    _params: *const c_void,
+    _hog_param_size: vx_size,
+    _features: vx_tensor,
+) -> vx_node {
+    std::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn vxuHOGFeatures(
+    _context: vx_context,
+    _input: vx_image,
+    _magnitudes: vx_tensor,
+    _bins: vx_tensor,
+    _params: *const c_void,
+    _hog_param_size: vx_size,
+    _features: vx_tensor,
+) -> vx_status {
+    VX_ERROR_NOT_IMPLEMENTED
+}
 
 // ---- Immediate wrappers around already-implemented graph nodes ----
 //
