@@ -10772,3 +10772,755 @@ pub fn vxu_lbp_impl(_ctx: vx_context, input: vx_image, format_scalar: vx_scalar,
         VX_SUCCESS
     }
 }
+
+/// Enhanced Vision: Bilateral Filter
+/// Applies a bilateral filter to a tensor (U8 or Q78/S16).
+/// For each pixel, computes weighted average of neighbors within diameter radius,
+/// where weights are product of spatial Gaussian and range Gaussian.
+pub fn vxu_bilateral_filter_impl(
+    _context: vx_context,
+    src: vx_reference,
+    diameter: vx_int32,
+    sigma_space: vx_float32,
+    sigma_values: vx_float32,
+    dst: vx_reference,
+) -> vx_status {
+    if src.is_null() || dst.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if diameter <= 0 || diameter % 2 == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if sigma_space <= 0.0 || sigma_values <= 0.0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    use crate::unified_c_api::{TENSORS, TENSOR_DATA, VX_TYPE_TENSOR, VX_TENSOR_DATA_TYPE, VX_TENSOR_DIMS, VX_TENSOR_NUMBER_OF_DIMS};
+
+    let src_addr = src as usize;
+    let dst_addr = dst as usize;
+
+    unsafe {
+        let src_t = {
+            let tensors = match TENSORS.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            match tensors.get(&src_addr) {
+                Some(t) => t.clone(),
+                None => return VX_ERROR_INVALID_REFERENCE,
+            }
+        };
+
+        let dst_t = {
+            let tensors = match TENSORS.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            match tensors.get(&dst_addr) {
+                Some(t) => t.clone(),
+                None => return VX_ERROR_INVALID_REFERENCE,
+            }
+        };
+
+        // Validate dimensions match
+        if src_t.num_dims != dst_t.num_dims {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        for i in 0..src_t.num_dims {
+            if src_t.dims[i] != dst_t.dims[i] {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        }
+
+        // Get data buffers
+        let mut src_data_buf: Vec<u8> = Vec::new();
+        let mut dst_data_buf: Vec<u8> = Vec::new();
+        {
+            let data_map = match TENSOR_DATA.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            if let Some(data) = data_map.get(&src_addr) {
+                src_data_buf = data.clone();
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+            if let Some(data) = data_map.get(&dst_addr) {
+                dst_data_buf = data.clone();
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+        }
+
+        let num_dims = src_t.num_dims;
+        let dims = &src_t.dims;
+        let data_type = src_t.data_type;
+
+        // Only support U8 (VX_TYPE_UINT8) and Q78/S16 (VX_TYPE_INT16) for now
+        let is_u8 = data_type == VX_TYPE_UINT8;
+        let is_s16 = data_type == VX_TYPE_INT16;
+        if !is_u8 && !is_s16 {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+
+        let element_size = if is_u8 { 1 } else { 2 };
+
+        // Build stride array (row-major, last dim contiguous)
+        let mut strides = vec![0usize; num_dims];
+        strides[num_dims - 1] = element_size;
+        for i in (0..num_dims - 1).rev() {
+            strides[i] = strides[i + 1] * dims[i + 1];
+        }
+
+        let radius = (diameter / 2) as i32;
+
+        // Precompute spatial weights
+        let gauss_space_coeff = -0.5f64 / (sigma_space as f64 * sigma_space as f64);
+        let mut space_weights = vec![vec![0.0f32; diameter as usize]; diameter as usize];
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let dist = ((dy * dy + dx * dx) as f64).sqrt();
+                if dist >= radius as f64 + 1e-6 {
+                    space_weights[(dy + radius) as usize][(dx + radius) as usize] = 0.0;
+                } else {
+                    space_weights[(dy + radius) as usize][(dx + radius) as usize] =
+                        (dist * dist * gauss_space_coeff).exp() as f32;
+                }
+            }
+        }
+
+        // Determine processing region based on border mode
+        // For tensors, we use VX_BORDER_REPLICATE by default (mirror edge handling)
+        // The CTS test uses VX_BORDER_UNDEFINED (only processes interior)
+        // Let's match the CTS: only interior pixels, edges untouched (or zeroed)
+        let (width, height) = if num_dims >= 2 {
+            (dims[num_dims - 2] as i32, dims[num_dims - 1] as i32)
+        } else {
+            (dims[0] as i32, 1)
+        };
+
+        let channels = if num_dims >= 3 {
+            dims[0] as i32
+        } else {
+            1
+        };
+
+        let low_x = radius;
+        let high_x = if width >= radius { width - radius } else { 0 };
+        let low_y = radius;
+        let high_y = if height >= radius { height - radius } else { 0 };
+
+        // Precompute color/range weights for U8 (lookup table)
+        let color_weights_u8: Option<Vec<f32>> = if is_u8 {
+            let gauss_color_coeff = -0.5f64 / (sigma_values as f64 * sigma_values as f64);
+            let mut cw = vec![0.0f32; 256];
+            for i in 0..256 {
+                let diff = i as f64;
+                cw[i] = (diff * diff * gauss_color_coeff).exp() as f32;
+            }
+            Some(cw)
+        } else {
+            None
+        };
+
+        // For Q78/S16, compute min/max to build adaptive color weight table
+        let mut color_weights_s16: Option<(Vec<f32>, f32)> = if is_s16 {
+            let gauss_color_coeff = -0.5f64 / (sigma_values as f64 * sigma_values as f64);
+            let mut min_val = i16::MAX;
+            let mut max_val = i16::MIN;
+            if num_dims == 2 {
+                for y in 0..height {
+                    for x in 0..width {
+                        let offset = (y as usize) * strides[1] + (x as usize) * strides[0];
+                        let val = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                        if val < min_val { min_val = val; }
+                        if val > max_val { max_val = val; }
+                    }
+                }
+            } else if num_dims == 3 {
+                for y in 0..height {
+                    for x in 0..width {
+                        for c in 0..channels {
+                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                            let val = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                            if val < min_val { min_val = val; }
+                            if val > max_val { max_val = val; }
+                        }
+                    }
+                }
+            }
+            let range = (max_val - min_val) as f32;
+            if range.abs() < f32::EPSILON {
+                // All same value — just copy input to output
+                dst_data_buf.copy_from_slice(&src_data_buf);
+                let mut data_map = match TENSOR_DATA.lock() {
+                    Ok(g) => g,
+                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                };
+                if let Some(data) = data_map.get_mut(&dst_addr) {
+                    data.copy_from_slice(&dst_data_buf);
+                }
+                return VX_SUCCESS;
+            }
+            let k_exp_num_bins_per_channel = 1 << 12;
+            let k_exp_num_bins = (k_exp_num_bins_per_channel * channels) as i32;
+            let scale_index = k_exp_num_bins as f32 / (range * channels as f32);
+            let mut cw = vec![0.0f32; (k_exp_num_bins + 2) as usize];
+            let mut last_exp_val = 1.0f32;
+            for i in 0..(k_exp_num_bins + 2) as usize {
+                if last_exp_val > 0.0 {
+                    let val = i as f32 / scale_index;
+                    cw[i] = (val as f64 * val as f64 * gauss_color_coeff).exp() as f32;
+                    last_exp_val = cw[i];
+                } else {
+                    cw[i] = 0.0;
+                }
+            }
+            Some((cw, scale_index))
+        } else {
+            None
+        };
+
+        // Process pixels
+        if num_dims == 2 {
+            // 2D grayscale tensor
+            for y in low_y..high_y {
+                for x in low_x..high_x {
+                    let center_offset = (y as usize) * strides[1] + (x as usize) * strides[0];
+                    let center_val = if is_u8 {
+                        *(src_data_buf.as_ptr().add(center_offset) as *const u8) as i32
+                    } else {
+                        *(src_data_buf.as_ptr().add(center_offset) as *const i16) as i32
+                    };
+
+                    let mut sum = 0.0f32;
+                    let mut wsum = 0.0f32;
+
+                    for dy in -radius..=radius {
+                        for dx in -radius..=radius {
+                            let sw = space_weights[(dy + radius) as usize][(dx + radius) as usize];
+                            if sw == 0.0 {
+                                continue;
+                            }
+                            let nx = x + dx;
+                            let ny = y + dy;
+                            // Clamp to bounds (replicate border)
+                            let nx = nx.max(0).min(width - 1);
+                            let ny = ny.max(0).min(height - 1);
+                            let n_offset = (ny as usize) * strides[1] + (nx as usize) * strides[0];
+                            let neighbor_val = if is_u8 {
+                                *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                            } else {
+                                *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                            };
+
+                            let w = if is_u8 {
+                                let diff = (neighbor_val - center_val).abs() as usize;
+                                sw * color_weights_u8.as_ref().unwrap()[diff]
+                            } else {
+                                let (cw, scale_index) = color_weights_s16.as_ref().unwrap();
+                                let alpha = (neighbor_val - center_val).abs() as f32 * *scale_index;
+                                let idx = alpha.floor() as usize;
+                                let frac = alpha - idx as f32;
+                                let idx = idx.min(cw.len() - 2);
+                                sw * (cw[idx] + frac * (cw[idx + 1] - cw[idx]))
+                            };
+                            sum += neighbor_val as f32 * w;
+                            wsum += w;
+                        }
+                    }
+
+                    if wsum > 0.0 {
+                        if is_u8 {
+                            let result = (sum / wsum).round().max(0.0).min(255.0) as u8;
+                            *(dst_data_buf.as_mut_ptr().add(center_offset) as *mut u8) = result;
+                        } else {
+                            let result = (sum / wsum).round().max(i16::MIN as f32).min(i16::MAX as f32) as i16;
+                            *(dst_data_buf.as_mut_ptr().add(center_offset) as *mut i16) = result;
+                        }
+                    }
+                }
+            }
+        } else if num_dims == 3 {
+            // 3D tensor (channels, width, height) — e.g., RGB image as tensor
+            for y in low_y..high_y {
+                for x in low_x..high_x {
+                    // Read center values for each channel
+                    let mut center_vals = vec![0i32; channels as usize];
+                    for c in 0..channels {
+                        let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                        center_vals[c as usize] = if is_u8 {
+                            *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                        } else {
+                            *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                        };
+                    }
+
+                    let mut sums = vec![0.0f32; channels as usize];
+                    let mut wsum = 0.0f32;
+
+                    for dy in -radius..=radius {
+                        for dx in -radius..=radius {
+                            let sw = space_weights[(dy + radius) as usize][(dx + radius) as usize];
+                            if sw == 0.0 {
+                                continue;
+                            }
+                            let nx = x + dx;
+                            let ny = y + dy;
+                            let nx = nx.max(0).min(width - 1);
+                            let ny = ny.max(0).min(height - 1);
+
+                            let mut neighbor_vals = vec![0i32; channels as usize];
+                            for c in 0..channels {
+                                let offset = (ny as usize) * strides[2] + (nx as usize) * strides[1] + (c as usize) * strides[0];
+                                neighbor_vals[c as usize] = if is_u8 {
+                                    *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                } else {
+                                    *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                };
+                            }
+
+                            let w = if is_u8 {
+                                let mut total_diff = 0i32;
+                                for c in 0..channels {
+                                    total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs();
+                                }
+                                let diff = total_diff as usize;
+                                let idx = diff.min(255);
+                                sw * color_weights_u8.as_ref().unwrap()[idx]
+                            } else {
+                                let mut total_diff = 0i32;
+                                for c in 0..channels {
+                                    total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs();
+                                }
+                                let (cw, scale_index) = color_weights_s16.as_ref().unwrap();
+                                let alpha = total_diff as f32 * *scale_index;
+                                let idx = alpha.floor() as usize;
+                                let frac = alpha - idx as f32;
+                                let idx = idx.min(cw.len() - 2);
+                                sw * (cw[idx] + frac * (cw[idx + 1] - cw[idx]))
+                            };
+
+                            for c in 0..channels {
+                                sums[c as usize] += neighbor_vals[c as usize] as f32 * w;
+                            }
+                            wsum += w;
+                        }
+                    }
+
+                    if wsum > 0.0 {
+                        for c in 0..channels {
+                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                            if is_u8 {
+                                let result = (sums[c as usize] / wsum).round().max(0.0).min(255.0) as u8;
+                                *(dst_data_buf.as_mut_ptr().add(offset) as *mut u8) = result;
+                            } else {
+                                let result = (sums[c as usize] / wsum).round().max(i16::MIN as f32).min(i16::MAX as f32) as i16;
+                                *(dst_data_buf.as_mut_ptr().add(offset) as *mut i16) = result;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Write back dst data
+        let mut data_map = match TENSOR_DATA.lock() {
+            Ok(g) => g,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        if let Some(data) = data_map.get_mut(&dst_addr) {
+            data.copy_from_slice(&dst_data_buf);
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// ===========================================================================
+/// Enhanced Vision: HOGCells
+/// ===========================================================================
+
+/// HOG descriptor parameters matching vx_hog_t from VX/vx_types.h
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct vx_hog_t {
+    pub cell_width: vx_int32,
+    pub cell_height: vx_int32,
+    pub block_width: vx_int32,
+    pub block_height: vx_int32,
+    pub block_stride: vx_int32,
+    pub num_bins: vx_int32,
+    pub window_width: vx_int32,
+    pub window_height: vx_int32,
+    pub window_stride: vx_int32,
+    pub threshold: f32,
+}
+
+/// Helper: access tensor data buffer by tensor address
+unsafe fn get_tensor_data(addr: usize) -> Option<std::sync::MutexGuard<'static, std::collections::HashMap<usize, Vec<u8>>>> {
+    crate::unified_c_api::TENSOR_DATA.lock().ok()
+}
+
+/// Helper: get tensor metadata by address
+unsafe fn get_tensor_info(addr: usize) -> Option<(usize, Vec<usize>, i32)> {
+    let tensors = crate::unified_c_api::TENSORS.lock().ok()?;
+    let t = tensors.get(&addr)?;
+    Some((t.num_dims, t.dims.clone(), t.data_type))
+}
+
+pub fn vxu_hog_cells_impl(
+    _ctx: vx_context,
+    input: vx_image,
+    cell_width: vx_int32,
+    cell_height: vx_int32,
+    num_bins: vx_int32,
+    magnitudes: vx_reference,
+    bins: vx_reference,
+) -> vx_status {
+    if input.is_null() || magnitudes.is_null() || bins.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if cell_width <= 0 || cell_height <= 0 || num_bins <= 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let cell_w = cell_width as usize;
+    let cell_h = cell_height as usize;
+    let bins_num = num_bins as usize;
+
+    unsafe {
+        // Get input image info
+        let (src_width, src_height, src_format) = match get_image_info(input) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+        if src_format != VX_DF_IMAGE_U8 as vx_df_image {
+            return VX_ERROR_INVALID_FORMAT;
+        }
+        let width = src_width as usize;
+        let height = src_height as usize;
+
+        let num_cells_x = width / cell_w;
+        let num_cells_y = height / cell_h;
+        if num_cells_x == 0 || num_cells_y == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Validate magnitudes tensor: 2D INT16 [num_cells_x, num_cells_y]
+        let mag_addr = magnitudes as usize;
+        let (mag_dims_n, mag_dims, mag_dtype) = match get_tensor_info(mag_addr) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        if mag_dims_n != 2 || mag_dims[0] != num_cells_x || mag_dims[1] != num_cells_y || mag_dtype != VX_TYPE_INT16 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Validate bins tensor: 3D INT16 [num_cells_x, num_cells_y, num_bins]
+        let bins_addr = bins as usize;
+        let (bins_dims_n, bins_dims, bins_dtype) = match get_tensor_info(bins_addr) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        if bins_dims_n != 3 || bins_dims[0] != num_cells_x || bins_dims[1] != num_cells_y || bins_dims[2] != bins_num || bins_dtype != VX_TYPE_INT16 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Convert input image to Rust Image
+        let src = match c_image_to_rust(input) {
+            Some(img) => img,
+            None => return VX_ERROR_INVALID_PARAMETERS,
+        };
+
+        // Compute gradient magnitudes and orientations per pixel, accumulate per cell
+        let mut mag_per_cell = vec![0.0f32; num_cells_x * num_cells_y];
+        let mut bins_per_cell = vec![0.0f32; num_cells_x * num_cells_y * bins_num];
+        let num_div_360 = bins_num as f32 / 360.0f32;
+
+        for y in 0..height {
+            for x in 0..width {
+                // Sobel gradient with replicate border
+                let x1 = if x == 0 { 0 } else { x - 1 };
+                let x2 = if x + 1 >= width { width - 1 } else { x + 1 };
+                let y1 = if y == 0 { 0 } else { y - 1 };
+                let y2 = if y + 1 >= height { height - 1 } else { y + 1 };
+
+                let gx1 = src.get_pixel(x1, y) as f32;
+                let gx2 = src.get_pixel(x2, y) as f32;
+                let gx = gx2 - gx1;
+
+                let gy1 = src.get_pixel(x, y1) as f32;
+                let gy2 = src.get_pixel(x, y2) as f32;
+                let gy = gy2 - gy1;
+
+                let magnitude = (gx * gx + gy * gy).sqrt();
+                let mut orientation = (gy.atan2(gx + 1e-14) * 180.0 / std::f32::consts::PI) % 360.0;
+                if orientation < 0.0 {
+                    orientation += 360.0;
+                }
+
+                let bin = (orientation * num_div_360).floor() as usize;
+                let bin = bin.min(bins_num - 1);
+
+                let cellx = x / cell_w;
+                let celly = y / cell_h;
+                let mag_idx = celly * num_cells_x + cellx;
+                let bins_idx = mag_idx * bins_num + bin;
+
+                // CTS reference: divide by (cell_width * cell_height) when accumulating
+                let cell_area = (cell_w * cell_h) as f32;
+                mag_per_cell[mag_idx] += magnitude / cell_area;
+                bins_per_cell[bins_idx] += magnitude / cell_area;
+            }
+        }
+
+        // Write to tensor data buffers
+        let mut data_map = match get_tensor_data(mag_addr) {
+            Some(guard) => guard,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        // Magnitudes: average per cell (store as INT16, Q78 fixed-point like CTS)
+        if let Some(mag_data) = data_map.get_mut(&mag_addr) {
+            let expected = num_cells_x * num_cells_y * 2;
+            if mag_data.len() < expected {
+                mag_data.resize(expected, 0);
+            }
+            for i in 0..(num_cells_x * num_cells_y) {
+                let val = (mag_per_cell[i] * 256.0).round() as i16;
+                let bytes = val.to_le_bytes();
+                mag_data[i * 2] = bytes[0];
+                mag_data[i * 2 + 1] = bytes[1];
+            }
+        }
+
+        if let Some(bins_data) = data_map.get_mut(&bins_addr) {
+            let expected = num_cells_x * num_cells_y * bins_num * 2;
+            if bins_data.len() < expected {
+                bins_data.resize(expected, 0);
+            }
+            for i in 0..(num_cells_x * num_cells_y * bins_num) {
+                let val = (bins_per_cell[i] * 256.0).round() as i16;
+                let bytes = val.to_le_bytes();
+                bins_data[i * 2] = bytes[0];
+                bins_data[i * 2 + 1] = bytes[1];
+            }
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// ===========================================================================
+/// Enhanced Vision: HOGFeatures
+/// ===========================================================================
+
+pub fn vxu_hog_features_impl(
+    _ctx: vx_context,
+    _input: vx_image,
+    magnitudes: vx_reference,
+    bins: vx_reference,
+    params: *const c_void,
+    _hog_param_size: vx_size,
+    features: vx_reference,
+) -> vx_status {
+    if magnitudes.is_null() || bins.is_null() || params.is_null() || features.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    unsafe {
+        // Read HOG params
+        let hog = *(params as *const vx_hog_t);
+        let cell_w = hog.cell_width as usize;
+        let cell_h = hog.cell_height as usize;
+        let block_w = hog.block_width as usize;
+        let block_h = hog.block_height as usize;
+        let block_stride = hog.block_stride as usize;
+        let bins_num = hog.num_bins as usize;
+        let window_w = hog.window_width as usize;
+        let window_h = hog.window_height as usize;
+        let window_stride = hog.window_stride as usize;
+        let threshold = hog.threshold;
+
+        if cell_w == 0 || cell_h == 0 || block_w == 0 || block_h == 0 || bins_num == 0 || window_w == 0 || window_h == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Get magnitudes tensor info
+        let mag_addr = magnitudes as usize;
+        let (mag_dims_n, mag_dims, mag_dtype) = match get_tensor_info(mag_addr) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        if mag_dims_n != 2 || mag_dtype != VX_TYPE_INT16 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        let n_cells_x = mag_dims[0];
+        let n_cells_y = mag_dims[1];
+        let width = n_cells_x * cell_w;
+        let height = n_cells_y * cell_h;
+
+        // Get bins tensor info
+        let bins_addr = bins as usize;
+        let (bins_dims_n, bins_dims, bins_dtype) = match get_tensor_info(bins_addr) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        if bins_dims_n != 3 || bins_dims[0] != n_cells_x || bins_dims[1] != n_cells_y || bins_dims[2] != bins_num || bins_dtype != VX_TYPE_INT16 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Read magnitudes and bins data from tensors
+        let data_map = match get_tensor_data(mag_addr) {
+            Some(guard) => guard,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let mag_data = match data_map.get(&mag_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let num_cells = n_cells_x * n_cells_y;
+        let mut mag_ref = vec![0.0f32; num_cells];
+        for i in 0..num_cells {
+            let offset = i * 2;
+            if offset + 1 < mag_data.len() {
+                let val = i16::from_le_bytes([mag_data[offset], mag_data[offset + 1]]);
+                mag_ref[i] = val as f32 / 256.0;
+            }
+        }
+
+        let bins_data = match data_map.get(&bins_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let mut bins_ref = vec![0.0f32; num_cells * bins_num];
+        for i in 0..(num_cells * bins_num) {
+            let offset = i * 2;
+            if offset + 1 < bins_data.len() {
+                let val = i16::from_le_bytes([bins_data[offset], bins_data[offset + 1]]);
+                bins_ref[i] = val as f32 / 256.0;
+            }
+        }
+
+        // Compute number of windows
+        let num_windows_w = if width >= window_w { (width - window_w) / window_stride + 1 } else { 0 };
+        let num_windows_h = if height >= window_h { (height - window_h) / window_stride + 1 } else { 0 };
+        let blocks_per_window_w = if window_w >= block_w { (window_w - block_w) / block_stride + 1 } else { 0 };
+        let blocks_per_window_h = if window_h >= block_h { (window_h - block_h) / block_stride + 1 } else { 0 };
+        let cells_per_block_w = block_w / cell_w;
+        let cells_per_block_h = block_h / cell_h;
+
+        if num_windows_w == 0 || num_windows_h == 0 || blocks_per_window_w == 0 || blocks_per_window_h == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let feature_dim = blocks_per_window_w * blocks_per_window_h * cells_per_block_w * cells_per_block_h * bins_num;
+        let total_features = num_windows_w * num_windows_h * feature_dim;
+
+        // Validate features tensor
+        let feat_addr = features as usize;
+        let (feat_dims_n, feat_dims, feat_dtype) = match get_tensor_info(feat_addr) {
+            Some(info) => info,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        if feat_dims_n != 3 || feat_dtype != VX_TYPE_INT16 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        if feat_dims[0] != num_windows_w || feat_dims[1] != num_windows_h || feat_dims[2] != feature_dim {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut features_ref = vec![0.0f32; total_features];
+        let mut block_index_count: usize = 0;
+
+        for win_h in 0..num_windows_h {
+            for win_w in 0..num_windows_w {
+                // binIdx_win in the CTS reference
+                let bin_idx_win = (win_h * (n_cells_x * window_stride / cell_h) +
+                                   win_w * (window_stride / cell_w)) * bins_num;
+
+                for blk_h in 0..blocks_per_window_h {
+                    for blk_w in 0..blocks_per_window_w {
+                        let bin_idx_blk = bin_idx_win +
+                            (blk_h * (n_cells_x * block_stride / cell_h) * bins_num) +
+                            (blk_w * (block_stride / cell_w)) * bins_num;
+
+                        let renorm_block_index_st = block_index_count;
+
+                        // Accumulate squared magnitudes for all cells in this block
+                        let mut sum: f32 = 0.0;
+                        for y in 0..cells_per_block_h {
+                            for x in 0..cells_per_block_w {
+                                let mag_idx_cell = (bin_idx_blk / bins_num) + (y * n_cells_x + x);
+                                if mag_idx_cell < mag_ref.len() {
+                                    let m = mag_ref[mag_idx_cell];
+                                    sum += m * m;
+                                }
+                            }
+                        }
+                        sum = (sum + 1e-14).sqrt();
+
+                        // Build block descriptor from cell histograms
+                        for y in 0..cells_per_block_h {
+                            for x in 0..cells_per_block_w {
+                                let bin_idx_cell = bin_idx_blk + (y * n_cells_x + x) * bins_num;
+                                for k in 0..bins_num {
+                                    let bins_index = bin_idx_cell + k;
+                                    if bins_index < bins_ref.len() && block_index_count < features_ref.len() {
+                                        let hist_val = bins_ref[bins_index];
+                                        let normalized = (hist_val / sum).min(threshold);
+                                        features_ref[block_index_count] = normalized * 256.0;
+                                        block_index_count += 1;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Renormalize (L2-Hys)
+                        let renorm_block_index_end = block_index_count;
+                        let mut renorm_sum: f32 = 0.0;
+                        for idx in renorm_block_index_st..renorm_block_index_end {
+                            if idx < features_ref.len() {
+                                let fv = features_ref[idx] / 256.0;
+                                renorm_sum += fv * fv;
+                            }
+                        }
+                        renorm_sum = (renorm_sum + 1e-14).sqrt();
+                        for idx in renorm_block_index_st..renorm_block_index_end {
+                            if idx < features_ref.len() {
+                                let fv = features_ref[idx] / 256.0;
+                                features_ref[idx] = (fv / renorm_sum) * 256.0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Write features to tensor
+        drop(data_map);
+        let mut data_map = match get_tensor_data(feat_addr) {
+            Some(guard) => guard,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        if let Some(feat_data) = data_map.get_mut(&feat_addr) {
+            let expected = total_features * 2;
+            if feat_data.len() < expected {
+                feat_data.resize(expected, 0);
+            }
+            for i in 0..total_features {
+                let val = features_ref[i].round() as i16;
+                let bytes = val.to_le_bytes();
+                feat_data[i * 2] = bytes[0];
+                feat_data[i * 2 + 1] = bytes[1];
+            }
+        }
+
+        VX_SUCCESS
+    }
+}
