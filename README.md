@@ -21,9 +21,11 @@ rustVX passes the full [Khronos OpenVX 1.3 Conformance Test Suite](https://githu
 | OpenVX baseline | 863 | **863 / 863** |
 | Vision conformance profile | 4957 | **4957 / 4957** |
 | Enhanced Vision (Phase 2) | 106 | **106 / 106** |
-| **Total enabled** | **5926** | **5926 / 5926** |
+| Enhanced Vision (Phase 3) | 28 | **28 / 28** |
+| Enhanced Vision (Phase 4) | 29 | **29 / 29** |
+| **Total enabled** | **5983** | **5983 / 5983** |
 
-The remaining Enhanced Vision kernels (`BilateralFilter`, `TensorOp`, `HOGCells`, `HOGFeatures`, `ControlFlow`/`Select`, `ScalarOperation`) are tracked as follow-up phases. All implemented Enhanced Vision kernels are exercised in CI with `-DOPENVX_USE_ENHANCED_VISION=ON`.
+The remaining Enhanced Vision kernels (`TensorOp`, `ControlFlow`/`Select`, `ScalarOperation`) are tracked as follow-up phases. All implemented Enhanced Vision kernels are exercised in CI with `-DOPENVX_USE_ENHANCED_VISION=ON`.
 
 Latest CTS run results are published on each push and pull request via the [Actions tab](https://github.com/kiritigowda/rustVX/actions).
 
@@ -254,7 +256,7 @@ GitHub Actions builds and runs the full CTS on every push and pull request. The 
 | **vision-features** | HarrisCorners, FastCorners, Canny | [![vision-features](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-features&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [![vision-statistics](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-statistics&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [![vision-pyramid](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-pyramid&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
-| **enhanced-vision** | Copy, NonMaxSuppression, HoughLinesP, MatchTemplate, LBP, Min, Max (106 tests) | [![enhanced-vision](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=enhanced-vision&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **enhanced-vision** | Copy, NonMaxSuppression, HoughLinesP, MatchTemplate, LBP, BilateralFilter, HOGCells, HOGFeatures, Min, Max (163 tests) | [![enhanced-vision](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=enhanced-vision&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 
 See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for full run history.
 

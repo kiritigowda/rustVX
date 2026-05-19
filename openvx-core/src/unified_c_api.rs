@@ -3337,7 +3337,7 @@ fn dispatch_kernel_with_border_impl(
         }
         // HOGFeatures (Enhanced Vision)
         "org.khronos.openvx.hog_features" => {
-            if params.len() >= 7 {
+            if params.len() >= 6 {
                 let input = params[0] as vx_image;
                 let magnitudes = params[1] as vx_tensor;
                 let bins = params[2] as vx_tensor;
@@ -13477,6 +13477,8 @@ pub extern "C" fn vxBilateralFilterNode(
             ],
         );
 
+        // Scalars are consumed by create_node_with_params (copied into the node),
+        // so release them immediately.
         crate::c_api_data::vxReleaseScalar(&mut diameter_scalar);
         crate::c_api_data::vxReleaseScalar(&mut sigma_space_scalar);
         crate::c_api_data::vxReleaseScalar(&mut sigma_values_scalar);
@@ -13789,6 +13791,8 @@ pub extern "C" fn vxHOGCellsNode(
             ],
         );
 
+        // Scalars are consumed by create_node_with_params (copied into the node),
+        // so release them immediately.
         vxReleaseScalar(&mut cell_width_scalar);
         vxReleaseScalar(&mut cell_height_scalar);
         vxReleaseScalar(&mut num_bins_scalar);
@@ -13798,41 +13802,102 @@ pub extern "C" fn vxHOGCellsNode(
 
 #[no_mangle]
 pub extern "C" fn vxuHOGCells(
-    _context: vx_context,
-    _input: vx_image,
-    _cell_width: vx_int32,
-    _cell_height: vx_int32,
-    _num_bins: vx_int32,
-    _magnitudes: vx_tensor,
-    _bins: vx_tensor,
+    context: vx_context,
+    input: vx_image,
+    cell_width: vx_int32,
+    cell_height: vx_int32,
+    num_bins: vx_int32,
+    magnitudes: vx_tensor,
+    bins: vx_tensor,
 ) -> vx_status {
-    VX_ERROR_NOT_IMPLEMENTED
+    if context.is_null() || input.is_null() || magnitudes.is_null() || bins.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    unsafe {
+        crate::vxu_impl::vxu_hog_cells_impl(
+            context,
+            input,
+            cell_width,
+            cell_height,
+            num_bins,
+            magnitudes as vx_reference,
+            bins as vx_reference,
+        )
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn vxHOGFeaturesNode(
-    _graph: vx_graph,
-    _input: vx_image,
-    _magnitudes: vx_tensor,
-    _bins: vx_tensor,
-    _params: *const c_void,
-    _hog_param_size: vx_size,
-    _features: vx_tensor,
+    graph: vx_graph,
+    input: vx_image,
+    magnitudes: vx_tensor,
+    bins: vx_tensor,
+    params: *const c_void,
+    hog_param_size: vx_size,
+    features: vx_tensor,
 ) -> vx_node {
-    std::ptr::null_mut()
+    if graph.is_null() || input.is_null() || magnitudes.is_null() || bins.is_null() || features.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut params_size_scalar = crate::unified_c_api::vxCreateScalarWithSize(
+            context,
+            crate::c_api::VX_TYPE_SIZE,
+            &hog_param_size as *const _ as *const c_void,
+            std::mem::size_of::<vx_size>(),
+        );
+        if params_size_scalar.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.hog_features",
+            &[
+                input as vx_reference,
+                magnitudes as vx_reference,
+                bins as vx_reference,
+                params as vx_reference,
+                params_size_scalar as vx_reference,
+                features as vx_reference,
+            ],
+        );
+
+        crate::c_api_data::vxReleaseScalar(&mut params_size_scalar);
+        node
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn vxuHOGFeatures(
-    _context: vx_context,
-    _input: vx_image,
-    _magnitudes: vx_tensor,
-    _bins: vx_tensor,
-    _params: *const c_void,
-    _hog_param_size: vx_size,
-    _features: vx_tensor,
+    context: vx_context,
+    input: vx_image,
+    magnitudes: vx_tensor,
+    bins: vx_tensor,
+    params: *const c_void,
+    hog_param_size: vx_size,
+    features: vx_tensor,
 ) -> vx_status {
-    VX_ERROR_NOT_IMPLEMENTED
+    if context.is_null() || magnitudes.is_null() || bins.is_null() || params.is_null() || features.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    unsafe {
+        crate::vxu_impl::vxu_hog_features_impl(
+            context,
+            input,
+            magnitudes as vx_reference,
+            bins as vx_reference,
+            params,
+            hog_param_size,
+            features as vx_reference,
+        )
+    }
 }
 
 // ---- Immediate wrappers around already-implemented graph nodes ----

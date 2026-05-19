@@ -10924,60 +10924,20 @@ pub fn vxu_bilateral_filter_impl(
             None
         };
 
-        // For Q78/S16, compute min/max to build adaptive color weight table
-        let mut color_weights_s16: Option<(Vec<f32>, f32)> = if is_s16 {
-            let gauss_color_coeff = -0.5f64 / (sigma_values as f64 * sigma_values as f64);
-            let mut min_val = i16::MAX;
-            let mut max_val = i16::MIN;
-            if num_dims == 2 {
-                for y in 0..height {
-                    for x in 0..width {
-                        let offset = (y as usize) * strides[1] + (x as usize) * strides[0];
-                        let val = *(src_data_buf.as_ptr().add(offset) as *const i16);
-                        if val < min_val { min_val = val; }
-                        if val > max_val { max_val = val; }
-                    }
-                }
-            } else if num_dims == 3 {
-                for y in 0..height {
-                    for x in 0..width {
-                        for c in 0..channels {
-                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
-                            let val = *(src_data_buf.as_ptr().add(offset) as *const i16);
-                            if val < min_val { min_val = val; }
-                            if val > max_val { max_val = val; }
-                        }
-                    }
-                }
+        // For Q78/S16, convert to float space (divide by 256.0) and compute
+        // color weight table in float space. The sigma_values is also in Q7.8
+        // in the CTS, so we convert it to float as well.
+        let sigma_values_float = sigma_values as f32 / 256.0;
+        let mut color_weights_s16: Option<Vec<f32>> = if is_s16 {
+            let gauss_color_coeff = -0.5f64 / (sigma_values_float as f64 * sigma_values_float as f64);
+            // Build lookup table for Q7.8 differences: diff ranges [-32768, 32767]
+            // We need enough resolution. Use 65536 bins (covers full i16 range as diffs)
+            let mut cw = vec![0.0f32; 65536];
+            for i in 0..65536 {
+                let diff = (i as f32 - 32768.0) / 256.0; // convert Q7.8 diff to float
+                cw[i] = ((diff as f64) * (diff as f64) * gauss_color_coeff).exp() as f32;
             }
-            let range = (max_val - min_val) as f32;
-            if range.abs() < f32::EPSILON {
-                // All same value — just copy input to output
-                dst_data_buf.copy_from_slice(&src_data_buf);
-                let mut data_map = match TENSOR_DATA.lock() {
-                    Ok(g) => g,
-                    Err(_) => return VX_ERROR_INVALID_REFERENCE,
-                };
-                if let Some(data) = data_map.get_mut(&dst_addr) {
-                    data.copy_from_slice(&dst_data_buf);
-                }
-                return VX_SUCCESS;
-            }
-            let k_exp_num_bins_per_channel = 1 << 12;
-            let k_exp_num_bins = (k_exp_num_bins_per_channel * channels) as i32;
-            let scale_index = k_exp_num_bins as f32 / (range * channels as f32);
-            let mut cw = vec![0.0f32; (k_exp_num_bins + 2) as usize];
-            let mut last_exp_val = 1.0f32;
-            for i in 0..(k_exp_num_bins + 2) as usize {
-                if last_exp_val > 0.0 {
-                    let val = i as f32 / scale_index;
-                    cw[i] = (val as f64 * val as f64 * gauss_color_coeff).exp() as f32;
-                    last_exp_val = cw[i];
-                } else {
-                    cw[i] = 0.0;
-                }
-            }
-            Some((cw, scale_index))
+            Some(cw)
         } else {
             None
         };
@@ -11019,12 +10979,10 @@ pub fn vxu_bilateral_filter_impl(
                                 let diff = (neighbor_val - center_val).abs() as usize;
                                 sw * color_weights_u8.as_ref().unwrap()[diff]
                             } else {
-                                let (cw, scale_index) = color_weights_s16.as_ref().unwrap();
-                                let alpha = (neighbor_val - center_val).abs() as f32 * *scale_index;
-                                let idx = alpha.floor() as usize;
-                                let frac = alpha - idx as f32;
-                                let idx = idx.min(cw.len() - 2);
-                                sw * (cw[idx] + frac * (cw[idx + 1] - cw[idx]))
+                                // Q7.8: compute difference in Q7.8 space, then lookup
+                                let diff = (neighbor_val - center_val).abs() as i32;
+                                let diff_idx = (diff + 32768).max(0).min(65535) as usize;
+                                sw * color_weights_s16.as_ref().unwrap()[diff_idx]
                             };
                             sum += neighbor_val as f32 * w;
                             wsum += w;
@@ -11090,16 +11048,14 @@ pub fn vxu_bilateral_filter_impl(
                                 let idx = diff.min(255);
                                 sw * color_weights_u8.as_ref().unwrap()[idx]
                             } else {
+                                // Q7.8: compute total difference in Q7.8 space, then lookup
                                 let mut total_diff = 0i32;
                                 for c in 0..channels {
                                     total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs();
                                 }
-                                let (cw, scale_index) = color_weights_s16.as_ref().unwrap();
-                                let alpha = total_diff as f32 * *scale_index;
-                                let idx = alpha.floor() as usize;
-                                let frac = alpha - idx as f32;
-                                let idx = idx.min(cw.len() - 2);
-                                sw * (cw[idx] + frac * (cw[idx + 1] - cw[idx]))
+                                // total_diff is already in Q7.8 units; clamp to valid index range
+                                let diff_idx = (total_diff as i32 + 32768).max(0).min(65535) as usize;
+                                sw * color_weights_s16.as_ref().unwrap()[diff_idx]
                             };
 
                             for c in 0..channels {
