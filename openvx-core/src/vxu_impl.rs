@@ -10777,13 +10777,14 @@ pub fn vxu_lbp_impl(_ctx: vx_context, input: vx_image, format_scalar: vx_scalar,
 /// Applies a bilateral filter to a tensor (U8 or Q78/S16).
 /// For each pixel, computes weighted average of neighbors within diameter radius,
 /// where weights are product of spatial Gaussian and range Gaussian.
-pub fn vxu_bilateral_filter_impl(
+pub fn vxu_bilateral_filter_impl_with_border(
     _context: vx_context,
     src: vx_reference,
     diameter: vx_int32,
     sigma_space: vx_float32,
     sigma_values: vx_float32,
     dst: vx_reference,
+    border: Option<crate::unified_c_api::vx_border_t>,
 ) -> vx_status {
     if src.is_null() || dst.is_null() {
         return VX_ERROR_INVALID_PARAMETERS;
@@ -10796,9 +10797,23 @@ pub fn vxu_bilateral_filter_impl(
     }
 
     use crate::unified_c_api::{TENSORS, TENSOR_DATA, VX_TYPE_TENSOR, VX_TENSOR_DATA_TYPE, VX_TENSOR_DIMS, VX_TENSOR_NUMBER_OF_DIMS};
+    use crate::vxu_impl::BorderMode;
 
     let src_addr = src as usize;
     let dst_addr = dst as usize;
+
+    let border_mode = match border {
+        Some(b) => match b.mode {
+            0x0000C000 => BorderMode::Undefined,
+            0x0000C001 => {
+                let val = unsafe { b.constant_value.U8 };
+                BorderMode::Constant(val)
+            }
+            0x0000C002 => BorderMode::Replicate,
+            _ => BorderMode::Undefined,
+        },
+        None => BorderMode::Undefined,
+    };
 
     unsafe {
         let src_t = {
@@ -10857,7 +10872,7 @@ pub fn vxu_bilateral_filter_impl(
         let dims = &src_t.dims;
         let data_type = src_t.data_type;
 
-        // Only support U8 (VX_TYPE_UINT8) and Q78/S16 (VX_TYPE_INT16) for now
+        // Only support U8 (VX_TYPE_UINT8) and Q78/S16 (VX_TYPE_INT16)
         let is_u8 = data_type == VX_TYPE_UINT8;
         let is_s16 = data_type == VX_TYPE_INT16;
         if !is_u8 && !is_s16 {
@@ -10866,34 +10881,33 @@ pub fn vxu_bilateral_filter_impl(
 
         let element_size = if is_u8 { 1 } else { 2 };
 
-        // Build stride array (row-major, last dim contiguous)
+        // Build strides to match CTS row-major layout
+        // 2D: dims=[W,H], strides=[1, W]
+        // 3D: dims=[C,W,H], strides=[1, C, W*C]
         let mut strides = vec![0usize; num_dims];
-        strides[num_dims - 1] = element_size;
-        for i in (0..num_dims - 1).rev() {
-            strides[i] = strides[i + 1] * dims[i + 1];
+        strides[0] = element_size;
+        for i in 1..num_dims {
+            strides[i] = strides[i - 1] * dims[i - 1];
         }
+        let out_strides = strides.clone();
 
         let radius = (diameter / 2) as i32;
 
-        // Precompute spatial weights
+        // --- Precompute spatial weights (matches CTS calcSpaceWeight) ---
         let gauss_space_coeff = -0.5f64 / (sigma_space as f64 * sigma_space as f64);
-        let mut space_weights = vec![vec![0.0f32; diameter as usize]; diameter as usize];
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                let dist = ((dy * dy + dx * dx) as f64).sqrt();
-                if dist >= radius as f64 + 1e-6 {
-                    space_weights[(dy + radius) as usize][(dx + radius) as usize] = 0.0;
-                } else {
-                    space_weights[(dy + radius) as usize][(dx + radius) as usize] =
-                        (dist * dist * gauss_space_coeff).exp() as f32;
+        let mut space_weight = vec![0.0f32; (diameter * diameter) as usize];
+        for i in -radius..=radius {
+            for j in -radius..=radius {
+                let r = ((i * i + j * j) as f64).sqrt();
+                if r > radius as f64 {
+                    continue;
                 }
+                space_weight[((i + radius) * diameter + (j + radius)) as usize] =
+                    (r * r * gauss_space_coeff).exp() as f32;
             }
         }
 
-        // Determine processing region based on border mode
-        // For tensors, we use VX_BORDER_REPLICATE by default (mirror edge handling)
-        // The CTS test uses VX_BORDER_UNDEFINED (only processes interior)
-        // Let's match the CTS: only interior pixels, edges untouched (or zeroed)
+        // --- Determine processing region based on border mode ---
         let (width, height) = if num_dims >= 2 {
             (dims[num_dims - 2] as i32, dims[num_dims - 1] as i32)
         } else {
@@ -10906,45 +10920,155 @@ pub fn vxu_bilateral_filter_impl(
             1
         };
 
-        let low_x = radius;
-        let high_x = if width >= radius { width - radius } else { 0 };
-        let low_y = radius;
-        let high_y = if height >= radius { height - radius } else { 0 };
+        let (low_x, high_x, low_y, high_y) = if border_mode == BorderMode::Undefined {
+            let lx = radius;
+            let hx = if width >= radius { width - radius } else { 0 };
+            let ly = radius;
+            let hy = if height >= radius { height - radius } else { 0 };
+            (lx, hx, ly, hy)
+        } else {
+            (0, width, 0, height)
+        };
 
-        // Precompute color/range weights for U8 (lookup table)
-        let color_weights_u8: Option<Vec<f32>> = if is_u8 {
-            let gauss_color_coeff = -0.5f64 / (sigma_values as f64 * sigma_values as f64);
-            let mut cw = vec![0.0f32; 256];
+        // --- Precompute color/range weights ---
+        let gauss_color_coeff = -0.5f64 / (sigma_values as f64 * sigma_values as f64);
+
+        let color_weight_u8: Option<Vec<f32>> = if is_u8 {
+            // CTS builds: color_weight[c + i * cn] = exp(i*i * coeff) for all c
+            // Then looks up by raw abs_diff (0..255), NOT by c + abs_diff*cn.
+            // For cn>1 this creates a buggy table that we must reproduce exactly.
+            let size = (channels * 256) as usize;
+            let mut cw = vec![0.0f32; size];
             for i in 0..256 {
-                let diff = i as f64;
-                cw[i] = (diff * diff * gauss_color_coeff).exp() as f32;
+                let x = (i * i) as f64;
+                let w = (x * gauss_color_coeff).exp() as f32;
+                for c in 0..channels {
+                    cw[(c + i * channels) as usize] = w;
+                }
             }
             Some(cw)
         } else {
             None
         };
 
-        // For Q78/S16, convert to float space (divide by 256.0) and compute
-        // color weight table in float space. The sigma_values is also in Q7.8
-        // in the CTS, so we convert it to float as well.
-        let sigma_values_float = sigma_values as f32 / 256.0;
-        let mut color_weights_s16: Option<Vec<f32>> = if is_s16 {
-            let gauss_color_coeff = -0.5f64 / (sigma_values_float as f64 * sigma_values_float as f64);
-            // Build lookup table for Q7.8 differences: diff ranges [-32768, 32767]
-            // We need enough resolution. Use 65536 bins (covers full i16 range as diffs)
-            let mut cw = vec![0.0f32; 65536];
-            for i in 0..65536 {
-                let diff = (i as f32 - 32768.0) / 256.0; // convert Q7.8 diff to float
-                cw[i] = ((diff as f64) * (diff as f64) * gauss_color_coeff).exp() as f32;
+        // For S16: compute min/max, build (kExpNumBins+2) table with linear interpolation
+        let color_weight_s16: Option<Vec<f32>> = if is_s16 {
+            // Find min/max in the image
+            let mut min_val = 32767i16;
+            let mut max_val = -32768i16;
+            if num_dims == 2 {
+                for y in 0..height {
+                    for x in 0..width {
+                        let offset = (y as usize) * strides[1] + (x as usize) * strides[0];
+                        let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                        if v < min_val { min_val = v; }
+                        if v > max_val { max_val = v; }
+                    }
+                }
+            } else if num_dims == 3 {
+                for y in 0..height {
+                    for x in 0..width {
+                        for c in 0..channels {
+                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                            let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                            if v < min_val { min_val = v; }
+                            if v > max_val { max_val = v; }
+                        }
+                    }
+                }
+            }
+
+            let range = (max_val as i32 - min_val as i32) as f32;
+            if range.abs() < f32::EPSILON {
+                // Uniform image: just copy input to output for processed region
+                for y in low_y..high_y {
+                    for x in low_x..high_x {
+                        if num_dims == 2 {
+                            let off_in = (y as usize) * strides[1] + (x as usize) * strides[0];
+                            let off_out = (y as usize) * out_strides[1] + (x as usize) * out_strides[0];
+                            let v = *(src_data_buf.as_ptr().add(off_in) as *const i16);
+                            *(dst_data_buf.as_mut_ptr().add(off_out) as *mut i16) = v;
+                        } else {
+                            for c in 0..channels {
+                                let off_in = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                                let off_out = (y as usize) * out_strides[2] + (x as usize) * out_strides[1] + (c as usize) * out_strides[0];
+                                let v = *(src_data_buf.as_ptr().add(off_in) as *const i16);
+                                *(dst_data_buf.as_mut_ptr().add(off_out) as *mut i16) = v;
+                            }
+                        }
+                    }
+                }
+                // Write back dst buffer
+                {
+                    let mut data_map = match TENSOR_DATA.lock() {
+                        Ok(g) => g,
+                        Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                    };
+                    if let Some(data) = data_map.get_mut(&dst_addr) {
+                        *data = dst_data_buf;
+                    }
+                }
+                return VX_SUCCESS;
+            }
+
+            let k_exp_num_bins_per_channel = 1i32 << 12; // 4096
+            let k_exp_num_bins = k_exp_num_bins_per_channel * channels;
+            let len = range * channels as f32;
+            let scale_index = k_exp_num_bins as f32 / len;
+            let table_size = (k_exp_num_bins + 2) as usize;
+            let mut cw = vec![0.0f32; table_size];
+            let mut last_exp_val = 1.0f32;
+            for i in 0..table_size {
+                if last_exp_val > 0.0 {
+                    let val = i as f64 / scale_index as f64;
+                    cw[i] = (val * val * gauss_color_coeff).exp() as f32;
+                    last_exp_val = cw[i];
+                } else {
+                    cw[i] = 0.0;
+                }
             }
             Some(cw)
         } else {
             None
         };
 
-        // Process pixels
+        let scale_index_s16: f32 = if is_s16 {
+            let k_exp_num_bins = (1i32 << 12) * channels;
+            let mut min_val = 32767i16;
+            let mut max_val = -32768i16;
+            if num_dims == 2 {
+                for y in 0..height {
+                    for x in 0..width {
+                        let offset = (y as usize) * strides[1] + (x as usize) * strides[0];
+                        let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                        if v < min_val { min_val = v; }
+                        if v > max_val { max_val = v; }
+                    }
+                }
+            } else if num_dims == 3 {
+                for y in 0..height {
+                    for x in 0..width {
+                        for c in 0..channels {
+                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                            let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                            if v < min_val { min_val = v; }
+                            if v > max_val { max_val = v; }
+                        }
+                    }
+                }
+            }
+            let range = (max_val as i32 - min_val as i32) as f32;
+            if range.abs() < f32::EPSILON {
+                0.0
+            } else {
+                k_exp_num_bins as f32 / (range * channels as f32)
+            }
+        } else {
+            0.0
+        };
+
+        // --- Process pixels ---
         if num_dims == 2 {
-            // 2D grayscale tensor
             for y in low_y..high_y {
                 for x in low_x..high_x {
                     let center_offset = (y as usize) * strides[1] + (x as usize) * strides[0];
@@ -10957,54 +11081,90 @@ pub fn vxu_bilateral_filter_impl(
                     let mut sum = 0.0f32;
                     let mut wsum = 0.0f32;
 
-                    for dy in -radius..=radius {
-                        for dx in -radius..=radius {
-                            let sw = space_weights[(dy + radius) as usize][(dx + radius) as usize];
+                    for radius_y in -radius..=radius {
+                        for radius_x in -radius..=radius {
+                            let r = ((radius_y * radius_y + radius_x * radius_x) as f64).sqrt();
+                            if r > radius as f64 {
+                                continue;
+                            }
+                            let sw = space_weight[((radius_y + radius) * diameter + (radius_x + radius)) as usize];
                             if sw == 0.0 {
                                 continue;
                             }
-                            let nx = x + dx;
-                            let ny = y + dy;
-                            // Clamp to bounds (replicate border)
-                            let nx = nx.max(0).min(width - 1);
-                            let ny = ny.max(0).min(height - 1);
-                            let n_offset = (ny as usize) * strides[1] + (nx as usize) * strides[0];
-                            let neighbor_val = if is_u8 {
-                                *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
-                            } else {
-                                *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+
+                            let mut neighbor_x = x + radius_x;
+                            let mut neighbor_y = y + radius_y;
+
+                            let neighbor_val = match border_mode {
+                                BorderMode::Replicate => {
+                                    let nx = neighbor_x.max(0).min(width - 1);
+                                    let ny = neighbor_y.max(0).min(height - 1);
+                                    let n_offset = (ny as usize) * strides[1] + (nx as usize) * strides[0];
+                                    if is_u8 {
+                                        *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                    } else {
+                                        *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                                    }
+                                }
+                                BorderMode::Constant(val) => {
+                                    if neighbor_x < 0 || neighbor_y < 0 || neighbor_x >= width || neighbor_y >= height {
+                                        val as i32
+                                    } else {
+                                        let n_offset = (neighbor_y as usize) * strides[1] + (neighbor_x as usize) * strides[0];
+                                        if is_u8 {
+                                            *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                        } else {
+                                            *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // UNDEFINED: should never reach here since we only process interior
+                                    let nx = neighbor_x.max(0).min(width - 1);
+                                    let ny = neighbor_y.max(0).min(height - 1);
+                                    let n_offset = (ny as usize) * strides[1] + (nx as usize) * strides[0];
+                                    if is_u8 {
+                                        *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                    } else {
+                                        *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                                    }
+                                }
                             };
 
                             let w = if is_u8 {
                                 let diff = (neighbor_val - center_val).abs() as usize;
-                                sw * color_weights_u8.as_ref().unwrap()[diff]
+                                sw * color_weight_u8.as_ref().unwrap()[diff]
                             } else {
-                                // Q7.8: compute difference in Q7.8 space, then lookup
-                                let diff = (neighbor_val - center_val).abs() as i32;
-                                let diff_idx = (diff + 32768).max(0).min(65535) as usize;
-                                sw * color_weights_s16.as_ref().unwrap()[diff_idx]
+                                let abs_diff = (neighbor_val - center_val).abs() as f32;
+                                let alpha = abs_diff * scale_index_s16;
+                                let idx = alpha as i32;
+                                let frac = alpha - idx as f32;
+                                let cw = color_weight_s16.as_ref().unwrap();
+                                let idx = idx.max(0).min((cw.len() - 2) as i32) as usize;
+                                let w = cw[idx] + frac * (cw[idx + 1] - cw[idx]);
+                                sw * w
                             };
+
                             sum += neighbor_val as f32 * w;
                             wsum += w;
                         }
                     }
 
+                    let out_offset = (y as usize) * out_strides[1] + (x as usize) * out_strides[0];
                     if wsum > 0.0 {
                         if is_u8 {
                             let result = (sum / wsum).round().max(0.0).min(255.0) as u8;
-                            *(dst_data_buf.as_mut_ptr().add(center_offset) as *mut u8) = result;
+                            *(dst_data_buf.as_mut_ptr().add(out_offset) as *mut u8) = result;
                         } else {
                             let result = (sum / wsum).round().max(i16::MIN as f32).min(i16::MAX as f32) as i16;
-                            *(dst_data_buf.as_mut_ptr().add(center_offset) as *mut i16) = result;
+                            *(dst_data_buf.as_mut_ptr().add(out_offset) as *mut i16) = result;
                         }
                     }
                 }
             }
         } else if num_dims == 3 {
-            // 3D tensor (channels, width, height) — e.g., RGB image as tensor
             for y in low_y..high_y {
                 for x in low_x..high_x {
-                    // Read center values for each channel
                     let mut center_vals = vec![0i32; channels as usize];
                     for c in 0..channels {
                         let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
@@ -11018,25 +11178,56 @@ pub fn vxu_bilateral_filter_impl(
                     let mut sums = vec![0.0f32; channels as usize];
                     let mut wsum = 0.0f32;
 
-                    for dy in -radius..=radius {
-                        for dx in -radius..=radius {
-                            let sw = space_weights[(dy + radius) as usize][(dx + radius) as usize];
+                    for radius_y in -radius..=radius {
+                        for radius_x in -radius..=radius {
+                            let r = ((radius_y * radius_y + radius_x * radius_x) as f64).sqrt();
+                            if r > radius as f64 {
+                                continue;
+                            }
+                            let sw = space_weight[((radius_y + radius) * diameter + (radius_x + radius)) as usize];
                             if sw == 0.0 {
                                 continue;
                             }
-                            let nx = x + dx;
-                            let ny = y + dy;
-                            let nx = nx.max(0).min(width - 1);
-                            let ny = ny.max(0).min(height - 1);
 
                             let mut neighbor_vals = vec![0i32; channels as usize];
                             for c in 0..channels {
-                                let offset = (ny as usize) * strides[2] + (nx as usize) * strides[1] + (c as usize) * strides[0];
-                                neighbor_vals[c as usize] = if is_u8 {
-                                    *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
-                                } else {
-                                    *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                let mut nx = x + radius_x;
+                                let mut ny = y + radius_y;
+                                let nv = match border_mode {
+                                    BorderMode::Replicate => {
+                                        let nx2 = nx.max(0).min(width - 1);
+                                        let ny2 = ny.max(0).min(height - 1);
+                                        let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
+                                        if is_u8 {
+                                            *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                        } else {
+                                            *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                        }
+                                    }
+                                    BorderMode::Constant(val) => {
+                                        if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                                            val as i32
+                                        } else {
+                                            let offset = (ny as usize) * strides[2] + (nx as usize) * strides[1] + (c as usize) * strides[0];
+                                            if is_u8 {
+                                                *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                            } else {
+                                                *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        let nx2 = nx.max(0).min(width - 1);
+                                        let ny2 = ny.max(0).min(height - 1);
+                                        let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
+                                        if is_u8 {
+                                            *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                        } else {
+                                            *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                        }
+                                    }
                                 };
+                                neighbor_vals[c as usize] = nv;
                             }
 
                             let w = if is_u8 {
@@ -11045,17 +11236,20 @@ pub fn vxu_bilateral_filter_impl(
                                     total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs();
                                 }
                                 let diff = total_diff as usize;
-                                let idx = diff.min(255);
-                                sw * color_weights_u8.as_ref().unwrap()[idx]
+                                let idx = diff.min((channels * 256 - 1) as usize);
+                                sw * color_weight_u8.as_ref().unwrap()[idx]
                             } else {
-                                // Q7.8: compute total difference in Q7.8 space, then lookup
-                                let mut total_diff = 0i32;
+                                let mut total_diff = 0f32;
                                 for c in 0..channels {
-                                    total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs();
+                                    total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs() as f32;
                                 }
-                                // total_diff is already in Q7.8 units; clamp to valid index range
-                                let diff_idx = (total_diff as i32 + 32768).max(0).min(65535) as usize;
-                                sw * color_weights_s16.as_ref().unwrap()[diff_idx]
+                                let alpha = total_diff * scale_index_s16;
+                                let idx = alpha as i32;
+                                let frac = alpha - idx as f32;
+                                let cw = color_weight_s16.as_ref().unwrap();
+                                let idx = idx.max(0).min((cw.len() - 2) as i32) as usize;
+                                let w = cw[idx] + frac * (cw[idx + 1] - cw[idx]);
+                                sw * w
                             };
 
                             for c in 0..channels {
@@ -11067,7 +11261,7 @@ pub fn vxu_bilateral_filter_impl(
 
                     if wsum > 0.0 {
                         for c in 0..channels {
-                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                            let offset = (y as usize) * out_strides[2] + (x as usize) * out_strides[1] + (c as usize) * out_strides[0];
                             if is_u8 {
                                 let result = (sums[c as usize] / wsum).round().max(0.0).min(255.0) as u8;
                                 *(dst_data_buf.as_mut_ptr().add(offset) as *mut u8) = result;
@@ -11079,23 +11273,50 @@ pub fn vxu_bilateral_filter_impl(
                     }
                 }
             }
-        } else {
-            return VX_ERROR_INVALID_PARAMETERS;
         }
 
-        // Write back dst data
-        let mut data_map = match TENSOR_DATA.lock() {
-            Ok(g) => g,
-            Err(_) => return VX_ERROR_INVALID_REFERENCE,
-        };
-        if let Some(data) = data_map.get_mut(&dst_addr) {
-            data.copy_from_slice(&dst_data_buf);
+        // Write back dst buffer
+        {
+            let mut data_map = match TENSOR_DATA.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            if let Some(data) = data_map.get_mut(&dst_addr) {
+                *data = dst_data_buf;
+            }
         }
-
-        VX_SUCCESS
     }
+
+    VX_SUCCESS
 }
 
+/// Backward-compatible wrapper without border (reads border from context)
+pub fn vxu_bilateral_filter_impl(
+    context: vx_context,
+    src: vx_reference,
+    diameter: vx_int32,
+    sigma_space: vx_float32,
+    sigma_values: vx_float32,
+    dst: vx_reference,
+) -> vx_status {
+    let border = get_border_from_context(context);
+    // Convert BorderMode back to vx_border_t for the _with_border variant
+    let border_vx = match border {
+        BorderMode::Undefined => crate::unified_c_api::vx_border_t {
+            mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
+            constant_value: unsafe { crate::c_api_data::vx_pixel_value_t { U8: 0 } },
+        },
+        BorderMode::Replicate => crate::unified_c_api::vx_border_t {
+            mode: crate::unified_c_api::VX_BORDER_REPLICATE,
+            constant_value: unsafe { crate::c_api_data::vx_pixel_value_t { U8: 0 } },
+        },
+        BorderMode::Constant(val) => crate::unified_c_api::vx_border_t {
+            mode: crate::unified_c_api::VX_BORDER_CONSTANT,
+            constant_value: unsafe { crate::c_api_data::vx_pixel_value_t { U8: val } },
+        },
+    };
+    vxu_bilateral_filter_impl_with_border(context, src, diameter, sigma_space, sigma_values, dst, Some(border_vx))
+}
 /// ===========================================================================
 /// Enhanced Vision: HOGCells
 /// ===========================================================================
@@ -11193,9 +11414,11 @@ pub fn vxu_hog_cells_impl(
         };
 
         // Compute gradient magnitudes and orientations per pixel, accumulate per cell
-        let mut mag_per_cell = vec![0.0f32; num_cells_x * num_cells_y];
-        let mut bins_per_cell = vec![0.0f32; num_cells_x * num_cells_y * bins_num];
+        // CTS reference: accumulate directly into INT16 arrays (truncation at each pixel)
+        let mut mag_per_cell = vec![0i16; num_cells_x * num_cells_y];
+        let mut bins_per_cell = vec![0i16; num_cells_x * num_cells_y * bins_num];
         let num_div_360 = bins_num as f32 / 360.0f32;
+        let cell_area = (cell_w * cell_h) as f32;
 
         for y in 0..height {
             for x in 0..width {
@@ -11227,10 +11450,10 @@ pub fn vxu_hog_cells_impl(
                 let mag_idx = celly * num_cells_x + cellx;
                 let bins_idx = mag_idx * bins_num + bin;
 
-                // CTS reference: divide by (cell_width * cell_height) when accumulating
-                let cell_area = (cell_w * cell_h) as f32;
-                mag_per_cell[mag_idx] += magnitude / cell_area;
-                bins_per_cell[bins_idx] += magnitude / cell_area;
+                // CTS reference: divide by (cell_width * cell_height) and truncate to int16
+                let contrib = (magnitude / cell_area) as i16;
+                mag_per_cell[mag_idx] = mag_per_cell[mag_idx].saturating_add(contrib);
+                bins_per_cell[bins_idx] = bins_per_cell[bins_idx].saturating_add(contrib);
             }
         }
 
@@ -11240,14 +11463,14 @@ pub fn vxu_hog_cells_impl(
             None => return VX_ERROR_INVALID_REFERENCE,
         };
 
-        // Magnitudes: average per cell (store as INT16, Q78 fixed-point like CTS)
+        // Magnitudes: store as raw INT16 (accumulated with truncation per pixel)
         if let Some(mag_data) = data_map.get_mut(&mag_addr) {
             let expected = num_cells_x * num_cells_y * 2;
             if mag_data.len() < expected {
                 mag_data.resize(expected, 0);
             }
             for i in 0..(num_cells_x * num_cells_y) {
-                let val = (mag_per_cell[i] * 256.0).round() as i16;
+                let val = mag_per_cell[i];
                 let bytes = val.to_le_bytes();
                 mag_data[i * 2] = bytes[0];
                 mag_data[i * 2 + 1] = bytes[1];
@@ -11260,7 +11483,7 @@ pub fn vxu_hog_cells_impl(
                 bins_data.resize(expected, 0);
             }
             for i in 0..(num_cells_x * num_cells_y * bins_num) {
-                let val = (bins_per_cell[i] * 256.0).round() as i16;
+                let val = bins_per_cell[i];
                 let bytes = val.to_le_bytes();
                 bins_data[i * 2] = bytes[0];
                 bins_data[i * 2 + 1] = bytes[1];
@@ -11346,7 +11569,7 @@ pub fn vxu_hog_features_impl(
             let offset = i * 2;
             if offset + 1 < mag_data.len() {
                 let val = i16::from_le_bytes([mag_data[offset], mag_data[offset + 1]]);
-                mag_ref[i] = val as f32 / 256.0;
+                mag_ref[i] = val as f32;
             }
         }
 
@@ -11359,9 +11582,24 @@ pub fn vxu_hog_features_impl(
             let offset = i * 2;
             if offset + 1 < bins_data.len() {
                 let val = i16::from_le_bytes([bins_data[offset], bins_data[offset + 1]]);
-                bins_ref[i] = val as f32 / 256.0;
+                bins_ref[i] = val as f32;
             }
         }
+
+        // Compute number of windows
+        let num_windows_w = if width >= window_w { (width - window_w) / window_stride + 1 } else { 0 };
+        let num_windows_h = if height >= window_h { (height - window_h) / window_stride + 1 } else { 0 };
+        let blocks_per_window_w = if window_w >= block_w { (window_w - block_w) / block_stride + 1 } else { 0 };
+        let blocks_per_window_h = if window_h >= block_h { (window_h - block_h) / block_stride + 1 } else { 0 };
+        let cells_per_block_w = block_w / cell_w;
+        let cells_per_block_h = block_h / cell_h;
+
+        if num_windows_w == 0 || num_windows_h == 0 || blocks_per_window_w == 0 || blocks_per_window_h == 0 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let feature_dim = blocks_per_window_w * blocks_per_window_h * cells_per_block_w * cells_per_block_h * bins_num;
+        let total_features = num_windows_w * num_windows_h * feature_dim;
 
         // Compute number of windows
         let num_windows_w = if width >= window_w { (width - window_w) / window_stride + 1 } else { 0 };
@@ -11392,6 +11630,7 @@ pub fn vxu_hog_features_impl(
         }
 
         let mut features_ref = vec![0.0f32; total_features];
+        let mut features_q78 = vec![0i16; total_features]; // Store as Q7.8 to match CTS
         let mut block_index_count: usize = 0;
 
         for win_h in 0..num_windows_h {
@@ -11421,7 +11660,7 @@ pub fn vxu_hog_features_impl(
                         }
                         sum = (sum + 1e-14).sqrt();
 
-                        // Build block descriptor from cell histograms
+                        // Build block descriptor from cell histograms (store as Q7.8 int16)
                         for y in 0..cells_per_block_h {
                             for x in 0..cells_per_block_w {
                                 let bin_idx_cell = bin_idx_blk + (y * n_cells_x + x) * bins_num;
@@ -11430,14 +11669,17 @@ pub fn vxu_hog_features_impl(
                                     if bins_index < bins_ref.len() && block_index_count < features_ref.len() {
                                         let hist_val = bins_ref[bins_index];
                                         let normalized = (hist_val / sum).min(threshold);
-                                        features_ref[block_index_count] = normalized * 256.0;
+                                        // Store as Q7.8 (truncate, matching CTS)
+                                        let q78_val = (normalized * 256.0) as i16;
+                                        features_q78[block_index_count] = q78_val;
+                                        features_ref[block_index_count] = q78_val as f32;
                                         block_index_count += 1;
                                     }
                                 }
                             }
                         }
 
-                        // Renormalize (L2-Hys)
+                        // Renormalize (L2-Hys) using the truncated Q7.8 values
                         let renorm_block_index_end = block_index_count;
                         let mut renorm_sum: f32 = 0.0;
                         for idx in renorm_block_index_st..renorm_block_index_end {
@@ -11450,7 +11692,11 @@ pub fn vxu_hog_features_impl(
                         for idx in renorm_block_index_st..renorm_block_index_end {
                             if idx < features_ref.len() {
                                 let fv = features_ref[idx] / 256.0;
-                                features_ref[idx] = (fv / renorm_sum) * 256.0;
+                                let renorm_val = fv / renorm_sum;
+                                // Store back as Q7.8 (truncate, matching CTS)
+                                let q78_val = (renorm_val * 256.0) as i16;
+                                features_q78[idx] = q78_val;
+                                features_ref[idx] = q78_val as f32;
                             }
                         }
                     }
@@ -11470,7 +11716,7 @@ pub fn vxu_hog_features_impl(
                 feat_data.resize(expected, 0);
             }
             for i in 0..total_features {
-                let val = features_ref[i].round() as i16;
+                let val = features_q78[i];
                 let bytes = val.to_le_bytes();
                 feat_data[i * 2] = bytes[0];
                 feat_data[i * 2 + 1] = bytes[1];

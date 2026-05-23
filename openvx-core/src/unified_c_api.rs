@@ -670,7 +670,8 @@ fn is_data_reference(ref_id: u64) -> bool {
                 || *ref_type == VX_TYPE_THRESHOLD
                 || *ref_type == VX_TYPE_MATRIX
                 || *ref_type == VX_TYPE_CONVOLUTION
-                || *ref_type == VX_TYPE_OBJECT_ARRAY;
+                || *ref_type == VX_TYPE_OBJECT_ARRAY
+                || *ref_type == VX_TYPE_TENSOR;
         }
     }
     // Fallback: check if it's at least an image
@@ -2539,8 +2540,9 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
 
     for (idx, param_id_opt) in param_ids.iter().enumerate() {
         if let Some(param_id) = param_id_opt {
-            // Validate parameter is not null pointer (unless it's an optional param for ChannelCombine or non_max_suppression mask)
-            if *param_id == 0 && !is_channel_combine && !(is_nms && idx == 1) {
+            // Validate parameter is not null pointer (unless it's an optional param)
+            let is_hog_features_optional = kernel_name.contains("hog_features") && idx == 4;
+            if *param_id == 0 && !is_channel_combine && !(is_nms && idx == 1) && !is_hog_features_optional {
                 return Some(VX_ERROR_INVALID_PARAMETERS);
             }
             params.push(*param_id as vx_reference);
@@ -3358,6 +3360,8 @@ fn dispatch_kernel_with_border_impl(
                         }
                     }
                 } else {
+                    // Default to sizeof(vx_hog_t) when param_size is not provided
+                    // (avoids use-after-free from temporary scalar in vxHOGFeaturesNode)
                     std::mem::size_of::<crate::vxu_impl::vx_hog_t>()
                 };
                 let features = params[5] as vx_tensor;
@@ -3420,13 +3424,14 @@ fn dispatch_kernel_with_border_impl(
                 };
                 let dst = params[4];
                 if !src.is_null() && !dst.is_null() {
-                    crate::vxu_impl::vxu_bilateral_filter_impl(
+                    crate::vxu_impl::vxu_bilateral_filter_impl_with_border(
                         unsafe { crate::c_api::vxGetContext(src) },
                         src,
                         diameter,
                         sigma_space,
                         sigma_values,
                         dst,
+                        border,
                     )
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
@@ -13846,16 +13851,6 @@ pub extern "C" fn vxHOGFeaturesNode(
     }
 
     unsafe {
-        let mut params_size_scalar = crate::unified_c_api::vxCreateScalarWithSize(
-            context,
-            crate::c_api::VX_TYPE_SIZE,
-            &hog_param_size as *const _ as *const c_void,
-            std::mem::size_of::<vx_size>(),
-        );
-        if params_size_scalar.is_null() {
-            return std::ptr::null_mut();
-        }
-
         let node = create_node_with_params(
             graph,
             "org.khronos.openvx.hog_features",
@@ -13864,12 +13859,11 @@ pub extern "C" fn vxHOGFeaturesNode(
                 magnitudes as vx_reference,
                 bins as vx_reference,
                 params as vx_reference,
-                params_size_scalar as vx_reference,
+                std::ptr::null_mut(), // param_size - not used, dispatch will default to sizeof(vx_hog_t)
                 features as vx_reference,
             ],
         );
 
-        crate::c_api_data::vxReleaseScalar(&mut params_size_scalar);
         node
     }
 }

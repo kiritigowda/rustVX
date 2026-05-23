@@ -561,15 +561,13 @@ jobs:
   # remaining Enhanced Vision symbols are exposed as link stubs in
   # rustVX so the binary can build; they are not exercised here and will
   # be replaced by real kernels in subsequent phases.
-  # Enhanced Vision — all implemented kernels.
+  # Enhanced Vision — kernels implemented on this branch.
   #
-  # Currently covers: Copy, NonMaxSuppression, HoughLinesP,
-  # MatchTemplate, LBP, plus the baseline Min/Max.
-  #
-  # All 106 Enhanced Vision tests pass (36 Copy + 33 NMS + 15 HoughLinesP
-  # + 11 MatchTemplate + 11 LBP + Min/Max).
+  # PR #36 (hog-kernels): Copy, NonMaxSuppression, HoughLinesP,
+  # MatchTemplate, LBP, HOGCells, HOGFeatures, plus baseline Min/Max.
+  # BilateralFilter is NOT included here — it is implemented in PR #37.
   enhanced-vision:
-    name: "enhanced-vision (106/106 passing)"
+    name: "enhanced-vision (HOG branch)"
     runs-on: ubuntu-22.04
     needs: build
     steps:
@@ -586,7 +584,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 300 ./bin/vx_test_conformance --filter="Copy.*:Nonmaxsuppression.*:Houghlinesp.*:MatchTemplate.*:LBP.*:BilateralFilter.*:HogCells.*:HogFeatures.*:Min.*:Max.*"
+          timeout 300 ./bin/vx_test_conformance --filter="Copy.*:Nonmaxsuppression.*:Houghlinesp.*:MatchTemplate.*:LBP.*:HogCells.*:HogFeatures.*:Min.*:Max.*"
 
   # Performance benchmark using openvx-mark, comparing rustVX against the
   # Khronos OpenVX sample implementation on the SAME runner so the two
