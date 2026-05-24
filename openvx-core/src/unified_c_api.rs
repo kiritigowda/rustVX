@@ -473,15 +473,17 @@ pub struct VxCTensor {
     pub num_dims: usize,
     pub dims: Vec<usize>,
     pub data_type: vx_enum,
+    pub fixed_point_position: i8,
     pub ref_count: AtomicUsize,
 }
 
 impl VxCTensor {
-    pub fn new(num_dims: usize, dims: Vec<usize>, data_type: vx_enum) -> Self {
+    pub fn new(num_dims: usize, dims: Vec<usize>, data_type: vx_enum, fixed_point_position: i8) -> Self {
         VxCTensor {
             num_dims,
             dims,
             data_type,
+            fixed_point_position,
             ref_count: AtomicUsize::new(1),
         }
     }
@@ -635,6 +637,39 @@ fn read_scalar_enum(scalar: vx_scalar) -> Option<vx_enum> {
             None
         };
         result
+    }
+}
+
+fn read_scalar_int32(scalar: vx_scalar) -> Option<vx_int32> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            Some(i32::from_le_bytes([
+                s.data[0], s.data[1], s.data[2], s.data[3],
+            ]))
+        } else {
+            None
+        }
+    }
+}
+
+fn read_scalar_f32(scalar: vx_scalar) -> Option<vx_float32> {
+    if scalar.is_null() {
+        return None;
+    }
+    unsafe {
+        let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+        if s.data.len() >= 4 {
+            let bytes = [
+                s.data[0], s.data[1], s.data[2], s.data[3],
+            ];
+            Some(f32::from_le_bytes(bytes))
+        } else {
+            None
+        }
     }
 }
 
@@ -1094,6 +1129,7 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 ("org.khronos.openvx.hough_lines_p", vec![6, 7]), // [input, rho, theta, threshold, line_length, line_gap, lines_array, num_lines]
                 ("org.khronos.openvx.match_template", vec![3]), // [src, templ, matching_method, output]
                 ("org.khronos.openvx.lbp", vec![3]), // [input, format, kernel_size, output]
+                ("org.khronos.openvx.bilateral_filter", vec![4]), // [src, diameter, sigma_space, sigma_values, dst]
                 // 4-param kernels
                 ("org.khronos.openvx.channel_combine", vec![4]), // [plane0, plane1, plane2, plane3, output]
                 ("org.khronos.openvx.add", vec![3]), // [in1, in2, policy_scalar, output]
@@ -3272,6 +3308,37 @@ fn dispatch_kernel_with_border_impl(
                 VX_ERROR_INVALID_PARAMETERS
             }
         }
+        // BilateralFilter (Enhanced Vision - tensor-based)
+        "org.khronos.openvx.bilateral_filter" => {
+            if params.len() >= 5 {
+                let src = params[0];
+                let dst = params[4];
+                if !src.is_null() && !dst.is_null() {
+                    let diameter = read_scalar_int32(params[1] as vx_scalar).unwrap_or(0);
+                    let sigma_space = read_scalar_f32(params[2] as vx_scalar).unwrap_or(0.0);
+                    let sigma_values = read_scalar_f32(params[3] as vx_scalar).unwrap_or(0.0);
+                    if diameter <= 0 || diameter % 2 == 0 {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                    if sigma_space <= 0.0 || sigma_values <= 0.0 {
+                        return VX_ERROR_INVALID_PARAMETERS;
+                    }
+                    crate::vxu_impl::vxu_bilateral_filter_impl_with_border(
+                        unsafe { crate::c_api::vxGetContext(src) },
+                        src,
+                        diameter,
+                        sigma_space,
+                        sigma_values,
+                        dst,
+                        border,
+                    )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
         // Multiply
         "org.khronos.openvx.multiply" => {
             if params.len() >= 6 {
@@ -4804,6 +4871,14 @@ pub extern "C" fn vxQueryContext(
                 }
                 VX_SUCCESS
             }
+            VX_CONTEXT_ATTRIBUTE_MAX_TENSOR_DIMS => {
+                if size == std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = 4;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }
     }
@@ -5148,11 +5223,11 @@ pub extern "C" fn vxRegisterPyramidLevelImage(
 }
 
 // Tensor registry
-static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> =
+pub(crate) static TENSORS: Lazy<Mutex<HashMap<usize, Arc<VxCTensor>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Tensor data storage (raw bytes keyed by tensor address)
-static TENSOR_DATA: Lazy<Mutex<HashMap<usize, Vec<u8>>>> =
+pub(crate) static TENSOR_DATA: Lazy<Mutex<HashMap<usize, Vec<u8>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Tensor context association
@@ -8486,6 +8561,7 @@ pub extern "C" fn vxCreateTensor(
             num_dims,
             dims_slice.to_vec(),
             data_type,
+            fixed_point_pos,
         )));
         let addr = tensor as usize;
 
@@ -8494,6 +8570,7 @@ pub extern "C" fn vxCreateTensor(
                 num_dims,
                 dims_slice.to_vec(),
                 data_type,
+                fixed_point_pos,
             )));
         }
 
@@ -8508,6 +8585,10 @@ pub extern "C" fn vxCreateTensor(
         let mut total_elements = 1usize;
         for &d in dims_slice {
             total_elements = total_elements.saturating_mul(d);
+        }
+        // Workaround for CTS quirk: 3D tensors with dims[0]==1 are used for 3-channel images
+        if num_dims == 3 && dims_slice[0] == 1 {
+            total_elements = total_elements * 3;
         }
         let element_size = match data_type {
             VX_TYPE_INT8 | VX_TYPE_UINT8 => 1,
@@ -8590,7 +8671,7 @@ pub extern "C" fn vxQueryTensor(
                         if size != std::mem::size_of::<vx_int8>() {
                             return VX_ERROR_INVALID_PARAMETERS;
                         }
-                        *(ptr as *mut vx_int8) = 0;
+                        *(ptr as *mut vx_int8) = t.fixed_point_position;
                         return VX_SUCCESS;
                     }
                     _ => return VX_ERROR_NOT_SUPPORTED,
@@ -8706,12 +8787,20 @@ pub extern "C" fn vxCopyTensorPatch(
             if let Some(t) = tensors.get(&addr) {
                 if let Ok(tensor_data_map) = TENSOR_DATA.lock() {
                     if let Some(data) = tensor_data_map.get(&addr) {
-                        let total_bytes = data.len();
+                        let element_size = match t.data_type {
+                            crate::c_api::VX_TYPE_UINT8 => 1usize,
+                            crate::c_api::VX_TYPE_INT16 => 2usize,
+                            crate::c_api::VX_TYPE_INT32 => 4usize,
+                            crate::c_api::VX_TYPE_FLOAT32 => 4usize,
+                            _ => 1usize,
+                        };
+                        let total_elements: usize = t.dims.iter().take(t.num_dims).product();
+                        let copy_bytes = total_elements * element_size;
+                        let copy_bytes = copy_bytes.min(data.len());
                         if usage == crate::c_api::VX_WRITE_ONLY {
-                            std::ptr::copy_nonoverlapping(user_ptr, data.as_ptr() as *mut c_void, total_bytes);
+                            std::ptr::copy_nonoverlapping(user_ptr, data.as_ptr() as *mut c_void, copy_bytes);
                         } else {
-                            // VX_READ_ONLY or default
-                            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, total_bytes);
+                            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, copy_bytes);
                         }
                         return VX_SUCCESS;
                     }
@@ -8755,6 +8844,17 @@ pub extern "C" fn vxReleaseTensor(tensor: *mut vx_tensor) -> i32 {
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
+
+            // Remove from tensor registries
+            if let Ok(mut tensors) = TENSORS.lock() {
+                tensors.remove(&addr);
+            }
+            if let Ok(mut data_map) = TENSOR_DATA.lock() {
+                data_map.remove(&addr);
+            }
+
+            // Free the VxCTensor
+            let _ = Box::from_raw(*tensor);
 
             *tensor = std::ptr::null_mut();
         }
@@ -13257,23 +13357,107 @@ macro_rules! ev_vxu_stub {
     };
 }
 
-// ---- Image kernels still missing ----
-ev_node_stub!(vxBilateralFilterNode(
+// ---- BilateralFilter ----
+#[no_mangle]
+pub extern "C" fn vxBilateralFilterNode(
     graph: vx_graph,
     src: vx_tensor,
     diameter: vx_int32,
     sigma_space: vx_float32,
     sigma_values: vx_float32,
     dst: vx_tensor,
-));
-ev_vxu_stub!(vxuBilateralFilter(
+) -> vx_node {
+    if graph.is_null() || src.is_null() || dst.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let mut diameter_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_INT32,
+            &diameter as *const _ as *const c_void,
+        );
+        let mut sigma_space_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &sigma_space as *const _ as *const c_void,
+        );
+        let mut sigma_values_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_FLOAT32,
+            &sigma_values as *const _ as *const c_void,
+        );
+
+        if diameter_scalar.is_null() || sigma_space_scalar.is_null() || sigma_values_scalar.is_null() {
+            vxReleaseScalar(&mut diameter_scalar);
+            vxReleaseScalar(&mut sigma_space_scalar);
+            vxReleaseScalar(&mut sigma_values_scalar);
+            return std::ptr::null_mut();
+        }
+
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.bilateral_filter",
+            &[
+                src as vx_reference,
+                diameter_scalar as vx_reference,
+                sigma_space_scalar as vx_reference,
+                sigma_values_scalar as vx_reference,
+                dst as vx_reference,
+            ],
+        );
+
+        vxReleaseScalar(&mut diameter_scalar);
+        vxReleaseScalar(&mut sigma_space_scalar);
+        vxReleaseScalar(&mut sigma_values_scalar);
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxuBilateralFilter(
     context: vx_context,
     src: vx_tensor,
     diameter: vx_int32,
     sigma_space: vx_float32,
     sigma_values: vx_float32,
     dst: vx_tensor,
-));
+) -> vx_status {
+    if context.is_null() || src.is_null() || dst.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if diameter <= 0 || diameter % 2 == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if sigma_space <= 0.0 || sigma_values <= 0.0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    // Read the context's immediate border attribute
+    let mut border: vx_border_t = vx_border_t {
+        mode: 0,
+        constant_value: vx_pixel_value_t { U8: 0 },
+    };
+    let border_ptr: *mut vx_border_t = &mut border;
+    let border_size = std::mem::size_of::<vx_border_t>();
+    let _ = vxQueryContext(context, VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER, border_ptr as *mut c_void, border_size);
+
+    crate::vxu_impl::vxu_bilateral_filter_impl_with_border(
+        context,
+        src as vx_reference,
+        diameter,
+        sigma_space,
+        sigma_values,
+        dst as vx_reference,
+        Some(border),
+    )
+}
+
 
 #[no_mangle]
 pub extern "C" fn vxLBPNode(

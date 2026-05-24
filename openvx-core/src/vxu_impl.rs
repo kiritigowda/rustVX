@@ -10772,3 +10772,475 @@ pub fn vxu_lbp_impl(_ctx: vx_context, input: vx_image, format_scalar: vx_scalar,
         VX_SUCCESS
     }
 }
+
+// ============================================================================
+// Bilateral Filter (Enhanced Vision - tensor-based)
+// ============================================================================
+
+pub fn vxu_bilateral_filter_impl(
+    _context: vx_context,
+    src: vx_reference,
+    diameter: vx_int32,
+    sigma_space: vx_float32,
+    sigma_values: vx_float32,
+    dst: vx_reference,
+) -> vx_status {
+    vxu_bilateral_filter_impl_with_border(_context, src, diameter, sigma_space, sigma_values, dst, None)
+}
+
+pub fn vxu_bilateral_filter_impl_with_border(
+    _context: vx_context,
+    src: vx_reference,
+    diameter: vx_int32,
+    sigma_space: vx_float32,
+    sigma_values: vx_float32,
+    dst: vx_reference,
+    border: Option<crate::unified_c_api::vx_border_t>,
+) -> vx_status {
+    if src.is_null() || dst.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if diameter <= 0 || diameter % 2 == 0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+    if sigma_space <= 0.0 || sigma_values <= 0.0 {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    use crate::unified_c_api::{TENSORS, TENSOR_DATA};
+    use crate::vxu_impl::BorderMode;
+
+    let src_addr = src as usize;
+    let dst_addr = dst as usize;
+
+    let border_mode = match border {
+        Some(b) => match b.mode {
+            0x0000C000 => BorderMode::Undefined,
+            0x0000C001 => {
+                let val = unsafe { b.constant_value.U8 };
+                BorderMode::Constant(val)
+            }
+            0x0000C002 => BorderMode::Replicate,
+            _ => BorderMode::Undefined,
+        },
+        None => BorderMode::Undefined,
+    };
+
+    unsafe {
+        let src_t = {
+            let tensors = match TENSORS.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            match tensors.get(&src_addr) {
+                Some(t) => t.clone(),
+                None => return VX_ERROR_INVALID_REFERENCE,
+            }
+        };
+
+        let dst_t = {
+            let tensors = match TENSORS.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            match tensors.get(&dst_addr) {
+                Some(t) => t.clone(),
+                None => return VX_ERROR_INVALID_REFERENCE,
+            }
+        };
+
+        if src_t.num_dims != dst_t.num_dims {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        for i in 0..src_t.num_dims {
+            if src_t.dims[i] != dst_t.dims[i] {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        }
+
+        let mut src_data_buf: Vec<u8> = Vec::new();
+        let mut dst_data_buf: Vec<u8> = Vec::new();
+        {
+            let data_map = match TENSOR_DATA.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            if let Some(data) = data_map.get(&src_addr) {
+                src_data_buf = data.clone();
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+            if let Some(data) = data_map.get(&dst_addr) {
+                dst_data_buf = data.clone();
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+        }
+
+        let num_dims = src_t.num_dims;
+        let dims = &src_t.dims;
+        let data_type = src_t.data_type;
+
+        let is_u8 = data_type == crate::c_api::VX_TYPE_UINT8;
+        let is_s16 = data_type == crate::c_api::VX_TYPE_INT16;
+        if !is_u8 && !is_s16 {
+            panic!("BilateralFilter: unsupported data_type={}", data_type);
+        }
+
+        let element_size = if is_u8 { 1 } else { 2 };
+
+        let mut strides = vec![0usize; num_dims];
+        let mut out_strides = vec![0usize; num_dims];
+        strides[0] = element_size;
+        out_strides[0] = element_size;
+        for i in 1..num_dims {
+            strides[i] = strides[i - 1] * dims[i - 1];
+            out_strides[i] = out_strides[i - 1] * dst_t.dims[i - 1];
+        }
+
+        let radius = (diameter / 2) as i32;
+
+        let gauss_space_coeff = -0.5f64 / (sigma_space as f64 * sigma_space as f64);
+        let mut space_weight = vec![0.0f32; (diameter * diameter) as usize];
+        for i in -radius..=radius {
+            for j in -radius..=radius {
+                let r_sq = (i * i + j * j) as f64;
+                let r = r_sq.sqrt();
+                if r > radius as f64 {
+                    continue;
+                }
+                space_weight[((i + radius) * diameter + (j + radius)) as usize] =
+                    (r_sq * gauss_space_coeff).exp() as f32;
+            }
+        }
+
+        let (width, height) = if num_dims >= 2 {
+            (dims[num_dims - 2] as i32, dims[num_dims - 1] as i32)
+        } else {
+            (dims[0] as i32, 1)
+        };
+
+        let total_elements = (src_data_buf.len() / element_size) as i32;
+        let channels = if width * height > 0 {
+            total_elements / (width * height)
+        } else {
+            1
+        };
+
+
+        let (low_x, high_x, low_y, high_y) = if border_mode == BorderMode::Undefined {
+            let lx = radius;
+            let hx = if width >= radius { width - radius } else { 0 };
+            let ly = radius;
+            let hy = if height >= radius { height - radius } else { 0 };
+            (lx, hx, ly, hy)
+        } else {
+            (0, width, 0, height)
+        };
+
+        let gauss_color_coeff = -0.5f64 / (sigma_values as f64 * sigma_values as f64);
+
+        let color_weight_u8: Option<Vec<f32>> = if is_u8 {
+            let size = (channels * 256) as usize;
+            let mut cw = vec![0.0f32; size];
+            for i in 0..size {
+                let diff = i as f64;
+                cw[i] = (diff * diff * gauss_color_coeff).exp() as f32;
+            }
+            Some(cw)
+        } else {
+            None
+        };
+
+        let mut color_weight_s16: Option<Vec<f32>> = None;
+        let mut scale_index_s16: f32 = 0.0;
+
+        if is_s16 {
+            let mut min_val = 32767i16;
+            let mut max_val = -32768i16;
+            if num_dims == 2 {
+                for y in 0..height {
+                    for x in 0..width {
+                        let offset = (y as usize) * strides[1] + (x as usize) * strides[0];
+                        let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                        if v < min_val { min_val = v; }
+                        if v > max_val { max_val = v; }
+                    }
+                }
+            } else if num_dims == 3 {
+                for y in 0..height {
+                    for x in 0..width {
+                        for c in 0..channels {
+                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                            let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
+                            if v < min_val { min_val = v; }
+                            if v > max_val { max_val = v; }
+                        }
+                    }
+                }
+            }
+
+            let range = (max_val as i32 - min_val as i32) as f32;
+            if range.abs() < f32::EPSILON {
+                for y in low_y..high_y {
+                    for x in low_x..high_x {
+                        if num_dims == 2 {
+                            let off_in = (y as usize) * strides[1] + (x as usize) * strides[0];
+                            let off_out = (y as usize) * out_strides[1] + (x as usize) * out_strides[0];
+                            let v = *(src_data_buf.as_ptr().add(off_in) as *const i16);
+                            *(dst_data_buf.as_mut_ptr().add(off_out) as *mut i16) = v;
+                        } else {
+                            for c in 0..channels {
+                                let off_in = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                                let off_out = (y as usize) * out_strides[2] + (x as usize) * out_strides[1] + (c as usize) * out_strides[0];
+                                let v = *(src_data_buf.as_ptr().add(off_in) as *const i16);
+                                *(dst_data_buf.as_mut_ptr().add(off_out) as *mut i16) = v;
+                            }
+                        }
+                    }
+                }
+                {
+                    let mut data_map = match TENSOR_DATA.lock() {
+                        Ok(g) => g,
+                        Err(_) => return VX_ERROR_INVALID_REFERENCE,
+                    };
+                    if let Some(data) = data_map.get_mut(&dst_addr) {
+                        *data = dst_data_buf;
+                    }
+                }
+                return VX_SUCCESS;
+            }
+
+            let k_exp_num_bins_per_channel = 1i32 << 12;
+            let k_exp_num_bins = k_exp_num_bins_per_channel * channels;
+            let len = range * channels as f32;
+            scale_index_s16 = k_exp_num_bins as f32 / len;
+            let table_size = (k_exp_num_bins + 2) as usize;
+            let mut cw = vec![0.0f32; table_size];
+            let mut last_exp_val = 1.0f32;
+            for i in 0..table_size {
+                if last_exp_val > 0.0 {
+                    let val = i as f64 / scale_index_s16 as f64;
+                    cw[i] = (val * val * gauss_color_coeff).exp() as f32;
+                    last_exp_val = cw[i];
+                } else {
+                    cw[i] = 0.0;
+                }
+            }
+            color_weight_s16 = Some(cw);
+        }
+
+        if num_dims == 2 {
+            for y in low_y..high_y {
+                for x in low_x..high_x {
+                    let center_offset = (y as usize) * strides[1] + (x as usize) * strides[0];
+                    let center_val = if is_u8 {
+                        *(src_data_buf.as_ptr().add(center_offset) as *const u8) as i32
+                    } else {
+                        *(src_data_buf.as_ptr().add(center_offset) as *const i16) as i32
+                    };
+
+                    let mut sum = 0.0f32;
+                    let mut wsum = 0.0f32;
+
+                    for radius_y in -radius..=radius {
+                        for radius_x in -radius..=radius {
+                            let r_sq = (radius_y * radius_y + radius_x * radius_x) as f64;
+                            let r = r_sq.sqrt();
+                            if r > radius as f64 {
+                                continue;
+                            }
+                            let sw = space_weight[((radius_y + radius) * diameter + (radius_x + radius)) as usize];
+                            if sw == 0.0 {
+                                continue;
+                            }
+
+                            let nx = x + radius_x;
+                            let ny = y + radius_y;
+
+                            let neighbor_val = if border_mode == BorderMode::Replicate {
+                                let nx2 = nx.max(0).min(width - 1);
+                                let ny2 = ny.max(0).min(height - 1);
+                                let n_offset = (ny2 as usize) * strides[1] + (nx2 as usize) * strides[0];
+                                if is_u8 {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                } else {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                                }
+                            } else if let BorderMode::Constant(val) = border_mode {
+                                if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                                    val as i32
+                                } else {
+                                    let n_offset = (ny as usize) * strides[1] + (nx as usize) * strides[0];
+                                    if is_u8 {
+                                        *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                    } else {
+                                        *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                                    }
+                                }
+                            } else {
+                                let nx2 = nx.max(0).min(width - 1);
+                                let ny2 = ny.max(0).min(height - 1);
+                                let n_offset = (ny2 as usize) * strides[1] + (nx2 as usize) * strides[0];
+                                if is_u8 {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                } else {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                                }
+                            };
+
+                            let w = if is_u8 {
+                                let diff = (neighbor_val - center_val).abs() as usize;
+                                let idx = diff.min((channels * 256 - 1) as usize);
+                                sw * color_weight_u8.as_ref().unwrap()[idx]
+                            } else {
+                                let abs_diff = (neighbor_val - center_val).abs() as f32;
+                                let alpha = abs_diff * scale_index_s16;
+                                let idx = alpha as i32;
+                                let frac = alpha - idx as f32;
+                                let cw = color_weight_s16.as_ref().unwrap();
+                                let idx = idx.max(0).min((cw.len() - 2) as i32) as usize;
+                                let w = cw[idx] + frac * (cw[idx + 1] - cw[idx]);
+                                sw * w
+                            };
+
+                            sum += neighbor_val as f32 * w;
+                            wsum += w;
+                        }
+                    }
+
+                    let out_offset = (y as usize) * out_strides[1] + (x as usize) * out_strides[0];
+                    if wsum > 0.0 {
+                        if is_u8 {
+                            let result = (sum / wsum).round().max(0.0).min(255.0) as u8;
+                            *(dst_data_buf.as_mut_ptr().add(out_offset) as *mut u8) = result;
+                        } else {
+                            let result = (sum / wsum).round().max(i16::MIN as f32).min(i16::MAX as f32) as i16;
+                            *(dst_data_buf.as_mut_ptr().add(out_offset) as *mut i16) = result;
+                        }
+                    }
+                }
+            }
+        } else if num_dims == 3 {
+            for y in low_y..high_y {
+                for x in low_x..high_x {
+                    let mut center_vals = vec![0i32; channels as usize];
+                    for c in 0..channels {
+                        let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
+                        center_vals[c as usize] = if is_u8 {
+                            *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                        } else {
+                            *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                        };
+                    }
+
+                    let mut sums = vec![0.0f32; channels as usize];
+                    let mut wsum = 0.0f32;
+
+                    for radius_y in -radius..=radius {
+                        for radius_x in -radius..=radius {
+                            let r_sq = (radius_y * radius_y + radius_x * radius_x) as f64;
+                            let r = r_sq.sqrt();
+                            if r > radius as f64 {
+                                continue;
+                            }
+                            let sw = space_weight[((radius_y + radius) * diameter + (radius_x + radius)) as usize];
+                            if sw == 0.0 {
+                                continue;
+                            }
+
+                            let mut neighbor_vals = vec![0i32; channels as usize];
+                            for c in 0..channels {
+                                let nx = x + radius_x;
+                                let ny = y + radius_y;
+                                let nv = if border_mode == BorderMode::Replicate {
+                                    let nx2 = nx.max(0).min(width - 1);
+                                    let ny2 = ny.max(0).min(height - 1);
+                                    let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
+                                    if is_u8 {
+                                        *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                    } else {
+                                        *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                    }
+                                } else if let BorderMode::Constant(val) = border_mode {
+                                    if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                                        val as i32
+                                    } else {
+                                        let offset = (ny as usize) * strides[2] + (nx as usize) * strides[1] + (c as usize) * strides[0];
+                                        if is_u8 {
+                                            *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                        } else {
+                                            *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                        }
+                                    }
+                                } else {
+                                    let nx2 = nx.max(0).min(width - 1);
+                                    let ny2 = ny.max(0).min(height - 1);
+                                    let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
+                                    if is_u8 {
+                                        *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                    } else {
+                                        *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                    }
+                                };
+                                neighbor_vals[c as usize] = nv;
+                            }
+
+                            let w = if is_u8 {
+                                let mut total_diff = 0i32;
+                                for c in 0..channels {
+                                    total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs();
+                                }
+                                let diff = total_diff as usize;
+                                let idx = diff.min((channels * 256 - 1) as usize);
+                                sw * color_weight_u8.as_ref().unwrap()[idx]
+                            } else {
+                                let mut total_diff = 0f32;
+                                for c in 0..channels {
+                                    total_diff += (neighbor_vals[c as usize] - center_vals[c as usize]).abs() as f32;
+                                }
+                                let alpha = total_diff * scale_index_s16;
+                                let idx = alpha as i32;
+                                let frac = alpha - idx as f32;
+                                let cw = color_weight_s16.as_ref().unwrap();
+                                let idx = idx.max(0).min((cw.len() - 2) as i32) as usize;
+                                let w = cw[idx] + frac * (cw[idx + 1] - cw[idx]);
+                                sw * w
+                            };
+
+                            for c in 0..channels {
+                                sums[c as usize] += neighbor_vals[c as usize] as f32 * w;
+                            }
+                            wsum += w;
+                        }
+                    }
+
+                    if wsum > 0.0 {
+                        for c in 0..channels {
+                            let offset = (y as usize) * out_strides[2] + (x as usize) * out_strides[1] + (c as usize) * out_strides[0];
+                            if is_u8 {
+                                let result = (sums[c as usize] / wsum).round().max(0.0).min(255.0) as u8;
+                                *(dst_data_buf.as_mut_ptr().add(offset) as *mut u8) = result;
+                            } else {
+                                let result = (sums[c as usize] / wsum).round().max(i16::MIN as f32).min(i16::MAX as f32) as i16;
+                                *(dst_data_buf.as_mut_ptr().add(offset) as *mut i16) = result;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        {
+            let mut data_map = match TENSOR_DATA.lock() {
+                Ok(g) => g,
+                Err(_) => return VX_ERROR_INVALID_REFERENCE,
+            };
+            if let Some(data) = data_map.get_mut(&dst_addr) {
+                *data = dst_data_buf;
+            }
+        }
+    }
+
+    VX_SUCCESS
+}
