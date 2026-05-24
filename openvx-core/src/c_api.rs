@@ -359,6 +359,9 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.hough_lines_p", 0x34, 8),
         ("org.khronos.openvx.match_template", 0x2D, 4),
         ("org.khronos.openvx.lbp", 0x2E, 4),
+        ("org.khronos.openvx.hog_cells", 0x39, 6),
+        ("org.khronos.openvx.hog_features", 0x3A, 7),
+        ("org.khronos.openvx.bilateral_filter", 0x38, 5),
         // OpenVX 1.0.2 addition
         ("org.khronos.openvx.weighted_average", 0x40, 4),
         // OpenVX 1.1 extensions
