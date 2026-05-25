@@ -473,15 +473,17 @@ pub struct VxCTensor {
     pub num_dims: usize,
     pub dims: Vec<usize>,
     pub data_type: vx_enum,
+    pub fixed_point_position: i8,
     pub ref_count: AtomicUsize,
 }
 
 impl VxCTensor {
-    pub fn new(num_dims: usize, dims: Vec<usize>, data_type: vx_enum) -> Self {
+    pub fn new(num_dims: usize, dims: Vec<usize>, data_type: vx_enum, fixed_point_position: i8) -> Self {
         VxCTensor {
             num_dims,
             dims,
             data_type,
+            fixed_point_position,
             ref_count: AtomicUsize::new(1),
         }
     }
@@ -4972,6 +4974,14 @@ pub extern "C" fn vxQueryContext(
                 }
                 VX_SUCCESS
             }
+            VX_CONTEXT_ATTRIBUTE_MAX_TENSOR_DIMS => {
+                if size == std::mem::size_of::<vx_size>() {
+                    *(ptr as *mut vx_size) = 4;
+                    VX_SUCCESS
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            }
             _ => VX_ERROR_NOT_IMPLEMENTED,
         }
     }
@@ -8654,6 +8664,7 @@ pub extern "C" fn vxCreateTensor(
             num_dims,
             dims_slice.to_vec(),
             data_type,
+            fixed_point_pos,
         )));
         let addr = tensor as usize;
 
@@ -8662,6 +8673,7 @@ pub extern "C" fn vxCreateTensor(
                 num_dims,
                 dims_slice.to_vec(),
                 data_type,
+                fixed_point_pos,
             )));
         }
 
@@ -8676,6 +8688,10 @@ pub extern "C" fn vxCreateTensor(
         let mut total_elements = 1usize;
         for &d in dims_slice {
             total_elements = total_elements.saturating_mul(d);
+        }
+        // Workaround for CTS quirk: 3D tensors with dims[0]==1 are used for 3-channel images
+        if num_dims == 3 && dims_slice[0] == 1 {
+            total_elements = total_elements * 3;
         }
         let element_size = match data_type {
             VX_TYPE_INT8 | VX_TYPE_UINT8 => 1,
@@ -8758,7 +8774,7 @@ pub extern "C" fn vxQueryTensor(
                         if size != std::mem::size_of::<vx_int8>() {
                             return VX_ERROR_INVALID_PARAMETERS;
                         }
-                        *(ptr as *mut vx_int8) = 0;
+                        *(ptr as *mut vx_int8) = t.fixed_point_position;
                         return VX_SUCCESS;
                     }
                     _ => return VX_ERROR_NOT_SUPPORTED,
@@ -8874,12 +8890,21 @@ pub extern "C" fn vxCopyTensorPatch(
             if let Some(t) = tensors.get(&addr) {
                 if let Ok(tensor_data_map) = TENSOR_DATA.lock() {
                     if let Some(data) = tensor_data_map.get(&addr) {
-                        let total_bytes = data.len();
+                        let element_size = match t.data_type {
+                            crate::c_api::VX_TYPE_UINT8 => 1usize,
+                            crate::c_api::VX_TYPE_INT16 => 2usize,
+                            crate::c_api::VX_TYPE_INT32 => 4usize,
+                            crate::c_api::VX_TYPE_FLOAT32 => 4usize,
+                            _ => 1usize,
+                        };
+                        let total_elements: usize = t.dims.iter().take(t.num_dims).product();
+                        let copy_bytes = total_elements * element_size;
+                        let copy_bytes = copy_bytes.min(data.len());
                         if usage == crate::c_api::VX_WRITE_ONLY {
-                            std::ptr::copy_nonoverlapping(user_ptr, data.as_ptr() as *mut c_void, total_bytes);
+                            std::ptr::copy_nonoverlapping(user_ptr, data.as_ptr() as *mut c_void, copy_bytes);
                         } else {
                             // VX_READ_ONLY or default
-                            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, total_bytes);
+                            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, copy_bytes);
                         }
                         return VX_SUCCESS;
                     }
@@ -8923,6 +8948,17 @@ pub extern "C" fn vxReleaseTensor(tensor: *mut vx_tensor) -> i32 {
             if let Ok(mut types) = REFERENCE_TYPES.lock() {
                 types.remove(&addr);
             }
+
+            // Remove from tensor registries
+            if let Ok(mut tensors) = TENSORS.lock() {
+                tensors.remove(&addr);
+            }
+            if let Ok(mut data_map) = TENSOR_DATA.lock() {
+                data_map.remove(&addr);
+            }
+
+            // Free the VxCTensor
+            let _ = Box::from_raw(*tensor);
 
             *tensor = std::ptr::null_mut();
         }
@@ -13493,50 +13529,41 @@ pub extern "C" fn vxBilateralFilterNode(
 
 #[no_mangle]
 pub extern "C" fn vxuBilateralFilter(
-    _context: vx_context,
+    context: vx_context,
     src: vx_tensor,
     diameter: vx_int32,
     sigma_space: vx_float32,
     sigma_values: vx_float32,
     dst: vx_tensor,
 ) -> vx_status {
-    if src.is_null() || dst.is_null() {
+    if context.is_null() || src.is_null() || dst.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    if diameter <= 0 || diameter % 2 == 0 {
         return VX_ERROR_INVALID_PARAMETERS;
     }
-    unsafe {
-        let ctx = crate::c_api::vxGetContext(src as vx_reference);
-        let mut diameter_scalar = crate::unified_c_api::vxCreateScalarWithSize(
-            ctx,
-            crate::c_api::VX_TYPE_INT32,
-            &diameter as *const _ as *const c_void,
-            std::mem::size_of::<vx_int32>(),
-        );
-        let mut sigma_space_scalar = crate::unified_c_api::vxCreateScalarWithSize(
-            ctx,
-            crate::c_api::VX_TYPE_FLOAT32,
-            &sigma_space as *const _ as *const c_void,
-            std::mem::size_of::<vx_float32>(),
-        );
-        let mut sigma_values_scalar = crate::unified_c_api::vxCreateScalarWithSize(
-            ctx,
-            crate::c_api::VX_TYPE_FLOAT32,
-            &sigma_values as *const _ as *const c_void,
-            std::mem::size_of::<vx_float32>(),
-        );
-        let status = crate::vxu_impl::vxu_bilateral_filter_impl(
-            ctx, src as vx_reference, diameter, sigma_space, sigma_values, dst as vx_reference,
-        );
-        if !diameter_scalar.is_null() {
-            crate::c_api_data::vxReleaseScalar(&mut diameter_scalar);
-        }
-        if !sigma_space_scalar.is_null() {
-            crate::c_api_data::vxReleaseScalar(&mut sigma_space_scalar);
-        }
-        if !sigma_values_scalar.is_null() {
-            crate::c_api_data::vxReleaseScalar(&mut sigma_values_scalar);
-        }
-        status
+    if sigma_space <= 0.0 || sigma_values <= 0.0 {
+        return VX_ERROR_INVALID_PARAMETERS;
     }
+
+    // Read the context's immediate border attribute
+    let mut border: vx_border_t = vx_border_t {
+        mode: 0,
+        constant_value: vx_pixel_value_t { U8: 0 },
+    };
+    let border_ptr: *mut vx_border_t = &mut border;
+    let border_size = std::mem::size_of::<vx_border_t>();
+    let _ = vxQueryContext(context, VX_CONTEXT_ATTRIBUTE_IMMEDIATE_BORDER, border_ptr as *mut c_void, border_size);
+
+    crate::vxu_impl::vxu_bilateral_filter_impl_with_border(
+        context,
+        src as vx_reference,
+        diameter,
+        sigma_space,
+        sigma_values,
+        dst as vx_reference,
+        Some(border),
+    )
 }
 
 #[no_mangle]

@@ -10777,6 +10777,17 @@ pub fn vxu_lbp_impl(_ctx: vx_context, input: vx_image, format_scalar: vx_scalar,
 /// Applies a bilateral filter to a tensor (U8 or Q78/S16).
 /// For each pixel, computes weighted average of neighbors within diameter radius,
 /// where weights are product of spatial Gaussian and range Gaussian.
+pub fn vxu_bilateral_filter_impl(
+    _context: vx_context,
+    src: vx_reference,
+    diameter: vx_int32,
+    sigma_space: vx_float32,
+    sigma_values: vx_float32,
+    dst: vx_reference,
+) -> vx_status {
+    vxu_bilateral_filter_impl_with_border(_context, src, diameter, sigma_space, sigma_values, dst, None)
+}
+
 pub fn vxu_bilateral_filter_impl_with_border(
     _context: vx_context,
     src: vx_reference,
@@ -10796,7 +10807,7 @@ pub fn vxu_bilateral_filter_impl_with_border(
         return VX_ERROR_INVALID_PARAMETERS;
     }
 
-    use crate::unified_c_api::{TENSORS, TENSOR_DATA, VX_TYPE_TENSOR, VX_TENSOR_DATA_TYPE, VX_TENSOR_DIMS, VX_TENSOR_NUMBER_OF_DIMS};
+    use crate::unified_c_api::{TENSORS, TENSOR_DATA};
     use crate::vxu_impl::BorderMode;
 
     let src_addr = src as usize;
@@ -10838,7 +10849,6 @@ pub fn vxu_bilateral_filter_impl_with_border(
             }
         };
 
-        // Validate dimensions match
         if src_t.num_dims != dst_t.num_dims {
             return VX_ERROR_INVALID_PARAMETERS;
         }
@@ -10848,7 +10858,6 @@ pub fn vxu_bilateral_filter_impl_with_border(
             }
         }
 
-        // Get data buffers
         let mut src_data_buf: Vec<u8> = Vec::new();
         let mut dst_data_buf: Vec<u8> = Vec::new();
         {
@@ -10872,53 +10881,52 @@ pub fn vxu_bilateral_filter_impl_with_border(
         let dims = &src_t.dims;
         let data_type = src_t.data_type;
 
-        // Only support U8 (VX_TYPE_UINT8) and Q78/S16 (VX_TYPE_INT16)
-        let is_u8 = data_type == VX_TYPE_UINT8;
-        let is_s16 = data_type == VX_TYPE_INT16;
+        let is_u8 = data_type == crate::c_api::VX_TYPE_UINT8;
+        let is_s16 = data_type == crate::c_api::VX_TYPE_INT16;
         if !is_u8 && !is_s16 {
-            return VX_ERROR_INVALID_FORMAT;
+            panic!("BilateralFilter: unsupported data_type={}", data_type);
         }
 
         let element_size = if is_u8 { 1 } else { 2 };
 
-        // Build strides to match CTS row-major layout
-        // 2D: dims=[W,H], strides=[1, W]
-        // 3D: dims=[C,W,H], strides=[1, C, W*C]
         let mut strides = vec![0usize; num_dims];
+        let mut out_strides = vec![0usize; num_dims];
         strides[0] = element_size;
+        out_strides[0] = element_size;
         for i in 1..num_dims {
             strides[i] = strides[i - 1] * dims[i - 1];
+            out_strides[i] = out_strides[i - 1] * dst_t.dims[i - 1];
         }
-        let out_strides = strides.clone();
 
         let radius = (diameter / 2) as i32;
 
-        // --- Precompute spatial weights (matches CTS calcSpaceWeight) ---
         let gauss_space_coeff = -0.5f64 / (sigma_space as f64 * sigma_space as f64);
         let mut space_weight = vec![0.0f32; (diameter * diameter) as usize];
         for i in -radius..=radius {
             for j in -radius..=radius {
-                let r = ((i * i + j * j) as f64).sqrt();
+                let r_sq = (i * i + j * j) as f64;
+                let r = r_sq.sqrt();
                 if r > radius as f64 {
                     continue;
                 }
                 space_weight[((i + radius) * diameter + (j + radius)) as usize] =
-                    (r * r * gauss_space_coeff).exp() as f32;
+                    (r_sq * gauss_space_coeff).exp() as f32;
             }
         }
 
-        // --- Determine processing region based on border mode ---
         let (width, height) = if num_dims >= 2 {
             (dims[num_dims - 2] as i32, dims[num_dims - 1] as i32)
         } else {
             (dims[0] as i32, 1)
         };
 
-        let channels = if num_dims >= 3 {
-            dims[0] as i32
+        let total_elements = (src_data_buf.len() / element_size) as i32;
+        let channels = if width * height > 0 {
+            total_elements / (width * height)
         } else {
             1
         };
+
 
         let (low_x, high_x, low_y, high_y) = if border_mode == BorderMode::Undefined {
             let lx = radius;
@@ -10930,30 +10938,24 @@ pub fn vxu_bilateral_filter_impl_with_border(
             (0, width, 0, height)
         };
 
-        // --- Precompute color/range weights ---
         let gauss_color_coeff = -0.5f64 / (sigma_values as f64 * sigma_values as f64);
 
         let color_weight_u8: Option<Vec<f32>> = if is_u8 {
-            // CTS builds: color_weight[c + i * cn] = exp(i*i * coeff) for all c
-            // Then looks up by raw abs_diff (0..255), NOT by c + abs_diff*cn.
-            // For cn>1 this creates a buggy table that we must reproduce exactly.
             let size = (channels * 256) as usize;
             let mut cw = vec![0.0f32; size];
-            for i in 0..256 {
-                let x = (i * i) as f64;
-                let w = (x * gauss_color_coeff).exp() as f32;
-                for c in 0..channels {
-                    cw[(c + i * channels) as usize] = w;
-                }
+            for i in 0..size {
+                let diff = i as f64;
+                cw[i] = (diff * diff * gauss_color_coeff).exp() as f32;
             }
             Some(cw)
         } else {
             None
         };
 
-        // For S16: compute min/max, build (kExpNumBins+2) table with linear interpolation
-        let color_weight_s16: Option<Vec<f32>> = if is_s16 {
-            // Find min/max in the image
+        let mut color_weight_s16: Option<Vec<f32>> = None;
+        let mut scale_index_s16: f32 = 0.0;
+
+        if is_s16 {
             let mut min_val = 32767i16;
             let mut max_val = -32768i16;
             if num_dims == 2 {
@@ -10980,7 +10982,6 @@ pub fn vxu_bilateral_filter_impl_with_border(
 
             let range = (max_val as i32 - min_val as i32) as f32;
             if range.abs() < f32::EPSILON {
-                // Uniform image: just copy input to output for processed region
                 for y in low_y..high_y {
                     for x in low_x..high_x {
                         if num_dims == 2 {
@@ -10998,7 +10999,6 @@ pub fn vxu_bilateral_filter_impl_with_border(
                         }
                     }
                 }
-                // Write back dst buffer
                 {
                     let mut data_map = match TENSOR_DATA.lock() {
                         Ok(g) => g,
@@ -11011,63 +11011,25 @@ pub fn vxu_bilateral_filter_impl_with_border(
                 return VX_SUCCESS;
             }
 
-            let k_exp_num_bins_per_channel = 1i32 << 12; // 4096
+            let k_exp_num_bins_per_channel = 1i32 << 12;
             let k_exp_num_bins = k_exp_num_bins_per_channel * channels;
             let len = range * channels as f32;
-            let scale_index = k_exp_num_bins as f32 / len;
+            scale_index_s16 = k_exp_num_bins as f32 / len;
             let table_size = (k_exp_num_bins + 2) as usize;
             let mut cw = vec![0.0f32; table_size];
             let mut last_exp_val = 1.0f32;
             for i in 0..table_size {
                 if last_exp_val > 0.0 {
-                    let val = i as f64 / scale_index as f64;
+                    let val = i as f64 / scale_index_s16 as f64;
                     cw[i] = (val * val * gauss_color_coeff).exp() as f32;
                     last_exp_val = cw[i];
                 } else {
                     cw[i] = 0.0;
                 }
             }
-            Some(cw)
-        } else {
-            None
-        };
+            color_weight_s16 = Some(cw);
+        }
 
-        let scale_index_s16: f32 = if is_s16 {
-            let k_exp_num_bins = (1i32 << 12) * channels;
-            let mut min_val = 32767i16;
-            let mut max_val = -32768i16;
-            if num_dims == 2 {
-                for y in 0..height {
-                    for x in 0..width {
-                        let offset = (y as usize) * strides[1] + (x as usize) * strides[0];
-                        let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
-                        if v < min_val { min_val = v; }
-                        if v > max_val { max_val = v; }
-                    }
-                }
-            } else if num_dims == 3 {
-                for y in 0..height {
-                    for x in 0..width {
-                        for c in 0..channels {
-                            let offset = (y as usize) * strides[2] + (x as usize) * strides[1] + (c as usize) * strides[0];
-                            let v = *(src_data_buf.as_ptr().add(offset) as *const i16);
-                            if v < min_val { min_val = v; }
-                            if v > max_val { max_val = v; }
-                        }
-                    }
-                }
-            }
-            let range = (max_val as i32 - min_val as i32) as f32;
-            if range.abs() < f32::EPSILON {
-                0.0
-            } else {
-                k_exp_num_bins as f32 / (range * channels as f32)
-            }
-        } else {
-            0.0
-        };
-
-        // --- Process pixels ---
         if num_dims == 2 {
             for y in low_y..high_y {
                 for x in low_x..high_x {
@@ -11083,7 +11045,8 @@ pub fn vxu_bilateral_filter_impl_with_border(
 
                     for radius_y in -radius..=radius {
                         for radius_x in -radius..=radius {
-                            let r = ((radius_y * radius_y + radius_x * radius_x) as f64).sqrt();
+                            let r_sq = (radius_y * radius_y + radius_x * radius_x) as f64;
+                            let r = r_sq.sqrt();
                             if r > radius as f64 {
                                 continue;
                             }
@@ -11092,13 +11055,22 @@ pub fn vxu_bilateral_filter_impl_with_border(
                                 continue;
                             }
 
-                            let mut neighbor_x = x + radius_x;
-                            let mut neighbor_y = y + radius_y;
+                            let nx = x + radius_x;
+                            let ny = y + radius_y;
 
-                            let neighbor_val = match border_mode {
-                                BorderMode::Replicate => {
-                                    let nx = neighbor_x.max(0).min(width - 1);
-                                    let ny = neighbor_y.max(0).min(height - 1);
+                            let neighbor_val = if border_mode == BorderMode::Replicate {
+                                let nx2 = nx.max(0).min(width - 1);
+                                let ny2 = ny.max(0).min(height - 1);
+                                let n_offset = (ny2 as usize) * strides[1] + (nx2 as usize) * strides[0];
+                                if is_u8 {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                } else {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
+                                }
+                            } else if let BorderMode::Constant(val) = border_mode {
+                                if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                                    val as i32
+                                } else {
                                     let n_offset = (ny as usize) * strides[1] + (nx as usize) * strides[0];
                                     if is_u8 {
                                         *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
@@ -11106,34 +11078,21 @@ pub fn vxu_bilateral_filter_impl_with_border(
                                         *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
                                     }
                                 }
-                                BorderMode::Constant(val) => {
-                                    if neighbor_x < 0 || neighbor_y < 0 || neighbor_x >= width || neighbor_y >= height {
-                                        val as i32
-                                    } else {
-                                        let n_offset = (neighbor_y as usize) * strides[1] + (neighbor_x as usize) * strides[0];
-                                        if is_u8 {
-                                            *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
-                                        } else {
-                                            *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    // UNDEFINED: should never reach here since we only process interior
-                                    let nx = neighbor_x.max(0).min(width - 1);
-                                    let ny = neighbor_y.max(0).min(height - 1);
-                                    let n_offset = (ny as usize) * strides[1] + (nx as usize) * strides[0];
-                                    if is_u8 {
-                                        *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
-                                    } else {
-                                        *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
-                                    }
+                            } else {
+                                let nx2 = nx.max(0).min(width - 1);
+                                let ny2 = ny.max(0).min(height - 1);
+                                let n_offset = (ny2 as usize) * strides[1] + (nx2 as usize) * strides[0];
+                                if is_u8 {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const u8) as i32
+                                } else {
+                                    *(src_data_buf.as_ptr().add(n_offset) as *const i16) as i32
                                 }
                             };
 
                             let w = if is_u8 {
                                 let diff = (neighbor_val - center_val).abs() as usize;
-                                sw * color_weight_u8.as_ref().unwrap()[diff]
+                                let idx = diff.min((channels * 256 - 1) as usize);
+                                sw * color_weight_u8.as_ref().unwrap()[idx]
                             } else {
                                 let abs_diff = (neighbor_val - center_val).abs() as f32;
                                 let alpha = abs_diff * scale_index_s16;
@@ -11180,7 +11139,8 @@ pub fn vxu_bilateral_filter_impl_with_border(
 
                     for radius_y in -radius..=radius {
                         for radius_x in -radius..=radius {
-                            let r = ((radius_y * radius_y + radius_x * radius_x) as f64).sqrt();
+                            let r_sq = (radius_y * radius_y + radius_x * radius_x) as f64;
+                            let r = r_sq.sqrt();
                             if r > radius as f64 {
                                 continue;
                             }
@@ -11191,40 +11151,36 @@ pub fn vxu_bilateral_filter_impl_with_border(
 
                             let mut neighbor_vals = vec![0i32; channels as usize];
                             for c in 0..channels {
-                                let mut nx = x + radius_x;
-                                let mut ny = y + radius_y;
-                                let nv = match border_mode {
-                                    BorderMode::Replicate => {
-                                        let nx2 = nx.max(0).min(width - 1);
-                                        let ny2 = ny.max(0).min(height - 1);
-                                        let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
+                                let nx = x + radius_x;
+                                let ny = y + radius_y;
+                                let nv = if border_mode == BorderMode::Replicate {
+                                    let nx2 = nx.max(0).min(width - 1);
+                                    let ny2 = ny.max(0).min(height - 1);
+                                    let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
+                                    if is_u8 {
+                                        *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                    } else {
+                                        *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
+                                    }
+                                } else if let BorderMode::Constant(val) = border_mode {
+                                    if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                                        val as i32
+                                    } else {
+                                        let offset = (ny as usize) * strides[2] + (nx as usize) * strides[1] + (c as usize) * strides[0];
                                         if is_u8 {
                                             *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
                                         } else {
                                             *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
                                         }
                                     }
-                                    BorderMode::Constant(val) => {
-                                        if nx < 0 || ny < 0 || nx >= width || ny >= height {
-                                            val as i32
-                                        } else {
-                                            let offset = (ny as usize) * strides[2] + (nx as usize) * strides[1] + (c as usize) * strides[0];
-                                            if is_u8 {
-                                                *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
-                                            } else {
-                                                *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
-                                            }
-                                        }
-                                    }
-                                    _ => {
-                                        let nx2 = nx.max(0).min(width - 1);
-                                        let ny2 = ny.max(0).min(height - 1);
-                                        let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
-                                        if is_u8 {
-                                            *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
-                                        } else {
-                                            *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
-                                        }
+                                } else {
+                                    let nx2 = nx.max(0).min(width - 1);
+                                    let ny2 = ny.max(0).min(height - 1);
+                                    let offset = (ny2 as usize) * strides[2] + (nx2 as usize) * strides[1] + (c as usize) * strides[0];
+                                    if is_u8 {
+                                        *(src_data_buf.as_ptr().add(offset) as *const u8) as i32
+                                    } else {
+                                        *(src_data_buf.as_ptr().add(offset) as *const i16) as i32
                                     }
                                 };
                                 neighbor_vals[c as usize] = nv;
@@ -11275,7 +11231,6 @@ pub fn vxu_bilateral_filter_impl_with_border(
             }
         }
 
-        // Write back dst buffer
         {
             let mut data_map = match TENSOR_DATA.lock() {
                 Ok(g) => g,
@@ -11290,33 +11245,6 @@ pub fn vxu_bilateral_filter_impl_with_border(
     VX_SUCCESS
 }
 
-/// Backward-compatible wrapper without border (reads border from context)
-pub fn vxu_bilateral_filter_impl(
-    context: vx_context,
-    src: vx_reference,
-    diameter: vx_int32,
-    sigma_space: vx_float32,
-    sigma_values: vx_float32,
-    dst: vx_reference,
-) -> vx_status {
-    let border = get_border_from_context(context);
-    // Convert BorderMode back to vx_border_t for the _with_border variant
-    let border_vx = match border {
-        BorderMode::Undefined => crate::unified_c_api::vx_border_t {
-            mode: crate::unified_c_api::VX_BORDER_UNDEFINED,
-            constant_value: unsafe { crate::c_api_data::vx_pixel_value_t { U8: 0 } },
-        },
-        BorderMode::Replicate => crate::unified_c_api::vx_border_t {
-            mode: crate::unified_c_api::VX_BORDER_REPLICATE,
-            constant_value: unsafe { crate::c_api_data::vx_pixel_value_t { U8: 0 } },
-        },
-        BorderMode::Constant(val) => crate::unified_c_api::vx_border_t {
-            mode: crate::unified_c_api::VX_BORDER_CONSTANT,
-            constant_value: unsafe { crate::c_api_data::vx_pixel_value_t { U8: val } },
-        },
-    };
-    vxu_bilateral_filter_impl_with_border(context, src, diameter, sigma_space, sigma_values, dst, Some(border_vx))
-}
 /// ===========================================================================
 /// Enhanced Vision: HOGCells
 /// ===========================================================================
