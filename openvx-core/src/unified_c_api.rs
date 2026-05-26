@@ -9025,7 +9025,6 @@ pub extern "C" fn vxCopyTensor(
 }
 
 #[no_mangle]
-#[no_mangle]
 pub extern "C" fn vxMapTensorPatch(
     tensor: vx_tensor,
     _num_dims: usize,
@@ -9109,7 +9108,6 @@ pub extern "C" fn vxMapTensorPatch(
 }
 
 #[no_mangle]
-#[no_mangle]
 pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
     if tensor.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -9128,7 +9126,7 @@ pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn vxCopyTensorPatch(
     tensor: vx_tensor,
-    number_of_dims: vx_size,
+    _number_of_dims: vx_size,
     _view_start: *const vx_size,
     _view_end: *const vx_size,
     _user_stride: *const vx_size,
@@ -13731,6 +13729,7 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
 
 const VX_ERROR_NOT_IMPLEMENTED: vx_status = -29;
 
+#[allow(unused_macros)]
 macro_rules! ev_node_stub {
     ($name:ident ( $($arg:ident : $ty:ty),* $(,)? )) => {
         #[no_mangle]
@@ -13741,6 +13740,7 @@ macro_rules! ev_node_stub {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! ev_vxu_stub {
     ($name:ident ( $($arg:ident : $ty:ty),* $(,)? )) => {
         #[no_mangle]
@@ -14155,7 +14155,7 @@ pub extern "C" fn vxHOGFeaturesNode(
     magnitudes: vx_tensor,
     bins: vx_tensor,
     params: *const c_void,
-    hog_param_size: vx_size,
+    _hog_param_size: vx_size,
     features: vx_tensor,
 ) -> vx_node {
     if graph.is_null() || input.is_null() || magnitudes.is_null() || bins.is_null() || features.is_null() {
@@ -14256,7 +14256,7 @@ pub extern "C" fn vxuHoughLinesP(
     input: vx_image,
     params: *const vx_hough_lines_p_t,
     lines_array: vx_array,
-    num_lines: vx_scalar,
+    _num_lines: vx_scalar,
 ) -> vx_status {
     unsafe {
         let ctx = crate::c_api::vxGetContext(input as vx_reference);
@@ -14381,7 +14381,6 @@ pub extern "C" fn vxSelectNode(
 
 // ---- Tensor data-object handle APIs ----
 #[no_mangle]
-#[no_mangle]
 pub extern "C" fn vxCreateTensorFromHandle(
     context: vx_context,
     number_of_dims: vx_size,
@@ -14470,7 +14469,6 @@ pub extern "C" fn vxCreateImageObjectArrayFromTensor(
     std::ptr::null_mut()
 }
 
-#[no_mangle]
 #[no_mangle]
 pub extern "C" fn vxSwapTensorHandle(
     tensor: vx_tensor,

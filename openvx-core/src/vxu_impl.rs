@@ -9,7 +9,8 @@
     unreachable_patterns,
     unused_assignments,
     unused_unsafe,
-    unused_variables
+    unused_variables,
+    non_snake_case,
 )]
 
 use crate::c_api::{
@@ -48,17 +49,10 @@ use crate::c_api::{
     VX_TYPE_UINT32,
     VX_TYPE_INT32,
     VX_TYPE_FLOAT32,
-    VX_TYPE_UINT64,
-    VX_TYPE_INT64,
     VX_TYPE_FLOAT64,
     VX_TYPE_BOOL,
     VX_TYPE_SIZE,
-    VX_TYPE_ENUM,
-    VX_ERROR_INVALID_TYPE,
-    VX_ARRAY_ITEMSIZE,
-    VX_THRESHOLD_VALUE,
-    VX_THRESHOLD_LOWER,
-    VX_THRESHOLD_UPPER,};
+    VX_ERROR_INVALID_TYPE,};
 use crate::unified_c_api::{vx_border_t, vx_distribution, vx_remap, VxCImage, VxCPyramid};
 use std::ffi::c_void;
 
@@ -7887,10 +7881,10 @@ pub fn vxu_hough_lines_p_impl(_ctx: vx_context, input: vx_image, rho_scalar: vx_
         let mut used: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
 
         // Sort points randomly-ish for probabilistic behavior
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        
+        
         let mut rng_state = 42u64;
-        let mut rng = || {
+        let rng = || {
             rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
             rng_state
         };
@@ -11746,7 +11740,7 @@ pub fn vxu_tensor_add_impl(
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
-        let mut data_map = match get_tensor_data(in0_addr) {
+        let data_map = match get_tensor_data(in0_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -11756,7 +11750,7 @@ pub fn vxu_tensor_add_impl(
         };
         drop(data_map);
 
-        let mut data_map = match get_tensor_data(in1_addr) {
+        let data_map = match get_tensor_data(in1_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -11875,7 +11869,7 @@ pub fn vxu_tensor_subtract_impl(
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
-        let mut data_map = match get_tensor_data(in0_addr) {
+        let data_map = match get_tensor_data(in0_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -11885,7 +11879,7 @@ pub fn vxu_tensor_subtract_impl(
         };
         drop(data_map);
 
-        let mut data_map = match get_tensor_data(in1_addr) {
+        let data_map = match get_tensor_data(in1_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12008,7 +12002,7 @@ pub fn vxu_tensor_multiply_impl(
             return VX_ERROR_INVALID_PARAMETERS;
         }
 
-        let mut data_map = match get_tensor_data(in0_addr) {
+        let data_map = match get_tensor_data(in0_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12018,7 +12012,7 @@ pub fn vxu_tensor_multiply_impl(
         };
         drop(data_map);
 
-        let mut data_map = match get_tensor_data(in1_addr) {
+        let data_map = match get_tensor_data(in1_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12154,7 +12148,7 @@ pub fn vxu_tensor_convert_depth_impl(
             }
         }
 
-        let mut data_map = match get_tensor_data(in_addr) {
+        let data_map = match get_tensor_data(in_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12267,7 +12261,7 @@ pub fn vxu_tensor_table_lookup_impl(
         let lut_item_size = crate::c_api_data::VxCLUTData::element_size(lut_obj.data_type);
         let lut_entries = lut_items.len() / lut_item_size;  // number of LUT entries
 
-        let mut data_map = match get_tensor_data(in_addr) {
+        let data_map = match get_tensor_data(in_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12368,7 +12362,7 @@ pub fn vxu_tensor_transpose_impl(
             }
         }
 
-        let mut data_map = match get_tensor_data(in_addr) {
+        let data_map = match get_tensor_data(in_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12618,7 +12612,7 @@ pub fn vxu_tensor_matrix_multiply_impl(
         let cc_stride_0 = c_strides[if transpose_c { 1 } else { 0 }];
         let cc_stride_1 = c_strides[if transpose_c { 0 } else { 1 }];
 
-        let mut data_map = match get_tensor_data(a_addr) {
+        let data_map = match get_tensor_data(a_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12628,7 +12622,7 @@ pub fn vxu_tensor_matrix_multiply_impl(
         };
         drop(data_map);
 
-        let mut data_map = match get_tensor_data(b_addr) {
+        let data_map = match get_tensor_data(b_addr) {
             Some(g) => g,
             None => return VX_ERROR_INVALID_REFERENCE,
         };
@@ -12639,7 +12633,7 @@ pub fn vxu_tensor_matrix_multiply_impl(
         drop(data_map);
 
         let c_data: Option<Vec<u8>> = if !c.is_null() {
-            let mut data_map = match get_tensor_data(c_addr) {
+            let data_map = match get_tensor_data(c_addr) {
                 Some(g) => g,
                 None => return VX_ERROR_INVALID_REFERENCE,
             };
