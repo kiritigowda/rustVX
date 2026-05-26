@@ -366,6 +366,14 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.weighted_average", 0x40, 4),
         // OpenVX 1.1 extensions
         ("org.khronos.openvx.sobel_5x5", 0x30, 3),
+        // Tensor operations (Enhanced Vision)
+        ("org.khronos.openvx.tensor_add", 0x41, 4),
+        ("org.khronos.openvx.tensor_subtract", 0x42, 4),
+        ("org.khronos.openvx.tensor_multiply", 0x43, 6),
+        ("org.khronos.openvx.tensor_convert_depth", 0x44, 5),
+        ("org.khronos.openvx.tensor_tablelookup", 0x45, 3),
+        ("org.khronos.openvx.tensor_transpose", 0x46, 4),
+        ("org.khronos.openvx.tensor_matrix_multiply", 0x47, 5),
     ];
 
     if let Ok(mut kernels) = KERNELS.lock() {

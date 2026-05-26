@@ -2544,7 +2544,8 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
         if let Some(param_id) = param_id_opt {
             // Validate parameter is not null pointer (unless it's an optional param)
             let is_hog_features_optional = kernel_name.contains("hog_features") && idx == 4;
-            if *param_id == 0 && !is_channel_combine && !(is_nms && idx == 1) && !is_hog_features_optional {
+            let is_tensor_matrix_optional = kernel_name.contains("tensor_matrix_multiply") && idx == 2;
+            if *param_id == 0 && !is_channel_combine && !(is_nms && idx == 1) && !is_hog_features_optional && !is_tensor_matrix_optional {
                 return Some(VX_ERROR_INVALID_PARAMETERS);
             }
             params.push(*param_id as vx_reference);
@@ -4411,6 +4412,125 @@ fn dispatch_kernel_with_border_impl(
                         context, input, function, &mask_data, mask_cols, mask_rows, origin_x,
                         origin_y, output, border,
                     )
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Tensor Add
+        "org.khronos.openvx.tensor_add" => {
+            if params.len() >= 4 {
+                let in0 = params[0] as crate::c_api::vx_tensor;
+                let in1 = params[1] as crate::c_api::vx_tensor;
+                let policy = read_scalar_enum(params[2] as vx_scalar).unwrap_or(0);
+                let output = params[3] as crate::c_api::vx_tensor;
+                if !in0.is_null() && !in1.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_tensor_add_impl(in0, in1, policy, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Tensor Subtract
+        "org.khronos.openvx.tensor_subtract" => {
+            if params.len() >= 4 {
+                let in0 = params[0] as crate::c_api::vx_tensor;
+                let in1 = params[1] as crate::c_api::vx_tensor;
+                let policy = read_scalar_enum(params[2] as vx_scalar).unwrap_or(0);
+                let output = params[3] as crate::c_api::vx_tensor;
+                if !in0.is_null() && !in1.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_tensor_subtract_impl(in0, in1, policy, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Tensor Multiply
+        "org.khronos.openvx.tensor_multiply" => {
+            if params.len() >= 6 {
+                let in0 = params[0] as crate::c_api::vx_tensor;
+                let in1 = params[1] as crate::c_api::vx_tensor;
+                let scale = params[2] as vx_scalar;
+                let overflow_policy = read_scalar_enum(params[3] as vx_scalar).unwrap_or(0);
+                let rounding_policy = read_scalar_enum(params[4] as vx_scalar).unwrap_or(0);
+                let output = params[5] as crate::c_api::vx_tensor;
+                if !in0.is_null() && !in1.is_null() && !scale.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_tensor_multiply_impl(in0, in1, scale, overflow_policy, rounding_policy, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Tensor Convert Depth
+        "org.khronos.openvx.tensor_convert_depth" => {
+            if params.len() >= 5 {
+                let input = params[0] as crate::c_api::vx_tensor;
+                let policy = read_scalar_enum(params[1] as vx_scalar).unwrap_or(0);
+                let norm = params[2] as vx_scalar;
+                let offset = params[3] as vx_scalar;
+                let output = params[4] as crate::c_api::vx_tensor;
+                if !input.is_null() && !norm.is_null() && !offset.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_tensor_convert_depth_impl(input as crate::c_api::vx_tensor, policy, norm, offset, output as crate::c_api::vx_tensor)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Tensor Table Lookup
+        "org.khronos.openvx.tensor_tablelookup" => {
+            if params.len() >= 3 {
+                let input = params[0] as crate::c_api::vx_tensor;
+                let lut = params[1];
+                let output = params[2] as crate::c_api::vx_tensor;
+                if !input.is_null() && !lut.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_tensor_table_lookup_impl(input, lut, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Tensor Transpose
+        "org.khronos.openvx.tensor_transpose" => {
+            if params.len() >= 4 {
+                let input = params[0] as crate::c_api::vx_tensor;
+                let dim1 = if !params[1].is_null() {
+                    read_scalar_enum(params[1] as vx_scalar).unwrap_or(0) as vx_size
+                } else { 0 };
+                let dim2 = if !params[2].is_null() {
+                    read_scalar_enum(params[2] as vx_scalar).unwrap_or(0) as vx_size
+                } else { 0 };
+                let output = params[3] as crate::c_api::vx_tensor;
+                if !input.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_tensor_transpose_impl(input, output, dim1, dim2)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Tensor Matrix Multiply
+        "org.khronos.openvx.tensor_matrix_multiply" => {
+            if params.len() >= 5 {
+                let a = params[0] as crate::c_api::vx_tensor;
+                let b = params[1] as crate::c_api::vx_tensor;
+                let c = params[2] as crate::c_api::vx_tensor;
+                let params_ptr = params[3] as *const std::ffi::c_void;
+                let output = params[4] as crate::c_api::vx_tensor;
+                if !a.is_null() && !b.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_tensor_matrix_multiply_impl(a, b, c, params_ptr, output)
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
@@ -7008,11 +7128,11 @@ pub const VX_DELAY_TYPE: vx_enum = 0x80600;
 pub const VX_DELAY_SLOTS: vx_enum = 0x80601;
 
 // Tensor attributes
-pub const VX_TENSOR_NUMBER_OF_DIMS: vx_enum = 0x00;
-pub const VX_TENSOR_DIMS: vx_enum = 0x01;
-pub const VX_TENSOR_DATA_TYPE: vx_enum = 0x02;
-pub const VX_TENSOR_FIXED_POINT_POSITION: vx_enum = 0x03;
-pub const VX_TENSOR_SIZE: vx_enum = 0x04;
+pub const VX_TENSOR_NUMBER_OF_DIMS: vx_enum = 0x81500;
+pub const VX_TENSOR_DIMS: vx_enum = 0x81501;
+pub const VX_TENSOR_DATA_TYPE: vx_enum = 0x81502;
+pub const VX_TENSOR_FIXED_POINT_POSITION: vx_enum = 0x81503;
+pub const VX_TENSOR_SIZE: vx_enum = 0x81504;
 
 // Import attributes
 pub const VX_IMPORT_TYPE: vx_enum = 0x00;
@@ -8506,9 +8626,13 @@ pub extern "C" fn vxCreateVirtualTensor(
     if graph.is_null() {
         return std::ptr::null_mut();
     }
-    // Virtual tensors are created like regular ones but associated with graph
+    // Extract context from the graph properly
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
     vxCreateTensor(
-        graph as vx_context,
+        context,
         number_of_dims,
         dims,
         data_type,
@@ -8829,6 +8953,7 @@ pub extern "C" fn vxCopyTensor(
 }
 
 #[no_mangle]
+#[no_mangle]
 pub extern "C" fn vxMapTensorPatch(
     tensor: vx_tensor,
     _num_dims: usize,
@@ -8837,7 +8962,7 @@ pub extern "C" fn vxMapTensorPatch(
     map_id: *mut usize,
     stride: *mut usize,
     ptr: *mut *mut c_void,
-    _usage: i32,
+    usage: i32,
     _mem_type: i32,
     _flags: u32,
 ) -> i32 {
@@ -8848,17 +8973,76 @@ pub extern "C" fn vxMapTensorPatch(
         || stride.is_null()
         || ptr.is_null()
     {
-        return -2;
+        return VX_ERROR_INVALID_PARAMETERS;
     }
-    -30
+
+    let addr = tensor as usize;
+
+    unsafe {
+        let tensors = match TENSORS.lock() {
+            Ok(g) => g,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let t = match tensors.get(&addr) {
+            Some(t) => t,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let data_map = match TENSOR_DATA.lock() {
+            Ok(g) => g,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let data = match data_map.get(&addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let element_size = match t.data_type {
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => 1usize,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2usize,
+            VX_TYPE_INT32 | VX_TYPE_UINT32 | VX_TYPE_FLOAT32 => 4usize,
+            VX_TYPE_INT64 | VX_TYPE_UINT64 | VX_TYPE_FLOAT64 => 8usize,
+            _ => 1usize,
+        };
+
+        // Calculate strides in bytes
+        let mut s = vec![0usize; t.num_dims];
+        s[0] = element_size;
+        for i in 1..t.num_dims {
+            s[i] = s[i - 1] * t.dims[i - 1];
+        }
+
+        for i in 0..t.num_dims {
+            *stride.add(i) = s[i];
+        }
+
+        // Calculate offset based on roi_start
+        let mut offset = 0usize;
+        for i in 0..t.num_dims {
+            let start = *roi_start.add(i);
+            offset += start * s[i];
+        }
+
+        // Return pointer to the mapped region
+        let data_ptr = data.as_ptr();
+        let mapped_ptr = data_ptr.add(offset) as *mut c_void;
+        *ptr = mapped_ptr;
+        *map_id = 1; // Simple map ID
+
+        // If WRITE_ONLY, we might need to handle differently, but for now just return the pointer
+        let _ = usage; // Currently unused
+
+        VX_SUCCESS
+    }
 }
 
 #[no_mangle]
+#[no_mangle]
 pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
     if tensor.is_null() {
-        return -1;
+        return VX_ERROR_INVALID_REFERENCE;
     }
-    0
+    VX_SUCCESS
 }
 
 /// `vxCopyTensorPatch` — copy a patch of tensor data to/from user memory.
@@ -8886,28 +9070,46 @@ pub extern "C" fn vxCopyTensorPatch(
     let addr = tensor as usize;
 
     unsafe {
-        if let Ok(tensors) = TENSORS.lock() {
-            if let Some(t) = tensors.get(&addr) {
-                if let Ok(tensor_data_map) = TENSOR_DATA.lock() {
-                    if let Some(data) = tensor_data_map.get(&addr) {
-                        let element_size = match t.data_type {
-                            crate::c_api::VX_TYPE_UINT8 => 1usize,
-                            crate::c_api::VX_TYPE_INT16 => 2usize,
-                            crate::c_api::VX_TYPE_INT32 => 4usize,
-                            crate::c_api::VX_TYPE_FLOAT32 => 4usize,
-                            _ => 1usize,
-                        };
-                        let total_elements: usize = t.dims.iter().take(t.num_dims).product();
-                        let copy_bytes = total_elements * element_size;
-                        let copy_bytes = copy_bytes.min(data.len());
-                        if usage == crate::c_api::VX_WRITE_ONLY {
-                            std::ptr::copy_nonoverlapping(user_ptr, data.as_ptr() as *mut c_void, copy_bytes);
-                        } else {
-                            // VX_READ_ONLY or default
-                            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, copy_bytes);
-                        }
-                        return VX_SUCCESS;
-                    }
+        // Get tensor info first
+        let (num_dims, dims, data_type) = {
+            let tensors = TENSORS.lock();
+            if let Ok(t_map) = tensors {
+                if let Some(t) = t_map.get(&addr) {
+                    (t.num_dims, t.dims.clone(), t.data_type)
+                } else {
+                    return VX_ERROR_INVALID_REFERENCE;
+                }
+            } else {
+                return VX_ERROR_INVALID_REFERENCE;
+            }
+        };
+
+        let element_size: usize = match data_type {
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => 1,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2,
+            VX_TYPE_INT32 | VX_TYPE_UINT32 | VX_TYPE_FLOAT32 => 4,
+            _ => 1,
+        };
+        let total_elements: usize = dims.iter().take(num_dims).product();
+        let copy_bytes = total_elements * element_size;
+
+        if usage == crate::c_api::VX_WRITE_ONLY {
+            // Need mutable access to TENSOR_DATA
+            if let Ok(mut tensor_data_map) = TENSOR_DATA.lock() {
+                let data = tensor_data_map.entry(addr).or_insert_with(|| vec![0u8; copy_bytes]);
+                if data.len() < copy_bytes {
+                    data.resize(copy_bytes, 0);
+                }
+                std::ptr::copy_nonoverlapping(user_ptr, data.as_mut_ptr() as *mut c_void, copy_bytes);
+                return VX_SUCCESS;
+            }
+        } else {
+            // Read from tensor data
+            if let Ok(tensor_data_map) = TENSOR_DATA.lock() {
+                if let Some(data) = tensor_data_map.get(&addr) {
+                    let actual_copy = copy_bytes.min(data.len());
+                    std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, user_ptr, actual_copy);
+                    return VX_SUCCESS;
                 }
             }
         }
@@ -14036,27 +14238,81 @@ ev_node_stub!(vxSelectNode(
 
 // ---- Tensor data-object handle APIs ----
 #[no_mangle]
+#[no_mangle]
 pub extern "C" fn vxCreateTensorFromHandle(
     context: vx_context,
     number_of_dims: vx_size,
     dims: *const vx_size,
     data_type: vx_enum,
     fixed_point_position: vx_int8,
-    stride: *const vx_size,
+    _stride: *const vx_size,
     ptr: *mut c_void,
-    memory_type: vx_enum,
+    _memory_type: vx_enum,
 ) -> vx_tensor {
-    let _ = (
-        context,
-        number_of_dims,
-        dims,
-        data_type,
-        fixed_point_position,
-        stride,
-        ptr,
-        memory_type,
-    );
-    std::ptr::null_mut()
+    if context.is_null() || dims.is_null() || number_of_dims == 0 {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let dims_slice = std::slice::from_raw_parts(dims, number_of_dims);
+        let tensor = Box::into_raw(Box::new(VxCTensor::new(
+            number_of_dims,
+            dims_slice.to_vec(),
+            data_type,
+            fixed_point_position,
+        )));
+        let addr = tensor as usize;
+
+        if let Ok(mut tensors) = TENSORS.lock() {
+            tensors.insert(addr, Arc::new(VxCTensor::new(
+                number_of_dims,
+                dims_slice.to_vec(),
+                data_type,
+                fixed_point_position,
+            )));
+        }
+
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(addr, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(addr, VX_TYPE_TENSOR);
+        }
+
+        // Calculate total elements and bytes
+        let mut total_elements = 1usize;
+        for &d in dims_slice {
+            total_elements = total_elements.saturating_mul(d);
+        }
+
+        let element_size = match data_type {
+            VX_TYPE_INT8 | VX_TYPE_UINT8 => 1,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2,
+            VX_TYPE_INT32 | VX_TYPE_UINT32 | VX_TYPE_FLOAT32 => 4,
+            VX_TYPE_INT64 | VX_TYPE_UINT64 | VX_TYPE_FLOAT64 => 8,
+            VX_TYPE_BOOL => 1,
+            _ => 1,
+        };
+        let total_bytes = total_elements.saturating_mul(element_size);
+
+        // Copy data from the provided pointer
+        let mut data = vec![0u8; total_bytes];
+        if !ptr.is_null() {
+            std::ptr::copy_nonoverlapping(ptr as *const u8, data.as_mut_ptr(), total_bytes);
+        }
+
+        if let Ok(mut tensor_data_map) = TENSOR_DATA.lock() {
+            tensor_data_map.insert(addr, data);
+        }
+
+        // Create context association
+        let context_id = context as usize as u64;
+        if let Ok(mut contexts) = TENSOR_CONTEXTS.lock() {
+            contexts.insert(addr, context_id);
+        }
+
+        tensor as vx_tensor
+    }
 }
 
 #[no_mangle]
@@ -14072,47 +14328,159 @@ pub extern "C" fn vxCreateImageObjectArrayFromTensor(
 }
 
 #[no_mangle]
+#[no_mangle]
 pub extern "C" fn vxSwapTensorHandle(
     tensor: vx_tensor,
     new_ptr: *mut c_void,
     prev_ptr: *mut *mut c_void,
 ) -> vx_status {
-    let _ = (tensor, new_ptr, prev_ptr);
-    VX_ERROR_NOT_IMPLEMENTED
+    if tensor.is_null() || new_ptr.is_null() || prev_ptr.is_null() {
+        return VX_ERROR_INVALID_PARAMETERS;
+    }
+
+    let addr = tensor as usize;
+
+    unsafe {
+        let tensors = match TENSORS.lock() {
+            Ok(g) => g,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let t = match tensors.get(&addr) {
+            Some(t) => t,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let element_size = match t.data_type {
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => 1usize,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2usize,
+            VX_TYPE_INT32 | VX_TYPE_UINT32 | VX_TYPE_FLOAT32 => 4usize,
+            VX_TYPE_INT64 | VX_TYPE_UINT64 | VX_TYPE_FLOAT64 => 8usize,
+            _ => 1usize,
+        };
+
+        let total_elements: usize = t.dims.iter().product();
+        let total_bytes = total_elements * element_size;
+
+        let mut data_map = match TENSOR_DATA.lock() {
+            Ok(g) => g,
+            Err(_) => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        if let Some(data) = data_map.get(&addr) {
+            // Return previous pointer
+            *prev_ptr = data.as_ptr() as *mut c_void;
+
+            // Copy new data into existing buffer (safer than swapping pointers for Rust-managed Vec)
+            let new_slice = std::slice::from_raw_parts(new_ptr as *const u8, total_bytes);
+            if let Some(data) = data_map.get_mut(&addr) {
+                data.copy_from_slice(new_slice);
+            }
+        } else {
+            return VX_ERROR_INVALID_REFERENCE;
+        }
+
+        VX_SUCCESS
+    }
 }
 
 // ---- Tensor kernels ----
-ev_node_stub!(vxTensorAddNode(
+
+#[no_mangle]
+pub extern "C" fn vxTensorAddNode(
     graph: vx_graph,
     input1: vx_tensor,
     input2: vx_tensor,
     policy: vx_enum,
     output: vx_tensor,
-));
-ev_vxu_stub!(vxuTensorAdd(
+) -> vx_node {
+    if graph.is_null() || input1.is_null() || input2.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut policy_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &policy as *const _ as *const c_void);
+    if policy_scalar.is_null() {
+        return std::ptr::null_mut();
+    }
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.tensor_add",
+        &[
+            input1 as vx_reference,
+            input2 as vx_reference,
+            policy_scalar as vx_reference,
+            output as vx_reference,
+        ],
+    );
+    vxReleaseScalar(&mut policy_scalar);
+    node
+}
+
+#[no_mangle]
+pub extern "C" fn vxuTensorAdd(
     context: vx_context,
     input1: vx_tensor,
     input2: vx_tensor,
     policy: vx_enum,
     output: vx_tensor,
-));
+) -> vx_status {
+    if context.is_null() || input1.is_null() || input2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    crate::vxu_impl::vxu_tensor_add_impl(input1 as crate::c_api::vx_tensor, input2 as crate::c_api::vx_tensor, policy, output as crate::c_api::vx_tensor)
+}
 
-ev_node_stub!(vxTensorSubtractNode(
+#[no_mangle]
+pub extern "C" fn vxTensorSubtractNode(
     graph: vx_graph,
     input1: vx_tensor,
     input2: vx_tensor,
     policy: vx_enum,
     output: vx_tensor,
-));
-ev_vxu_stub!(vxuTensorSubtract(
+) -> vx_node {
+    if graph.is_null() || input1.is_null() || input2.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut policy_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &policy as *const _ as *const c_void);
+    if policy_scalar.is_null() {
+        return std::ptr::null_mut();
+    }
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.tensor_subtract",
+        &[
+            input1 as vx_reference,
+            input2 as vx_reference,
+            policy_scalar as vx_reference,
+            output as vx_reference,
+        ],
+    );
+    vxReleaseScalar(&mut policy_scalar);
+    node
+}
+
+#[no_mangle]
+pub extern "C" fn vxuTensorSubtract(
     context: vx_context,
     input1: vx_tensor,
     input2: vx_tensor,
     policy: vx_enum,
     output: vx_tensor,
-));
+) -> vx_status {
+    if context.is_null() || input1.is_null() || input2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    crate::vxu_impl::vxu_tensor_subtract_impl(input1 as crate::c_api::vx_tensor, input2 as crate::c_api::vx_tensor, policy, output as crate::c_api::vx_tensor)
+}
 
-ev_node_stub!(vxTensorMultiplyNode(
+#[no_mangle]
+pub extern "C" fn vxTensorMultiplyNode(
     graph: vx_graph,
     input1: vx_tensor,
     input2: vx_tensor,
@@ -14120,8 +14488,40 @@ ev_node_stub!(vxTensorMultiplyNode(
     overflow_policy: vx_enum,
     rounding_policy: vx_enum,
     output: vx_tensor,
-));
-ev_vxu_stub!(vxuTensorMultiply(
+) -> vx_node {
+    if graph.is_null() || input1.is_null() || input2.is_null() || scale.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut overflow_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &overflow_policy as *const _ as *const c_void);
+    let mut rounding_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &rounding_policy as *const _ as *const c_void);
+    if overflow_scalar.is_null() || rounding_scalar.is_null() {
+        vxReleaseScalar(&mut overflow_scalar);
+        vxReleaseScalar(&mut rounding_scalar);
+        return std::ptr::null_mut();
+    }
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.tensor_multiply",
+        &[
+            input1 as vx_reference,
+            input2 as vx_reference,
+            scale as vx_reference,
+            overflow_scalar as vx_reference,
+            rounding_scalar as vx_reference,
+            output as vx_reference,
+        ],
+    );
+    vxReleaseScalar(&mut overflow_scalar);
+    vxReleaseScalar(&mut rounding_scalar);
+    node
+}
+
+#[no_mangle]
+pub extern "C" fn vxuTensorMultiply(
     context: vx_context,
     input1: vx_tensor,
     input2: vx_tensor,
@@ -14129,66 +14529,186 @@ ev_vxu_stub!(vxuTensorMultiply(
     overflow_policy: vx_enum,
     rounding_policy: vx_enum,
     output: vx_tensor,
-));
+) -> vx_status {
+    if context.is_null() || input1.is_null() || input2.is_null() || scale.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    crate::vxu_impl::vxu_tensor_multiply_impl(input1 as crate::c_api::vx_tensor, input2 as crate::c_api::vx_tensor, scale, overflow_policy, rounding_policy, output as crate::c_api::vx_tensor)
+}
 
-ev_node_stub!(vxTensorMatrixMultiplyNode(
+#[no_mangle]
+pub extern "C" fn vxTensorMatrixMultiplyNode(
     graph: vx_graph,
     input1: vx_tensor,
     input2: vx_tensor,
     input3: vx_tensor,
     matrix_multiply_params: *const c_void,
     output: vx_tensor,
-));
-ev_vxu_stub!(vxuTensorMatrixMultiply(
+) -> vx_node {
+    if graph.is_null() || input1.is_null() || input2.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.tensor_matrix_multiply",
+        &[
+            input1 as vx_reference,
+            input2 as vx_reference,
+            input3 as vx_reference,
+            matrix_multiply_params as vx_reference,
+            output as vx_reference,
+        ],
+    );
+    node
+}
+
+#[no_mangle]
+pub extern "C" fn vxuTensorMatrixMultiply(
     context: vx_context,
     input1: vx_tensor,
     input2: vx_tensor,
     input3: vx_tensor,
     matrix_multiply_params: *const c_void,
     output: vx_tensor,
-));
+) -> vx_status {
+    if context.is_null() || input1.is_null() || input2.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    crate::vxu_impl::vxu_tensor_matrix_multiply_impl(input1 as crate::c_api::vx_tensor, input2 as crate::c_api::vx_tensor, input3 as crate::c_api::vx_tensor, matrix_multiply_params, output as crate::c_api::vx_tensor)
+}
 
-ev_node_stub!(vxTensorTableLookupNode(
+#[no_mangle]
+pub extern "C" fn vxTensorTableLookupNode(
     graph: vx_graph,
     input1: vx_tensor,
     lut: vx_lut,
     output: vx_tensor,
-));
-ev_vxu_stub!(vxuTensorTableLookup(
+) -> vx_node {
+    if graph.is_null() || input1.is_null() || lut.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.tensor_tablelookup",
+        &[
+            input1 as vx_reference,
+            lut as vx_reference,
+            output as vx_reference,
+        ],
+    );
+    node
+}
+
+#[no_mangle]
+pub extern "C" fn vxuTensorTableLookup(
     context: vx_context,
     input1: vx_tensor,
     lut: vx_lut,
     output: vx_tensor,
-));
+) -> vx_status {
+    if context.is_null() || input1.is_null() || lut.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    crate::vxu_impl::vxu_tensor_table_lookup_impl(input1 as crate::c_api::vx_tensor, lut as crate::c_api::vx_reference, output as crate::c_api::vx_tensor)
+}
 
-ev_node_stub!(vxTensorTransposeNode(
+#[no_mangle]
+pub extern "C" fn vxTensorTransposeNode(
     graph: vx_graph,
     input: vx_tensor,
     output: vx_tensor,
     dimension1: vx_size,
     dimension2: vx_size,
-));
-ev_vxu_stub!(vxuTensorTranspose(
+) -> vx_node {
+    if graph.is_null() || input.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut dim1_scalar = vxCreateScalar(context, VX_TYPE_SIZE, &dimension1 as *const _ as *const c_void);
+    let mut dim2_scalar = vxCreateScalar(context, VX_TYPE_SIZE, &dimension2 as *const _ as *const c_void);
+    if dim1_scalar.is_null() || dim2_scalar.is_null() {
+        vxReleaseScalar(&mut dim1_scalar);
+        vxReleaseScalar(&mut dim2_scalar);
+        return std::ptr::null_mut();
+    }
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.tensor_transpose",
+        &[
+            input as vx_reference,
+            dim1_scalar as vx_reference,
+            dim2_scalar as vx_reference,
+            output as vx_reference,
+        ],
+    );
+    vxReleaseScalar(&mut dim1_scalar);
+    vxReleaseScalar(&mut dim2_scalar);
+    node
+}
+
+#[no_mangle]
+pub extern "C" fn vxuTensorTranspose(
     context: vx_context,
     input: vx_tensor,
     output: vx_tensor,
     dimension1: vx_size,
     dimension2: vx_size,
-));
+) -> vx_status {
+    if context.is_null() || input.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    crate::vxu_impl::vxu_tensor_transpose_impl(input as crate::c_api::vx_tensor, output as crate::c_api::vx_tensor, dimension1, dimension2)
+}
 
-ev_node_stub!(vxTensorConvertDepthNode(
+#[no_mangle]
+pub extern "C" fn vxTensorConvertDepthNode(
     graph: vx_graph,
     input: vx_tensor,
     policy: vx_enum,
     norm: vx_scalar,
     offset: vx_scalar,
     output: vx_tensor,
-));
-ev_vxu_stub!(vxuTensorConvertDepth(
+) -> vx_node {
+    if graph.is_null() || input.is_null() || norm.is_null() || offset.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut policy_scalar = vxCreateScalar(context, VX_TYPE_ENUM, &policy as *const _ as *const c_void);
+    if policy_scalar.is_null() {
+        return std::ptr::null_mut();
+    }
+    let node = create_node_with_params(
+        graph,
+        "org.khronos.openvx.tensor_convert_depth",
+        &[
+            input as vx_reference,
+            policy_scalar as vx_reference,
+            norm as vx_reference,
+            offset as vx_reference,
+            output as vx_reference,
+        ],
+    );
+    vxReleaseScalar(&mut policy_scalar);
+    node
+}
+
+#[no_mangle]
+pub extern "C" fn vxuTensorConvertDepth(
     context: vx_context,
     input: vx_tensor,
     policy: vx_enum,
     norm: vx_scalar,
     offset: vx_scalar,
     output: vx_tensor,
-));
+) -> vx_status {
+    if context.is_null() || input.is_null() || norm.is_null() || offset.is_null() || output.is_null() {
+        return VX_ERROR_INVALID_REFERENCE;
+    }
+    crate::vxu_impl::vxu_tensor_convert_depth_impl(input as crate::c_api::vx_tensor, policy, norm, offset, output as crate::c_api::vx_tensor)
+}
