@@ -8361,6 +8361,43 @@ fn create_object_like_exemplar(
                     std::ptr::null(),
                 ) as vx_reference
             }
+            VX_TYPE_TENSOR => {
+                let mut num_dims: vx_size = 0;
+                let mut dims: [vx_size; 6] = [0; 6];
+                let mut data_type: vx_enum = 0;
+                let mut fixed_point: vx_int8 = 0;
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_NUMBER_OF_DIMS,
+                    &mut num_dims as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_DIMS,
+                    dims.as_mut_ptr() as *mut c_void,
+                    num_dims * std::mem::size_of::<vx_size>(),
+                );
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_DATA_TYPE,
+                    &mut data_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_FIXED_POINT_POSITION,
+                    &mut fixed_point as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_int8>(),
+                );
+                crate::unified_c_api::vxCreateTensor(
+                    context,
+                    num_dims,
+                    dims.as_ptr(),
+                    data_type,
+                    fixed_point,
+                ) as vx_reference
+            }
             _ => std::ptr::null_mut(),
         }
     }
@@ -14308,7 +14345,12 @@ pub extern "C" fn vxScalarOperationNode(
             ],
         );
         if !node.is_null() {
-            graph_add_owned_ref(graph, op_scalar as vx_reference);
+            // vxSetParameterByIndex retained op_scalar.  Release our
+            // creation ref so the graph owns the only one left.
+            let _ = vxReleaseScalar(&mut op_scalar);
+        } else {
+            // Node creation failed — clean up the op_scalar we created.
+            let _ = vxReleaseScalar(&mut op_scalar);
         }
         node
     }

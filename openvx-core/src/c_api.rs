@@ -839,12 +839,73 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                     };
 
                     for node_id in graph_nodes {
-                        // Node parameters are borrowed references — do NOT
-                        // decrement their ref counts here. The application owns
-                        // the objects and will release them after the graph.
-                        // (This matches vxReleaseNode which also does not
-                        // decrement param ref counts.)
-
+                        // Release node's parameter references (decrement their ref counts)
+                        // For internally-created scalars, also release them fully
+                        if let Ok(nodes) = NODES.lock() {
+                            if let Some(node_data) = nodes.get(&node_id) {
+                                if let Ok(params) = node_data.parameters.lock() {
+                                    for param_val in params.iter() {
+                                        if let Some(val) = param_val {
+                                            if *val != 0 {
+                                                let val_type =
+                                                    if let Ok(types) = REFERENCE_TYPES.lock() {
+                                                        types.get(&(*val as usize)).copied()
+                                                    } else {
+                                                        None
+                                                    };
+                                                // Decrement ref count by 1 for the node's reference.
+                                                // The caller owns their own reference and will release it.
+                                                if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+                                                    if let Some(cnt) =
+                                                        counts.get_mut(&(*val as usize))
+                                                    {
+                                                        let current = cnt.load(
+                                                            std::sync::atomic::Ordering::SeqCst,
+                                                        );
+                                                        if current > 1 {
+                                                            cnt.store(
+                                                                current - 1,
+                                                                std::sync::atomic::Ordering::SeqCst,
+                                                            );
+                                                        } else if current == 1 {
+                                                            // Last reference - free the object
+                                                            let addr = *val as usize;
+                                                            drop(counts);
+                                                            if let Ok(mut counts2) =
+                                                                REFERENCE_COUNTS.lock()
+                                                            {
+                                                                counts2.remove(&addr);
+                                                            }
+                                                            if let Ok(mut types) =
+                                                                REFERENCE_TYPES.lock()
+                                                            {
+                                                                types.remove(&addr);
+                                                            }
+                                                            // Free based on type
+                                                            if val_type == Some(VX_TYPE_SCALAR) {
+                                                                let _ = Box::from_raw(*val as *mut crate::c_api_data::VxCScalarData);
+                                                            } else if val_type
+                                                                == Some(VX_TYPE_PYRAMID)
+                                                            {
+                                                                extern "C" {
+                                                                    fn vxReleasePyramid(
+                                                                        pyramid: *mut vx_pyramid,
+                                                                    ) -> vx_status;
+                                                                }
+                                                                let mut pyr = *val as vx_pyramid;
+                                                                unsafe {
+                                                                    vxReleasePyramid(&mut pyr);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // Remove node from registries
                         if let Ok(mut nodes_mut) = NODES.lock() {
                             nodes_mut.remove(&node_id);
@@ -2169,11 +2230,28 @@ pub extern "C" fn vxSetParameterByIndex(
 
             if let Ok(mut params) = node_data.parameters.lock() {
                 if (index as usize) < params.len() {
-                    // Node parameters are borrowed references — do NOT
-                    // increment/decrement ref counts here. The application
-                    // owns the objects and will release them after the graph.
-                    // (This matches the existing vxReleaseNode behaviour
-                    // which explicitly does not decrement param ref counts.)
+                    // Retain the new value before storing it (if not null)
+                    if !value.is_null() {
+                        let value_addr = value as usize;
+                        if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                            if let Some(cnt) = counts.get(&value_addr) {
+                                cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    // Release old value if exists
+                    if let Some(old_value) = params[index as usize] {
+                        if old_value != 0 {
+                            if let Ok(counts) = REFERENCE_COUNTS.lock() {
+                                if let Some(cnt) = counts.get(&(old_value as usize)) {
+                                    let current = cnt.load(std::sync::atomic::Ordering::SeqCst);
+                                    if current > 1 {
+                                        cnt.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     params[index as usize] = Some(value as u64);
                     drop(params);
                     (cid, kid)
