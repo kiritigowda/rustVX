@@ -56,6 +56,9 @@ pub struct VxCGraphData {
     pub run_count: std::sync::atomic::AtomicU64,
     /// Replicated nodes: node_id -> vec of replicate flags per parameter
     pub replicated_nodes: Mutex<HashMap<u64, Vec<vx_bool>>>,
+    /// Node-owned references (e.g. internally-created scalars) that must be
+    /// released when the graph is freed.
+    pub owned_refs: Mutex<Vec<u64>>,
 }
 
 /// Context data
@@ -4531,6 +4534,38 @@ fn dispatch_kernel_with_border_impl(
                 let output = params[4] as crate::c_api::vx_tensor;
                 if !a.is_null() && !b.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_tensor_matrix_multiply_impl(a, b, c, params_ptr, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Control Flow: Scalar Operation
+        "org.khronos.openvx.scalar_operation" => {
+            if params.len() >= 4 {
+                let a = params[0] as crate::c_api::vx_scalar;
+                let b = params[1] as crate::c_api::vx_scalar;
+                let op = params[2] as crate::c_api::vx_scalar;
+                let output = params[3] as crate::c_api::vx_scalar;
+                if !a.is_null() && !b.is_null() && !op.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_scalar_operation_impl(a, b, op, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Control Flow: Select
+        "org.khronos.openvx.select" => {
+            if params.len() >= 4 {
+                let condition = params[0] as crate::c_api::vx_scalar;
+                let true_value = params[1];
+                let false_value = params[2];
+                let output = params[3];
+                if !condition.is_null() && !true_value.is_null() && !false_value.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_select_impl(condition, true_value, false_value, output)
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
@@ -9949,6 +9984,22 @@ fn create_node_with_params(graph: vx_graph, kernel_name: &str, params: &[vx_refe
     node
 }
 
+/// Add a reference to the graph's owned-refs list so it gets released
+/// when the graph is freed.
+fn graph_add_owned_ref(graph: vx_graph, ref_val: vx_reference) {
+    if graph.is_null() || ref_val.is_null() {
+        return;
+    }
+    let graph_id = graph as u64;
+    if let Ok(graphs_data) = GRAPHS_DATA.lock() {
+        if let Some(g) = graphs_data.get(&graph_id) {
+            if let Ok(mut owned) = g.owned_refs.lock() {
+                owned.push(ref_val as u64);
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn vxColorConvertNode(
     graph: vx_graph,
@@ -14221,20 +14272,70 @@ pub extern "C" fn vxuHoughLinesP(
 }
 
 // ---- Control flow ----
-ev_node_stub!(vxScalarOperationNode(
+#[no_mangle]
+pub extern "C" fn vxScalarOperationNode(
     graph: vx_graph,
     op: vx_enum,
     a: vx_scalar,
     b: vx_scalar,
     output: vx_scalar,
-));
-ev_node_stub!(vxSelectNode(
+) -> vx_node {
+    if graph.is_null() || a.is_null() || b.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Create an op scalar to pass as a parameter
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let mut op_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_ENUM,
+            &op as *const _ as *const c_void,
+        );
+        if op_scalar.is_null() {
+            return std::ptr::null_mut();
+        }
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.scalar_operation",
+            &[
+                a as vx_reference,
+                b as vx_reference,
+                op_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+        if !node.is_null() {
+            graph_add_owned_ref(graph, op_scalar as vx_reference);
+        }
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxSelectNode(
     graph: vx_graph,
     condition: vx_scalar,
     true_value: vx_reference,
     false_value: vx_reference,
     output: vx_reference,
-));
+) -> vx_node {
+    if graph.is_null() || condition.is_null() || true_value.is_null() || false_value.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.select",
+        &[
+            condition as vx_reference,
+            true_value,
+            false_value,
+            output,
+        ],
+    )
+}
 
 // ---- Tensor data-object handle APIs ----
 #[no_mangle]

@@ -2398,6 +2398,7 @@ pub extern "C" fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status {
             let should_free = if let Ok(counts) = REFERENCE_COUNTS.lock() {
                 if let Some(count) = counts.get(&addr) {
                     let current = count.load(Ordering::SeqCst);
+                    eprintln!("[PYR] vxReleasePyramid addr={:#x} current={}", addr, current);
                     if current > 1 {
                         // Still referenced, just decrement
                         count.store(current - 1, Ordering::SeqCst);
@@ -2407,6 +2408,7 @@ pub extern "C" fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status {
                         true
                     }
                 } else {
+                    eprintln!("[PYR] vxReleasePyramid addr={:#x} NOT IN REGISTRY", addr);
                     true // Not in registry, free anyway
                 }
             } else {
@@ -2414,6 +2416,7 @@ pub extern "C" fn vxReleasePyramid(pyramid: *mut vx_pyramid) -> vx_status {
             };
 
             if should_free {
+                eprintln!("[PYR] vxReleasePyramid addr={:#x} FREEING", addr);
                 // Get the pyramid struct
                 let pyramid_data = &mut *(pyr as *mut VxCPyramid);
 
