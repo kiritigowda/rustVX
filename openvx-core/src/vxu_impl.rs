@@ -31,6 +31,7 @@ use crate::c_api::{
     vx_scalar,
     vx_size,
     vx_status,
+    vx_tensor,
     vx_threshold,
     vx_uint32,
     VX_DF_IMAGE_S16,
@@ -11277,6 +11278,37 @@ unsafe fn get_tensor_info(addr: usize) -> Option<(usize, Vec<usize>, i32)> {
     Some((t.num_dims, t.dims.clone(), t.data_type))
 }
 
+/// Compute flat index with broadcast for a tensor.
+/// For each dimension, if the dim size is 1, the index is 0 (broadcast), else use the actual coordinate.
+fn broadcast_index(coord: &[usize], dims: &[usize]) -> usize {
+    let mut idx = 0usize;
+    let mut stride = 1usize;
+    for i in 0..coord.len() {
+        let dim_idx = if dims[i] == 1 { 0 } else { coord[i] };
+        idx += dim_idx * stride;
+        stride *= dims[i];
+    }
+    idx
+}
+
+/// Truncate i64 to i16 using bit-level wrap (lower 16 bits), matching C trunc_to_int16.
+fn trunc_to_i16(val: i64) -> i16 {
+    (val as u16) as i16
+}
+fn elementwise_loop<F>(out_ndim: usize, out_dims: &[usize], depth: usize, coord: &mut [usize], f: &mut F)
+where
+    F: FnMut(&[usize]),
+{
+    if depth == out_ndim {
+        f(coord);
+        return;
+    }
+    for i in 0..out_dims[depth] {
+        coord[depth] = i;
+        elementwise_loop(out_ndim, out_dims, depth + 1, coord, f);
+    }
+}
+
 pub fn vxu_hog_cells_impl(
     _ctx: vx_context,
     input: vx_image,
@@ -11649,6 +11681,1081 @@ pub fn vxu_hog_features_impl(
                 feat_data[i * 2] = bytes[0];
                 feat_data[i * 2 + 1] = bytes[1];
             }
+        }
+
+        VX_SUCCESS
+    }
+}
+// ============================================================================
+// Tensor Operations (Enhanced Vision)
+// ============================================================================
+
+/// Helper: read scalar f32 value
+unsafe fn read_scalar_f32_tensor(scalar: vx_scalar) -> Option<f32> {
+    let s = &*(scalar as *const crate::c_api_data::VxCScalarData);
+    if s.data.len() >= 4 {
+        Some(f32::from_ne_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]))
+    } else {
+        None
+    }
+}
+
+/// Helper: get tensor element size in bytes
+fn tensor_element_size(data_type: vx_enum) -> usize {
+    match data_type {
+        VX_TYPE_INT8 | VX_TYPE_UINT8 => 1,
+        VX_TYPE_INT16 | VX_TYPE_UINT16 => 2,
+        VX_TYPE_INT32 | VX_TYPE_UINT32 | VX_TYPE_FLOAT32 => 4,
+        _ => 1,
+    }
+}
+
+/// Elementwise tensor Add
+pub fn vxu_tensor_add_impl(
+    in0: vx_tensor,
+    in1: vx_tensor,
+    policy: vx_enum,
+    output: vx_tensor,
+) -> vx_status {
+    let in0_addr = in0 as usize;
+    let in1_addr = in1 as usize;
+    let out_addr = output as usize;
+
+    unsafe {
+        let (in0_ndim, in0_dims, in0_dtype) = match get_tensor_info(in0_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (in1_ndim, in1_dims, in1_dtype) = match get_tensor_info(in1_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (out_ndim, out_dims, out_dtype) = match get_tensor_info(out_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        if in0_dtype != out_dtype || in1_dtype != out_dtype {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        if in0_ndim != out_ndim || in1_ndim != out_ndim {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut data_map = match get_tensor_data(in0_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in0_data = match data_map.get(&in0_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(in1_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in1_data = match data_map.get(&in1_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(out_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let out_data = match data_map.get_mut(&out_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let total_elements: usize = out_dims.iter().product();
+        let elem_size = tensor_element_size(out_dtype);
+        let total_bytes = total_elements * elem_size;
+        if out_data.len() < total_bytes {
+            out_data.resize(total_bytes, 0);
+        }
+
+        match out_dtype {
+            VX_TYPE_INT16 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = i16::from_ne_bytes([in0_data[i0*2], in0_data[i0*2+1]]) as i32;
+                    let in1_val = i16::from_ne_bytes([in1_data[i1*2], in1_data[i1*2+1]]) as i32;
+                    let sum = in0_val + in1_val;
+                    let result = if policy == VX_CONVERT_POLICY_WRAP {
+                        sum as i16
+                    } else {
+                        sum.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    let bytes = result.to_ne_bytes();
+                    out_data[out_idx*2] = bytes[0];
+                    out_data[out_idx*2+1] = bytes[1];
+                });
+            }
+            VX_TYPE_UINT8 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = in0_data[i0] as i32;
+                    let in1_val = in1_data[i1] as i32;
+                    let sum = in0_val + in1_val;
+                    let result = if policy == VX_CONVERT_POLICY_WRAP {
+                        (sum & 0xFF) as u8
+                    } else {
+                        sum.clamp(0, 255) as u8
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    out_data[out_idx] = result;
+                });
+            }
+            VX_TYPE_INT8 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = in0_data[i0] as i8 as i32;
+                    let in1_val = in1_data[i1] as i8 as i32;
+                    let sum = in0_val + in1_val;
+                    let result = if policy == VX_CONVERT_POLICY_WRAP {
+                        sum as i8
+                    } else {
+                        sum.clamp(i8::MIN as i32, i8::MAX as i32) as i8
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    out_data[out_idx] = result as u8;
+                });
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// Elementwise tensor Subtract
+pub fn vxu_tensor_subtract_impl(
+    in0: vx_tensor,
+    in1: vx_tensor,
+    policy: vx_enum,
+    output: vx_tensor,
+) -> vx_status {
+    let in0_addr = in0 as usize;
+    let in1_addr = in1 as usize;
+    let out_addr = output as usize;
+
+    unsafe {
+        let (in0_ndim, in0_dims, in0_dtype) = match get_tensor_info(in0_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (in1_ndim, in1_dims, in1_dtype) = match get_tensor_info(in1_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (out_ndim, out_dims, out_dtype) = match get_tensor_info(out_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        if in0_dtype != out_dtype || in1_dtype != out_dtype {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        if in0_ndim != out_ndim || in1_ndim != out_ndim {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut data_map = match get_tensor_data(in0_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in0_data = match data_map.get(&in0_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(in1_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in1_data = match data_map.get(&in1_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(out_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let out_data = match data_map.get_mut(&out_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let total_elements: usize = out_dims.iter().product();
+        let elem_size = tensor_element_size(out_dtype);
+        let total_bytes = total_elements * elem_size;
+        if out_data.len() < total_bytes {
+            out_data.resize(total_bytes, 0);
+        }
+
+        match out_dtype {
+            VX_TYPE_INT16 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = i16::from_ne_bytes([in0_data[i0*2], in0_data[i0*2+1]]) as i32;
+                    let in1_val = i16::from_ne_bytes([in1_data[i1*2], in1_data[i1*2+1]]) as i32;
+                    let diff = in0_val - in1_val;
+                    let result = if policy == VX_CONVERT_POLICY_WRAP {
+                        diff as i16
+                    } else {
+                        diff.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    let bytes = result.to_ne_bytes();
+                    out_data[out_idx*2] = bytes[0];
+                    out_data[out_idx*2+1] = bytes[1];
+                });
+            }
+            VX_TYPE_UINT8 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = in0_data[i0] as i32;
+                    let in1_val = in1_data[i1] as i32;
+                    let diff = in0_val - in1_val;
+                    let result = if policy == VX_CONVERT_POLICY_WRAP {
+                        (diff & 0xFF) as u8
+                    } else {
+                        diff.clamp(0, 255) as u8
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    out_data[out_idx] = result;
+                });
+            }
+            VX_TYPE_INT8 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = in0_data[i0] as i8 as i32;
+                    let in1_val = in1_data[i1] as i8 as i32;
+                    let diff = in0_val - in1_val;
+                    let result = if policy == VX_CONVERT_POLICY_WRAP {
+                        diff as i8
+                    } else {
+                        diff.clamp(i8::MIN as i32, i8::MAX as i32) as i8
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    out_data[out_idx] = result as u8;
+                });
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// Elementwise tensor Multiply
+pub fn vxu_tensor_multiply_impl(
+    in0: vx_tensor,
+    in1: vx_tensor,
+    scale: vx_scalar,
+    overflow_policy: vx_enum,
+    rounding_policy: vx_enum,
+    output: vx_tensor,
+) -> vx_status {
+    let in0_addr = in0 as usize;
+    let in1_addr = in1 as usize;
+    let out_addr = output as usize;
+
+    let scale_f32 = unsafe { read_scalar_f32_tensor(scale).unwrap_or(1.0) };
+
+    unsafe {
+        let (in0_ndim, in0_dims, in0_dtype) = match get_tensor_info(in0_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (in1_ndim, in1_dims, in1_dtype) = match get_tensor_info(in1_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (out_ndim, out_dims, out_dtype) = match get_tensor_info(out_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        if in0_dtype != out_dtype || in1_dtype != out_dtype {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        if in0_ndim != out_ndim || in1_ndim != out_ndim {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        let mut data_map = match get_tensor_data(in0_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in0_data = match data_map.get(&in0_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(in1_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in1_data = match data_map.get(&in1_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(out_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let out_data = match data_map.get_mut(&out_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let total_elements: usize = out_dims.iter().product();
+        let elem_size = tensor_element_size(out_dtype);
+        let total_bytes = total_elements * elem_size;
+        if out_data.len() < total_bytes {
+            out_data.resize(total_bytes, 0);
+        }
+
+        match out_dtype {
+            VX_TYPE_INT16 => {
+                let q78_scale = 256.0f64;
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = i16::from_ne_bytes([in0_data[i0*2], in0_data[i0*2+1]]) as f64;
+                    let in1_val = i16::from_ne_bytes([in1_data[i1*2], in1_data[i1*2+1]]) as f64;
+                    let mut prod = in0_val * in1_val * (scale_f32 as f64) / q78_scale;
+                    if rounding_policy == VX_ROUND_POLICY_TO_NEAREST_EVEN {
+                        prod = prod.round();
+                    } else {
+                        prod = prod.trunc();
+                    }
+                    let result = if overflow_policy == VX_CONVERT_POLICY_WRAP {
+                        trunc_to_i16(prod as i64)
+                    } else {
+                        prod.clamp(i16::MIN as f64, i16::MAX as f64) as i16
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    let bytes = result.to_ne_bytes();
+                    out_data[out_idx*2] = bytes[0];
+                    out_data[out_idx*2+1] = bytes[1];
+                });
+            }
+            VX_TYPE_UINT8 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = in0_data[i0] as f64;
+                    let in1_val = in1_data[i1] as f64;
+                    let mut prod = in0_val * in1_val * (scale_f32 as f64);
+                    if rounding_policy == VX_ROUND_POLICY_TO_NEAREST_EVEN {
+                        prod = prod.round();
+                    } else {
+                        prod = prod.trunc();
+                    }
+                    let result = if overflow_policy == VX_CONVERT_POLICY_WRAP {
+                        (prod as i64 & 0xFF) as u8
+                    } else {
+                        prod.clamp(0.0, 255.0) as u8
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    out_data[out_idx] = result;
+                });
+            }
+            VX_TYPE_INT8 => {
+                let mut coord = vec![0usize; out_ndim];
+                elementwise_loop(out_ndim, &out_dims, 0, &mut coord, &mut |c: &[usize]| {
+                    let i0 = broadcast_index(c, &in0_dims);
+                    let i1 = broadcast_index(c, &in1_dims);
+                    let in0_val = in0_data[i0] as i8 as f64;
+                    let in1_val = in1_data[i1] as i8 as f64;
+                    let mut prod = in0_val * in1_val * (scale_f32 as f64);
+                    if rounding_policy == VX_ROUND_POLICY_TO_NEAREST_EVEN {
+                        prod = prod.round();
+                    } else {
+                        prod = prod.trunc();
+                    }
+                    let result = if overflow_policy == VX_CONVERT_POLICY_WRAP {
+                        (prod as i64 as u8) as i8
+                    } else {
+                        prod.clamp(i8::MIN as f64, i8::MAX as f64) as i8
+                    };
+                    let out_idx = broadcast_index(c, &out_dims);
+                    out_data[out_idx] = result as u8;
+                });
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// Tensor Convert Depth
+pub fn vxu_tensor_convert_depth_impl(
+    input: vx_tensor,
+    _policy: vx_enum,
+    norm: vx_scalar,
+    offset: vx_scalar,
+    output: vx_tensor,
+) -> vx_status {
+    let in_addr = input as usize;
+    let out_addr = output as usize;
+
+    let norm_f32 = unsafe { read_scalar_f32_tensor(norm).unwrap_or(1.0) };
+    let offset_f32 = unsafe { read_scalar_f32_tensor(offset).unwrap_or(0.0) };
+
+    unsafe {
+        let (in_ndim, in_dims, in_dtype) = match get_tensor_info(in_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (out_ndim, out_dims, out_dtype) = match get_tensor_info(out_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        if in_ndim != out_ndim {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        for i in 0..in_ndim {
+            if in_dims[i] != out_dims[i] {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        }
+
+        let mut data_map = match get_tensor_data(in_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in_data = match data_map.get(&in_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(out_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let out_data = match data_map.get_mut(&out_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let total_elements: usize = out_dims.iter().product();
+        let out_elem_size = tensor_element_size(out_dtype);
+        let total_bytes = total_elements * out_elem_size;
+        if out_data.len() < total_bytes {
+            out_data.resize(total_bytes, 0);
+        }
+
+        let scale = if norm_f32 != 0.0 { 1.0 / norm_f32 } else { 1.0 };
+
+        for i in 0..total_elements {
+            let val = match in_dtype {
+                VX_TYPE_INT16 => {
+                    let bytes = [in_data[i*2], in_data[i*2+1]];
+                    i16::from_ne_bytes(bytes) as f64 / 256.0
+                }
+                VX_TYPE_UINT8 => in_data[i] as f64,
+                VX_TYPE_INT8 => in_data[i] as i8 as f64,
+                _ => return VX_ERROR_INVALID_PARAMETERS,
+            };
+
+            // CTS formula: tmp = (src - offset) * scale
+            let converted = (val - offset_f32 as f64) * (scale as f64);
+
+            match out_dtype {
+                VX_TYPE_INT16 => {
+                    let tmp = converted * 256.0;
+                    let clamped = if _policy == VX_CONVERT_POLICY_WRAP {
+                        (tmp as i64 & 0xFFFF) as i16
+                    } else {
+                        tmp.clamp(i16::MIN as f64, i16::MAX as f64) as i16
+                    };
+                    let bytes = clamped.to_ne_bytes();
+                    out_data[i*2] = bytes[0];
+                    out_data[i*2+1] = bytes[1];
+                }
+                VX_TYPE_UINT8 => {
+                    let clamped = if _policy == VX_CONVERT_POLICY_WRAP {
+                        (converted as i64 & 0xFF) as u8
+                    } else {
+                        converted.clamp(0.0, 255.0) as u8
+                    };
+                    out_data[i] = clamped;
+                }
+                VX_TYPE_INT8 => {
+                    let clamped = if _policy == VX_CONVERT_POLICY_WRAP {
+                        (converted as i64 & 0xFF) as i8
+                    } else {
+                        converted.clamp(i8::MIN as f64, i8::MAX as f64) as i8
+                    };
+                    out_data[i] = clamped as u8;
+                }
+                _ => return VX_ERROR_INVALID_PARAMETERS,
+            }
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// Tensor Table Lookup
+pub fn vxu_tensor_table_lookup_impl(
+    input: vx_tensor,
+    lut: vx_reference,
+    output: vx_tensor,
+) -> vx_status {
+    let in_addr = input as usize;
+    let lut_addr = lut as usize;
+    let out_addr = output as usize;
+
+    unsafe {
+        let (in_ndim, in_dims, in_dtype) = match get_tensor_info(in_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (out_ndim, out_dims, out_dtype) = match get_tensor_info(out_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        if in_ndim != out_ndim || in_dtype != out_dtype {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        for i in 0..in_ndim {
+            if in_dims[i] != out_dims[i] {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        }
+
+        // Get LUT data directly from pointer
+        let lut_obj = &*(lut_addr as *const crate::c_api_data::VxCLUTData);
+        let lut_items = lut_obj.data.read().unwrap();
+        let lut_item_size = crate::c_api_data::VxCLUTData::element_size(lut_obj.data_type);
+        let lut_entries = lut_items.len() / lut_item_size;  // number of LUT entries
+
+        let mut data_map = match get_tensor_data(in_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in_data = match data_map.get(&in_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(out_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let out_data = match data_map.get_mut(&out_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let total_elements: usize = out_dims.iter().product();
+        let elem_size = tensor_element_size(out_dtype);
+        let total_bytes = total_elements * elem_size;
+        if out_data.len() < total_bytes {
+            out_data.resize(total_bytes, 0);
+        }
+
+        match out_dtype {
+            VX_TYPE_INT16 => {
+                let lut_offset = (lut_entries / 2) as i32;
+                for i in 0..total_elements {
+                    let in_val = i16::from_ne_bytes([in_data[i*2], in_data[i*2+1]]) as i32;
+                    let idx = (lut_offset + in_val).clamp(0, (lut_entries - 1) as i32) as usize;
+                    let lut_val = if lut_item_size == 2 {
+                        let b0 = lut_items[idx * lut_item_size];
+                        let b1 = lut_items[idx * lut_item_size + 1];
+                        i16::from_ne_bytes([b0, b1])
+                    } else {
+                        0i16
+                    };
+                    let bytes = lut_val.to_ne_bytes();
+                    out_data[i*2] = bytes[0];
+                    out_data[i*2+1] = bytes[1];
+                }
+            }
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => {
+                let lut_offset = 0i32;
+                for i in 0..total_elements {
+                    let in_val = in_data[i] as i32;
+                    let idx = (lut_offset + in_val).clamp(0, (lut_entries - 1) as i32) as usize;
+                    let lut_val = lut_items[idx * lut_item_size];
+                    out_data[i] = lut_val;
+                }
+            }
+            _ => return VX_ERROR_INVALID_PARAMETERS,
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// Tensor Transpose
+pub fn vxu_tensor_transpose_impl(
+    input: vx_tensor,
+    output: vx_tensor,
+    dimension1: vx_size,
+    dimension2: vx_size,
+) -> vx_status {
+    let in_addr = input as usize;
+    let out_addr = output as usize;
+
+    unsafe {
+        let (in_ndim, in_dims, in_dtype) = match get_tensor_info(in_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (out_ndim, out_dims, out_dtype) = match get_tensor_info(out_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        if in_ndim != out_ndim || in_dtype != out_dtype {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        if dimension1 >= in_ndim || dimension2 >= in_ndim {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Output dims should have dimension1 and dimension2 swapped
+        for i in 0..in_ndim {
+            let expected_dim = if i == dimension1 {
+                in_dims[dimension2]
+            } else if i == dimension2 {
+                in_dims[dimension1]
+            } else {
+                in_dims[i]
+            };
+            if out_dims[i] != expected_dim {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        }
+
+        let mut data_map = match get_tensor_data(in_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let in_data = match data_map.get(&in_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(out_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let out_data = match data_map.get_mut(&out_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let total_elements: usize = out_dims.iter().product();
+        let elem_size = tensor_element_size(out_dtype);
+        let total_bytes = total_elements * elem_size;
+        if out_data.len() < total_bytes {
+            out_data.resize(total_bytes, 0);
+        }
+
+        if in_ndim == 0 {
+            return VX_SUCCESS;
+        }
+
+        // Compute strides
+        let mut in_strides = vec![1usize; in_ndim];
+        for i in 1..in_ndim {
+            in_strides[i] = in_strides[i-1] * in_dims[i-1];
+        }
+
+        let mut out_strides = vec![1usize; out_ndim];
+        for i in 1..out_ndim {
+            out_strides[i] = out_strides[i-1] * out_dims[i-1];
+        }
+
+        for out_idx in 0..total_elements {
+            let mut tmp = out_idx;
+            let mut out_coords = vec![0usize; out_ndim];
+            for i in 0..out_ndim {
+                out_coords[i] = tmp % out_dims[i];
+                tmp /= out_dims[i];
+            }
+
+            let mut in_coords = vec![0usize; in_ndim];
+            for i in 0..in_ndim {
+                in_coords[i] = if i == dimension1 {
+                    out_coords[dimension2]
+                } else if i == dimension2 {
+                    out_coords[dimension1]
+                } else {
+                    out_coords[i]
+                };
+            }
+
+            let in_flat: usize = in_coords.iter().zip(in_strides.iter()).map(|(c, s)| c * s).sum();
+
+            for b in 0..elem_size {
+                out_data[out_idx * elem_size + b] = in_data[in_flat * elem_size + b];
+            }
+        }
+
+        VX_SUCCESS
+    }
+}
+
+/// Tensor Matrix Multiply
+pub fn vxu_tensor_matrix_multiply_impl(
+    a: vx_tensor,
+    b: vx_tensor,
+    c: vx_tensor,
+    matrix_multiply_params: *const std::ffi::c_void,
+    output: vx_tensor,
+) -> vx_status {
+    let a_addr = a as usize;
+    let b_addr = b as usize;
+    let c_addr = c as usize;
+    let out_addr = output as usize;
+
+    unsafe {
+        let (a_ndim, a_dims, a_dtype) = match get_tensor_info(a_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let (b_ndim, b_dims, b_dtype) = match get_tensor_info(b_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        // Handle optional C tensor
+        let (c_ndim, c_dims, c_dtype) = if !c.is_null() {
+            match get_tensor_info(c_addr) {
+                Some(x) => x,
+                None => return VX_ERROR_INVALID_REFERENCE,
+            }
+        } else {
+            (0, vec![], 0)
+        };
+        let (out_ndim, out_dims, out_dtype) = match get_tensor_info(out_addr) {
+            Some(x) => x,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        // Read multiply params
+        #[repr(C)]
+        struct vx_tensor_matrix_multiply_params_t {
+            transpose_input1: vx_bool,
+            transpose_input2: vx_bool,
+            transpose_input3: vx_bool,
+        }
+        let params = if !matrix_multiply_params.is_null() {
+            &*(matrix_multiply_params as *const vx_tensor_matrix_multiply_params_t)
+        } else {
+            return VX_ERROR_INVALID_PARAMETERS;
+        };
+
+        let transpose_a = params.transpose_input1 != 0;
+        let transpose_b = params.transpose_input2 != 0;
+        let transpose_c = params.transpose_input3 != 0;
+
+        // Validate 2D tensors
+        if a_ndim != 2 || b_ndim != 2 || out_ndim != 2 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+        if !c.is_null() && c_ndim != 2 {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // CTS layout: dims[0] = inner/fast (columns), dims[1] = outer/slow (rows)
+        // a_dims = {arg_->a_transposed ? m : n, arg_->a_transposed ? n : m}
+        // b_dims = {arg_->b_transposed ? n : k, arg_->b_transposed ? k : n}
+        // c_dims = {arg_->c_transposed ? m : k, arg_->c_transposed ? k : m}
+        // out_dims = {k, m}
+
+        // For A: common dim is a_dims[a_transposed ? 1 : 0], rows is a_dims[a_transposed ? 0 : 1]
+        // For B: common dim is b_dims[b_transposed ? 0 : 1], cols is b_dims[b_transposed ? 1 : 0]
+        // Wait, let me trace through the CTS reference more carefully:
+        //   aa_strides = { a_strides[a_transposed], a_strides[1-a_transposed] }
+        //   bb_strides = { b_strides[b_transposed], b_strides[1-b_transposed] }
+        // A access: aa_strides[1] * y + aa_strides[0] * i
+        //   aa_strides[0] indexes the common dimension (i)
+        //   aa_strides[1] indexes the output row (y)
+        // B access: bb_strides[1] * i + bb_strides[0] * x
+        //   bb_strides[0] indexes the output col (x)
+        //   bb_strides[1] indexes the common dimension (i)
+        //
+        // For A non-transposed: a_dims={n,m}, a_strides={es, es*n}
+        //   aa_strides = {a_strides[0], a_strides[1]} = {es, es*n}
+        //   A[y][i]: y uses outer stride es*n, i uses inner stride es
+        //   common_dim_size = n = a_dims[0]
+        //   output_rows = m = a_dims[1]
+        //
+        // For A transposed: a_dims={m,n}, a_strides={es, es*m}
+        //   aa_strides = {a_strides[1], a_strides[0]} = {es*m, es}
+        //   A[i][y]: i uses outer stride es*m, y uses inner stride es
+        //   common_dim_size = n = a_dims[1]
+        //   output_rows = m = a_dims[0]
+        //
+        // For B non-transposed: b_dims={k,n}, b_strides={es, es*k}
+        //   bb_strides = {b_strides[0], b_strides[1]} = {es, es*k}
+        //   B[i][x]: i uses outer stride es*k, x uses inner stride es
+        //   Wait, that means i indexes the OUTER dimension (size n), x indexes inner (size k)
+        //   common_dim_size = n = b_dims[1]
+        //   output_cols = k = b_dims[0]
+        //
+        // For B transposed: b_dims={n,k}, b_strides={es, es*n}
+        //   bb_strides = {b_strides[1], b_strides[0]} = {es*n, es}
+        //   B[x][i]: x uses outer stride es*n, i uses inner stride es
+        //   common_dim_size = n = b_dims[0]
+        //   output_cols = k = b_dims[1]
+        //
+        // So:
+        // A: common = a_dims[a_transposed ? 1 : 0], rows = a_dims[a_transposed ? 0 : 1]
+        // B: common = b_dims[b_transposed ? 0 : 1], cols = b_dims[b_transposed ? 1 : 0]
+
+        let a_common = if transpose_a { a_dims[1] } else { a_dims[0] };
+        let a_rows   = if transpose_a { a_dims[0] } else { a_dims[1] };
+        let b_common = if transpose_b { b_dims[0] } else { b_dims[1] };
+        let b_cols   = if transpose_b { b_dims[1] } else { b_dims[0] };
+
+        // Validate: common dimension must match
+        if a_common != b_common {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // Validate output: out_dims = {k, m}
+        let out_cols = out_dims[0];  // k
+        let out_rows = out_dims[1];  // m
+
+        if out_cols != b_cols || out_rows != a_rows {
+            return VX_ERROR_INVALID_PARAMETERS;
+        }
+
+        // C dimensions: c_dims = {arg_->c_transposed ? m : k, arg_->c_transposed ? k : m}
+        // For C non-transposed: c_dims={k,m}, c_strides={es, es*k}
+        // For C transposed: c_dims={m,k}, c_strides={es, es*m}
+        // C access: cc_strides[1] * y + cc_strides[0] * x
+        //   cc_strides[0] is for x (cols)
+        //   cc_strides[1] is for y (rows)
+        // For C non-transposed: cc_strides={c_strides[0], c_strides[1]}={es, es*k}
+        //   x inner dim = k = c_dims[0]
+        //   y outer dim = m = c_dims[1]
+        // For C transposed: cc_strides={c_strides[1], c_strides[0]}={es*k, es}
+        //   x inner dim = k = c_dims[1]
+        //   y outer dim = m = c_dims[0]
+        let c_x_dim = if !c.is_null() { if transpose_c { c_dims[1] } else { c_dims[0] } } else { 0 };
+        let c_y_dim = if !c.is_null() { if transpose_c { c_dims[0] } else { c_dims[1] } } else { 0 };
+
+        // Validate C dimensions if present
+        if !c.is_null() {
+            if c_x_dim != out_cols || c_y_dim != out_rows {
+                return VX_ERROR_INVALID_PARAMETERS;
+            }
+        }
+
+        // Strides: inner stride = elem_size, outer stride = elem_size * inner_dim
+        let elem_size = tensor_element_size(a_dtype);
+        let a_stride_inner = elem_size;  // for a_dims[0]
+        let a_stride_outer = elem_size * a_dims[0];  // for a_dims[1]
+        let b_stride_inner = elem_size;  // for b_dims[0]
+        let b_stride_outer = elem_size * b_dims[0];  // for b_dims[1]
+        let c_stride_inner = if !c.is_null() { elem_size } else { 0 };  // for c_dims[0]
+        let c_stride_outer = if !c.is_null() { elem_size * c_dims[0] } else { 0 };  // for c_dims[1]
+
+        // CTS reference:
+        // aa_strides[0] = a_strides[a_transposed], aa_strides[1] = a_strides[1-a_transposed]
+        // bb_strides[0] = b_strides[b_transposed], bb_strides[1] = b_strides[1-b_transposed]
+        // cc_strides[0] = c_strides[c_transposed], cc_strides[1] = c_strides[1-c_transposed]
+        //
+        // A access: aa_strides[1] * y + aa_strides[0] * i
+        // B access: bb_strides[1] * i + bb_strides[0] * x
+        // C access: cc_strides[1] * y + cc_strides[0] * x
+        // out access: out_strides[1] * y + out_strides[0] * x
+        //
+        // For contiguous: a_strides[0] = elem_size, a_strides[1] = elem_size * a_dims[0]
+        let a_strides = [a_stride_inner, a_stride_outer];
+        let b_strides = [b_stride_inner, b_stride_outer];
+        let c_strides = [c_stride_inner, c_stride_outer];
+
+        let aa_stride_0 = a_strides[if transpose_a { 1 } else { 0 }];
+        let aa_stride_1 = a_strides[if transpose_a { 0 } else { 1 }];
+        let bb_stride_0 = b_strides[if transpose_b { 1 } else { 0 }];
+        let bb_stride_1 = b_strides[if transpose_b { 0 } else { 1 }];
+        let cc_stride_0 = c_strides[if transpose_c { 1 } else { 0 }];
+        let cc_stride_1 = c_strides[if transpose_c { 0 } else { 1 }];
+
+        let mut data_map = match get_tensor_data(a_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let a_data = match data_map.get(&a_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let mut data_map = match get_tensor_data(b_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let b_data = match data_map.get(&b_addr) {
+            Some(d) => d.clone(),
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        drop(data_map);
+
+        let c_data: Option<Vec<u8>> = if !c.is_null() {
+            let mut data_map = match get_tensor_data(c_addr) {
+                Some(g) => g,
+                None => return VX_ERROR_INVALID_REFERENCE,
+            };
+            let cd = match data_map.get(&c_addr) {
+                Some(d) => d.clone(),
+                None => return VX_ERROR_INVALID_REFERENCE,
+            };
+            drop(data_map);
+            Some(cd)
+        } else {
+            None
+        };
+
+        let mut data_map = match get_tensor_data(out_addr) {
+            Some(g) => g,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+        let out_data = match data_map.get_mut(&out_addr) {
+            Some(d) => d,
+            None => return VX_ERROR_INVALID_REFERENCE,
+        };
+
+        let total_elements = out_rows * out_cols;
+        let out_elem_size = tensor_element_size(out_dtype);
+        let total_bytes = total_elements * out_elem_size;
+        if out_data.len() < total_bytes {
+            out_data.resize(total_bytes, 0);
+        }
+
+        let out_stride_0 = out_elem_size;  // inner
+        let out_stride_1 = out_elem_size * out_dims[0];  // outer
+
+        let common_dim = a_common;  // = b_common
+
+        // Integer math for Q78, U8, S8 (no floating point)
+        match (a_dtype, out_dtype) {
+            (VX_TYPE_INT16, VX_TYPE_INT16) => {
+                for y in 0..out_rows {
+                    for x in 0..out_cols {
+                        let mut accum: i32 = 0;
+
+                        for i in 0..common_dim {
+                            let a_ptr = a_data.as_ptr() as *const i16;
+                            let b_ptr = b_data.as_ptr() as *const i16;
+                            let a_offset = aa_stride_1 * y + aa_stride_0 * i;
+                            let b_offset = bb_stride_1 * i + bb_stride_0 * x;
+                            let a_val = *(a_ptr.add(a_offset / 2));  // divide by sizeof(i16)
+                            let b_val = *(b_ptr.add(b_offset / 2));
+                            accum += (a_val as i32) * (b_val as i32);
+                        }
+
+                        if let Some(ref c_data_vec) = c_data {
+                            let c_ptr = c_data_vec.as_ptr() as *const i16;
+                            let c_offset = cc_stride_1 * y + cc_stride_0 * x;
+                            let c_val = *c_ptr.add(c_offset / 2);
+                            accum += (c_val as i32) * 256;  // Q78_SCALE = 256
+                        }
+
+                        let result = ((accum + 128) / 256).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                        let out_ptr = out_data.as_mut_ptr() as *mut i16;
+                        let out_offset = out_stride_1 * y + out_stride_0 * x;
+                        *(out_ptr.add(out_offset / 2)) = result;
+                    }
+                }
+            }
+            (VX_TYPE_UINT8, VX_TYPE_UINT8) => {
+                for y in 0..out_rows {
+                    for x in 0..out_cols {
+                        let mut accum: i32 = 0;
+
+                        for i in 0..common_dim {
+                            let a_ptr = a_data.as_ptr();
+                            let b_ptr = b_data.as_ptr();
+                            let a_offset = aa_stride_1 * y + aa_stride_0 * i;
+                            let b_offset = bb_stride_1 * i + bb_stride_0 * x;
+                            let a_val = *a_ptr.add(a_offset) as i32;
+                            let b_val = *b_ptr.add(b_offset) as i32;
+                            accum += a_val * b_val;
+                        }
+
+                        if let Some(ref c_data_vec) = c_data {
+                            let c_ptr = c_data_vec.as_ptr();
+                            let c_offset = cc_stride_1 * y + cc_stride_0 * x;
+                            accum += *c_ptr.add(c_offset) as i32;
+                        }
+
+                        let result = accum.clamp(0, 255) as u8;
+                        let out_offset = out_stride_1 * y + out_stride_0 * x;
+                        out_data[out_offset] = result;
+                    }
+                }
+            }
+            (VX_TYPE_INT8, VX_TYPE_INT8) => {
+                for y in 0..out_rows {
+                    for x in 0..out_cols {
+                        let mut accum: i32 = 0;
+
+                        for i in 0..common_dim {
+                            let a_ptr = a_data.as_ptr() as *const i8;
+                            let b_ptr = b_data.as_ptr() as *const i8;
+                            let a_offset = aa_stride_1 * y + aa_stride_0 * i;
+                            let b_offset = bb_stride_1 * i + bb_stride_0 * x;
+                            let a_val = *a_ptr.add(a_offset) as i32;
+                            let b_val = *b_ptr.add(b_offset) as i32;
+                            accum += a_val * b_val;
+                        }
+
+                        if let Some(ref c_data_vec) = c_data {
+                            let c_ptr = c_data_vec.as_ptr() as *const i8;
+                            let c_offset = cc_stride_1 * y + cc_stride_0 * x;
+                            accum += *c_ptr.add(c_offset) as i32;
+                        }
+
+                        let result = accum.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+                        let out_offset = out_stride_1 * y + out_stride_0 * x;
+                        out_data[out_offset] = result as u8;
+                    }
+                }
+            }
+            _ => return VX_ERROR_INVALID_FORMAT,
         }
 
         VX_SUCCESS

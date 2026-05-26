@@ -608,6 +608,35 @@ jobs:
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="BilateralFilter.*"
 
+  # Tensor ops — 226 tests (Tensor 12 + TensorOp 214), separated to keep
+  # each CI job focused and avoid state leakage with other categories.
+  tensor-ops:
+    name: "tensor-ops"
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run Tensor tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 300 ./bin/vx_test_conformance --filter="Tensor.*"
+      - name: Run TensorOp tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 600 ./bin/vx_test_conformance --filter="TensorOp.*"
+
   # Performance benchmark using openvx-mark, comparing rustVX against the
   # Khronos OpenVX sample implementation on the SAME runner so the two
   # numbers come from identical hardware. This job does NOT rebuild either
