@@ -630,7 +630,7 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 120 ./bin/vx_test_conformance --filter="ControlFlow.SelectNode/0*:ControlFlow.SelectNode/1*:ControlFlow.SelectNode/2*:ControlFlow.SelectNode/3*:ControlFlow.SelectNode/4*:ControlFlow.SelectNode/5*:ControlFlow.SelectNode/6*:ControlFlow.SelectNode/9*"
+          timeout 120 ./bin/vx_test_conformance --filter="ControlFlow.SelectNode/0:ControlFlow.SelectNode/1:ControlFlow.SelectNode/2:ControlFlow.SelectNode/3:ControlFlow.SelectNode/4:ControlFlow.SelectNode/5:ControlFlow.SelectNode/6:ControlFlow.SelectNode/9"
       - name: Run ControlFlow ScalarOperationNode tests
         run: |
           chmod +x OpenVX-cts/build/bin/vx_test_conformance
