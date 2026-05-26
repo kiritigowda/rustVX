@@ -4490,7 +4490,7 @@ fn dispatch_kernel_with_border_impl(
             }
         }
         // Tensor Table Lookup
-        "org.khronos.openvx.tensor_tablelookup" => {
+        "org.khronos.openvx.tensor_table_lookup" => {
             if params.len() >= 3 {
                 let input = params[0] as crate::c_api::vx_tensor;
                 let lut = params[1];
@@ -14730,7 +14730,7 @@ pub extern "C" fn vxTensorTableLookupNode(
     }
     let node = create_node_with_params(
         graph,
-        "org.khronos.openvx.tensor_tablelookup",
+        "org.khronos.openvx.tensor_table_lookup",
         &[
             input1 as vx_reference,
             lut as vx_reference,
