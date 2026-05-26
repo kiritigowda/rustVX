@@ -14465,8 +14465,217 @@ pub extern "C" fn vxCreateImageObjectArrayFromTensor(
     jump: vx_size,
     image_format: vx_df_image,
 ) -> vx_object_array {
-    let _ = (tensor, rect, array_size, jump, image_format);
-    std::ptr::null_mut()
+    if tensor.is_null() || rect.is_null() || array_size == 0 {
+        return std::ptr::null_mut();
+    }
+
+    extern "C" {
+        fn vxCreateImage(ctx: vx_context, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_image;
+        fn vxMapImagePatch(
+            image: vx_image,
+            rect: *const c_void,
+            plane_index: u32,
+            map_id: *mut vx_map_id,
+            addr: *mut c_void,
+            ptr: *mut *mut c_void,
+            usage: vx_enum,
+            mem_type: vx_enum,
+            flags: u32,
+        ) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+    }
+
+    unsafe {
+        let addr = tensor as usize;
+
+        // Query tensor info
+        let (num_dims, dims, data_type, context_id) = {
+            let tensors = match TENSORS.lock() {
+                Ok(g) => g,
+                Err(_) => return std::ptr::null_mut(),
+            };
+            let t = match tensors.get(&addr) {
+                Some(t) => t.clone(),
+                None => return std::ptr::null_mut(),
+            };
+            let ctx = match TENSOR_CONTEXTS.lock() {
+                Ok(g) => g,
+                Err(_) => return std::ptr::null_mut(),
+            };
+            let ctx_id = match ctx.get(&addr) {
+                Some(id) => *id,
+                None => return std::ptr::null_mut(),
+            };
+            (t.num_dims, t.dims.clone(), t.data_type, ctx_id)
+        };
+
+        if num_dims != 3 {
+            return std::ptr::null_mut();
+        }
+
+        let rect_ref = &*rect;
+        let img_width = (rect_ref.end_x - rect_ref.start_x) as usize;
+        let img_height = (rect_ref.end_y - rect_ref.start_y) as usize;
+
+        if img_width == 0 || img_height == 0 {
+            return std::ptr::null_mut();
+        }
+
+        // Validate array_size against tensor dims[2]
+        if array_size > dims[2] {
+            return std::ptr::null_mut();
+        }
+
+        // Validate image format matches tensor data type
+        let tensor_elem_size: usize = match data_type {
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => 1,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2,
+            _ => return std::ptr::null_mut(),
+        };
+
+        let expected_format = match data_type {
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => crate::c_api::VX_DF_IMAGE_U8,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => crate::c_api::VX_DF_IMAGE_S16,
+            _ => return std::ptr::null_mut(),
+        };
+
+        if image_format != expected_format {
+            return std::ptr::null_mut();
+        }
+
+        // Get tensor data
+        let tensor_data = {
+            let data_map = match TENSOR_DATA.lock() {
+                Ok(g) => g,
+                Err(_) => return std::ptr::null_mut(),
+            };
+            match data_map.get(&addr) {
+                Some(d) => d.clone(),
+                None => return std::ptr::null_mut(),
+            }
+        };
+
+        // Calculate tensor strides (same logic as vxMapTensorPatch)
+        let mut strides = vec![0usize; num_dims];
+        strides[0] = tensor_elem_size;
+        for i in 1..num_dims {
+            strides[i] = strides[i - 1] * dims[i - 1];
+        }
+
+        // The "jump" parameter is the stride between channel data; verify it matches
+        // our computed stride[2] (or is compatible)
+        let _ = jump; // We use our computed strides for indexing
+
+        let context = context_id as vx_context;
+
+        // Create images and copy data
+        let mut items: Vec<usize> = Vec::new();
+        for ch in 0..array_size {
+            let img = vxCreateImage(context, img_width as vx_uint32, img_height as vx_uint32, image_format);
+            if img.is_null() {
+                // Cleanup already created items
+                for &item in &items {
+                    let mut r = item as vx_reference;
+                    let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                }
+                return std::ptr::null_mut();
+            }
+
+            // Map image patch for writing
+            let mut map_id: vx_map_id = 0;
+            let mut img_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+            let mut img_ptr: *mut c_void = std::ptr::null_mut();
+
+            let map_rect = crate::c_api::vx_rectangle_t {
+                start_x: 0,
+                start_y: 0,
+                end_x: img_width as vx_uint32,
+                end_y: img_height as vx_uint32,
+            };
+
+            let map_status = vxMapImagePatch(
+                img,
+                &map_rect as *const _ as *const c_void,
+                0,
+                &mut map_id,
+                &mut img_addr as *mut _ as *mut c_void,
+                &mut img_ptr as *mut *mut c_void,
+                crate::c_api::VX_WRITE_ONLY,
+                crate::c_api::VX_MEMORY_TYPE_HOST,
+                0,
+            );
+            if map_status != VX_SUCCESS {
+                // Release this image and cleanup previous
+                let mut r = img as vx_reference;
+                let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                for &item in &items {
+                    let mut r = item as vx_reference;
+                    let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                }
+                return std::ptr::null_mut();
+            }
+
+            // Copy data from tensor slice into image
+            // Tensor pixel (x,y,ch) offset = ch * strides[2] + y * strides[1] + x * strides[0]
+            // Image pixel (x,y) offset = y * stride_y + x * stride_x
+            let ch_offset = ch * strides[2];
+            for y in 0..img_height {
+                let img_row = (img_ptr as *mut u8).wrapping_add((y * img_addr.stride_y as usize) as usize);
+                let tensor_row_offset = ch_offset + y * strides[1];
+                for x in 0..img_width {
+                    let pixel_offset = tensor_row_offset + x * strides[0];
+                    if tensor_elem_size == 1 {
+                        *img_row.add((x * img_addr.stride_x as usize) as usize) =
+                            tensor_data[pixel_offset];
+                    } else {
+                        let img_pixel = img_row.add((x * img_addr.stride_x as usize) as usize) as *mut u16;
+                        let val = (tensor_data[pixel_offset] as u16)
+                            | ((tensor_data[pixel_offset + 1] as u16) << 8);
+                        *img_pixel = val;
+                    }
+                }
+            }
+
+            let _ = vxUnmapImagePatch(img, map_id);
+            items.push(img as usize);
+        }
+
+        let obj_array = Box::new(VxCObjectArray {
+            exemplar_type: VX_TYPE_IMAGE,
+            count: array_size as usize,
+            ref_count: AtomicUsize::new(1),
+            items: RwLock::new(items),
+            is_virtual: false,
+        });
+
+        let obj_array_ptr = Box::into_raw(obj_array) as vx_object_array;
+
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(obj_array_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(obj_array_ptr as usize, VX_TYPE_OBJECT_ARRAY);
+        }
+        if let Ok(mut obj_arrays) = OBJECT_ARRAYS.lock() {
+            // Need to create an Arc version to store in OBJECT_ARRAYS.
+            // But the Box is the canonical owner. We'll store an Arc that
+            // shares the data, but we can't do that safely here.
+            // Instead, store a clone with the same items.
+            let arr_clone = VxCObjectArray {
+                exemplar_type: VX_TYPE_IMAGE,
+                count: array_size as usize,
+                ref_count: AtomicUsize::new(1),
+                items: RwLock::new({
+                    let guard = (*(obj_array_ptr as *const VxCObjectArray)).items.read().unwrap();
+                    guard.clone()
+                }),
+                is_virtual: false,
+            };
+            obj_arrays.insert(obj_array_ptr as usize, Arc::new(arr_clone));
+        }
+
+        obj_array_ptr
+    }
 }
 
 #[no_mangle]
