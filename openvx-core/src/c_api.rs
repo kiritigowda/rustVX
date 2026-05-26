@@ -353,30 +353,26 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.laplacian_pyramid", 0x2A, 3),
         ("org.khronos.openvx.laplacian_reconstruct", 0x2B, 3),
         ("org.khronos.openvx.non_linear_filter", 0x2C, 4),
-        // Enhanced Vision kernels
-        ("org.khronos.openvx.copy", 0x35, 3),
-        ("org.khronos.openvx.non_max_suppression", 0x36, 4),
-        ("org.khronos.openvx.hough_lines_p", 0x34, 8),
+        // Enhanced Vision kernels (per OpenVX 1.3 spec)
         ("org.khronos.openvx.match_template", 0x2D, 4),
         ("org.khronos.openvx.lbp", 0x2E, 4),
-        ("org.khronos.openvx.hog_cells", 0x39, 6),
+        ("org.khronos.openvx.hough_lines_p", 0x2F, 8),
+        ("org.khronos.openvx.tensor_multiply", 0x30, 6),
+        ("org.khronos.openvx.tensor_add", 0x31, 4),
+        ("org.khronos.openvx.tensor_subtract", 0x32, 4),
+        ("org.khronos.openvx.tensor_table_lookup", 0x33, 3),
+        ("org.khronos.openvx.tensor_transpose", 0x34, 4),
+        ("org.khronos.openvx.tensor_convert_depth", 0x35, 5),
+        ("org.khronos.openvx.tensor_matrix_multiply", 0x36, 5),
+        ("org.khronos.openvx.copy", 0x37, 3),
+        ("org.khronos.openvx.non_max_suppression", 0x38, 4),
+        ("org.khronos.openvx.scalar_operation", 0x39, 4),
         ("org.khronos.openvx.hog_features", 0x3A, 7),
-        ("org.khronos.openvx.bilateral_filter", 0x38, 5),
+        ("org.khronos.openvx.hog_cells", 0x3B, 6),
+        ("org.khronos.openvx.bilateral_filter", 0x3C, 5),
+        ("org.khronos.openvx.select", 0x3D, 4),
         // OpenVX 1.0.2 addition
         ("org.khronos.openvx.weighted_average", 0x40, 4),
-        // OpenVX 1.1 extensions
-        ("org.khronos.openvx.sobel_5x5", 0x30, 3),
-        // Tensor operations (Enhanced Vision)
-        ("org.khronos.openvx.tensor_add", 0x41, 4),
-        ("org.khronos.openvx.tensor_subtract", 0x42, 4),
-        ("org.khronos.openvx.tensor_multiply", 0x43, 6),
-        ("org.khronos.openvx.tensor_convert_depth", 0x44, 5),
-        ("org.khronos.openvx.tensor_tablelookup", 0x45, 3),
-        ("org.khronos.openvx.tensor_transpose", 0x46, 4),
-        ("org.khronos.openvx.tensor_matrix_multiply", 0x47, 5),
-        // Control flow kernels
-        ("org.khronos.openvx.select", 0x48, 4),
-        ("org.khronos.openvx.scalar_operation", 0x49, 4),
     ];
 
     if let Ok(mut kernels) = KERNELS.lock() {

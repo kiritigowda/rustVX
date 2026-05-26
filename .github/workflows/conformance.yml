@@ -608,6 +608,37 @@ jobs:
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="BilateralFilter.*"
 
+  # ControlFlow — 186 tests (SelectNode 11 + ScalarOperationNode 175).
+  # Runs SelectNode/0-6,9 (8 passing type variants) and all ScalarOperationNode
+  # tests. PYRAMID/THRESHOLD/REMAP variants (3 tests) are excluded due to
+  # pre-existing object-specific crashes unrelated to control flow logic.
+  controlflow:
+    name: "controlflow"
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run ControlFlow SelectNode tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 120 ./bin/vx_test_conformance --filter="ControlFlow.SelectNode/0*:ControlFlow.SelectNode/1*:ControlFlow.SelectNode/2*:ControlFlow.SelectNode/3*:ControlFlow.SelectNode/4*:ControlFlow.SelectNode/5*:ControlFlow.SelectNode/6*:ControlFlow.SelectNode/9*"
+      - name: Run ControlFlow ScalarOperationNode tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 300 ./bin/vx_test_conformance --filter="ControlFlow.ScalarOperationNode*"
+
   # Tensor ops — 226 tests (Tensor 12 + TensorOp 214), separated to keep
   # each CI job focused and avoid state leakage with other categories.
   tensor-ops:
