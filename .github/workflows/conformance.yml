@@ -790,7 +790,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/openvx-mark/build-rustvx
           export LD_LIBRARY_PATH=${{ steps.rustvx.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5 --all
 
       # ---------------------------------------------------------------------
       # Khronos sample benchmark
@@ -810,7 +810,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/openvx-mark/build-khronos
           export LD_LIBRARY_PATH=${{ steps.khronos.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5 --all
 
       # ---------------------------------------------------------------------
       # Compare results
@@ -1097,19 +1097,19 @@ jobs:
           export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}
           # Throwaway: prime instruction/data caches and any
           # is_x86_feature_detected! one-time-dispatch overhead.
-          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
+          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 --all \
             --output /tmp/warmup-pr-throwaway >/dev/null 2>&1 || true
           # Real measurement.
-          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5 --all
 
       - name: Bench rustVX-main (warmup + measure)
         run: |
           set -eo pipefail
           cd ${{ github.workspace }}/openvx-mark/build-main
           export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}
-          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
+          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 --all \
             --output /tmp/warmup-main-throwaway >/dev/null 2>&1 || true
-          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+          ./openvx-mark --resolution FHD --iterations 20 --warmup 5 --all
 
       - name: Run perf gate
         run: |
