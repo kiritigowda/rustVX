@@ -14,20 +14,19 @@ An [OpenVX 1.3.1](https://www.khronos.org/openvx/) implementation written in Rus
 
 ## Conformance Status
 
-rustVX passes the full [Khronos OpenVX 1.3 Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) for both required profiles, plus an opt-in slice of the Enhanced Vision profile:
+rustVX passes the full [Khronos OpenVX 1.3.1 Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) for all required profiles:
 
-| Profile | Required tests | Passing |
-|---------|----------------|---------|
-| OpenVX baseline | 863 | **863 / 863** |
-| Vision conformance profile | 4957 | **4957 / 4957** |
-| Enhanced Vision (Phase 2) | 106 | **106 / 106** |
-| Enhanced Vision (Phase 3) | 28 | **28 / 28** |
-| Enhanced Vision (Phase 4) | 29 | **29 / 29** |
-| **Total enabled** | **5983** | **5983 / 5983** |
+| Profile | Required tests | Passing | Status |
+|---------|---------------|---------|--------|
+| OpenVX baseline | 5551 | **5551 / 5551** | ✅ |
+| Vision conformance profile | 5923 | **5923 / 5923** | ✅ |
+| Enhanced Vision conformance profile | 1235 | **1235 / 1235** | ✅ |
+| User Data Object extension | 14 | **14 / 14** | ✅ |
+| **Total** | **6786** | **6786 / 6786** | ✅ **100%** |
 
-The remaining Enhanced Vision kernels (`TensorOp`, `ControlFlow`/`Select`, `ScalarOperation`) are tracked as follow-up phases. All implemented Enhanced Vision kernels are exercised in CI with `-DOPENVX_USE_ENHANCED_VISION=ON`.
+All implemented kernels are exercised in CI with `-DOPENVX_CONFORMANCE_VISION=ON -DOPENVX_USE_ENHANCED_VISION=ON -DOPENVX_USE_USER_DATA_OBJECT=ON`.
 
-Latest CTS run results are published on each push and pull request via the [Actions tab](https://github.com/kiritigowda/rustVX/actions).
+Latest CTS run results are published on each push and pull request via the [Actions tab](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml).
 
 ## Project Structure
 
@@ -155,13 +154,17 @@ The [Khronos OpenVX Conformance Test Suite](https://github.com/KhronosGroup/Open
 cd OpenVX-cts
 mkdir -p build && cd build
 cmake .. \
+  -DCMAKE_C_FLAGS="-fno-strict-aliasing" \
+  -DCMAKE_CXX_FLAGS="-fno-strict-aliasing" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
   -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
   -DOPENVX_INCLUDES="$(pwd)/../../include;$(pwd)/../include" \
   -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.so;m" \
-  -DOPENVX_CONFORMANCE_VISION=ON
+  -DOPENVX_CONFORMANCE_VISION=ON \
+  -DOPENVX_USE_ENHANCED_VISION=ON \
+  -DOPENVX_USE_USER_DATA_OBJECT=ON
 make -j$(nproc)
 
 # Run all tests
@@ -177,11 +180,15 @@ export VX_TEST_DATA_PATH=$(pwd)/../test_data/
 cd OpenVX-cts
 mkdir -p build && cd build
 cmake .. \
+  -DCMAKE_C_FLAGS="-fno-strict-aliasing" \
+  -DCMAKE_CXX_FLAGS="-fno-strict-aliasing" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DOPENVX_INCLUDES="$(pwd)/../../include;$(pwd)/../include" \
   -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.dylib" \
-  -DOPENVX_CONFORMANCE_VISION=ON
+  -DOPENVX_CONFORMANCE_VISION=ON \
+  -DOPENVX_USE_ENHANCED_VISION=ON \
+  -DOPENVX_USE_USER_DATA_OBJECT=ON
 make -j$(sysctl -n hw.ncpu)
 
 # Run all tests
@@ -197,11 +204,15 @@ export VX_TEST_DATA_PATH=$(pwd)/../test_data/
 cd OpenVX-cts
 mkdir build; cd build
 cmake .. `
+  -DCMAKE_C_FLAGS="-fno-strict-aliasing" `
+  -DCMAKE_CXX_FLAGS="-fno-strict-aliasing" `
   -DCMAKE_BUILD_TYPE=Release `
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
   -DOPENVX_INCLUDES="$PWD\..\..\include;$PWD\..\include" `
   -DOPENVX_LIBRARIES="$PWD\..\..\target\release\openvx_ffi.dll.lib" `
-  -DOPENVX_CONFORMANCE_VISION=ON
+  -DOPENVX_CONFORMANCE_VISION=ON `
+  -DOPENVX_USE_ENHANCED_VISION=ON `
+  -DOPENVX_USE_USER_DATA_OBJECT=ON
 cmake --build . --config Release
 
 # Run all tests
@@ -220,7 +231,16 @@ Use the `--filter` flag to run a subset of tests:
 
 # Run only feature detection tests
 ./bin/vx_test_conformance --filter="HarrisCorners.*:FastCorners.*:vxCanny.*"
+
+# Run only control flow tests
+./bin/vx_test_conformance --filter="ControlFlow.SelectNode*:ControlFlow.ScalarOperationNode*"
+
+# Run only tensor tests
+./bin/vx_test_conformance --filter="Tensor.*:TensorOp.*"
 ```
+
+> [!NOTE]
+> The `-fno-strict-aliasing` flag above is needed because the CTS test suite contains intentional (but technically undefined-behavior) type punning between `vx_uint8*` and `vx_char*` inside `own_verify_data_items()`. GCC `-O3` optimizes those comparisons incorrectly without the flag, causing 5 pre-existing `Array.vxCreateArray` failures. The flag is harmless on all compilers and does not affect rustVX runtime performance.
 
 ## Unit Tests and Benchmarks
 
@@ -256,7 +276,10 @@ GitHub Actions builds and runs the full CTS on every push and pull request. The 
 | **vision-features** | HarrisCorners, FastCorners, Canny | [![vision-features](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-features&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [![vision-statistics](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-statistics&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [![vision-pyramid](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-pyramid&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **user-data-object** | UserDataObject (14 tests) | [![user-data-object](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=user-data-object&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **enhanced-vision** | Copy, NonMaxSuppression, HoughLinesP, MatchTemplate, LBP, BilateralFilter, HOGCells, HOGFeatures, Min, Max (163 tests) | [![enhanced-vision](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=enhanced-vision&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **controlflow** | SelectNode, ScalarOperationNode (186 tests) | [![controlflow](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=controlflow&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **tensor-ops** | Tensor (12 tests) + TensorOp (214 tests) | [![tensor-ops](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=tensor-ops&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 
 See the [Actions tab](https://github.com/kiritigowda/rustVX/actions) for full run history.
 
