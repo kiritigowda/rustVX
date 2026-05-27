@@ -140,6 +140,8 @@ jobs:
           cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-fno-strict-aliasing" \
+            -DCMAKE_CXX_FLAGS="-fno-strict-aliasing" \
             -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
             -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
             -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
