@@ -5,7 +5,7 @@
 //! this file without shifting the binary layout of hot functions inside
 //! `vxu_impl.rs` (Add, AbsDiff, etc.).
 
-use crate::vxu_impl::{Image, ImageFormat};
+use crate::vxu_impl::Image;
 use crate::VxStatus;
 
 /// Optimised ChannelCombine for RGB (interleaved R-G-B).
@@ -105,7 +105,7 @@ pub fn convolve_3x3_u8_undefined(
         return Err(VxStatus::ErrorInvalidDimension);
     }
 
-    let w = width as isize;
+    let _w = width as isize;
     let row = |y: usize| &src_data[y * width..(y + 1) * width];
 
     // Inner region: no bounds checks needed.
@@ -183,7 +183,7 @@ pub fn convolve_3x3_u8_undefined(
         {
             let mut sum: i32 = 0;
             for ky in 0..3 {
-                let py = y + ky - 1;
+                let _py = y + ky - 1;
                 let src_row = match ky {
                     0 => ym1,
                     1 => y0,

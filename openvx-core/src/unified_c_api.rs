@@ -56,6 +56,9 @@ pub struct VxCGraphData {
     pub run_count: std::sync::atomic::AtomicU64,
     /// Replicated nodes: node_id -> vec of replicate flags per parameter
     pub replicated_nodes: Mutex<HashMap<u64, Vec<vx_bool>>>,
+    /// Node-owned references (e.g. internally-created scalars) that must be
+    /// released when the graph is freed.
+    pub owned_refs: Mutex<Vec<u64>>,
 }
 
 /// Context data
@@ -4487,7 +4490,7 @@ fn dispatch_kernel_with_border_impl(
             }
         }
         // Tensor Table Lookup
-        "org.khronos.openvx.tensor_tablelookup" => {
+        "org.khronos.openvx.tensor_table_lookup" => {
             if params.len() >= 3 {
                 let input = params[0] as crate::c_api::vx_tensor;
                 let lut = params[1];
@@ -4531,6 +4534,38 @@ fn dispatch_kernel_with_border_impl(
                 let output = params[4] as crate::c_api::vx_tensor;
                 if !a.is_null() && !b.is_null() && !output.is_null() {
                     crate::vxu_impl::vxu_tensor_matrix_multiply_impl(a, b, c, params_ptr, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Control Flow: Scalar Operation
+        "org.khronos.openvx.scalar_operation" => {
+            if params.len() >= 4 {
+                let a = params[0] as crate::c_api::vx_scalar;
+                let b = params[1] as crate::c_api::vx_scalar;
+                let op = params[2] as crate::c_api::vx_scalar;
+                let output = params[3] as crate::c_api::vx_scalar;
+                if !a.is_null() && !b.is_null() && !op.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_scalar_operation_impl(a, b, op, output)
+                } else {
+                    VX_ERROR_INVALID_PARAMETERS
+                }
+            } else {
+                VX_ERROR_INVALID_PARAMETERS
+            }
+        }
+        // Control Flow: Select
+        "org.khronos.openvx.select" => {
+            if params.len() >= 4 {
+                let condition = params[0] as crate::c_api::vx_scalar;
+                let true_value = params[1];
+                let false_value = params[2];
+                let output = params[3];
+                if !condition.is_null() && !true_value.is_null() && !false_value.is_null() && !output.is_null() {
+                    crate::vxu_impl::vxu_select_impl(condition, true_value, false_value, output)
                 } else {
                     VX_ERROR_INVALID_PARAMETERS
                 }
@@ -5815,7 +5850,6 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
 
         let addr = inner_ref as usize;
         let addr_u64 = addr as u64;
-        let mut ref_count_was = 0;
         let mut should_remove = false;
 
         // Decrement reference count in unified registry
@@ -5824,10 +5858,8 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
                 let current = count.load(std::sync::atomic::Ordering::SeqCst);
                 if current > 1 {
                     count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                    ref_count_was = current - 1;
                 } else {
                     should_remove = true;
-                    ref_count_was = 0;
                 }
             }
         }
@@ -5838,7 +5870,7 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
         // type-specific release are called.
 
         // Clean up unified registry if count reached zero
-        if should_remove || ref_count_was == 0 {
+        if should_remove {
             // Try to find and release the object by type
             // First check if it's a graph
             let mut found_and_released = false;
@@ -8326,6 +8358,43 @@ fn create_object_like_exemplar(
                     std::ptr::null(),
                 ) as vx_reference
             }
+            VX_TYPE_TENSOR => {
+                let mut num_dims: vx_size = 0;
+                let mut dims: [vx_size; 6] = [0; 6];
+                let mut data_type: vx_enum = 0;
+                let mut fixed_point: vx_int8 = 0;
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_NUMBER_OF_DIMS,
+                    &mut num_dims as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_size>(),
+                );
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_DIMS,
+                    dims.as_mut_ptr() as *mut c_void,
+                    num_dims * std::mem::size_of::<vx_size>(),
+                );
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_DATA_TYPE,
+                    &mut data_type as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_enum>(),
+                );
+                let _ = vxQueryTensor(
+                    exemplar as vx_tensor,
+                    VX_TENSOR_FIXED_POINT_POSITION,
+                    &mut fixed_point as *mut _ as *mut c_void,
+                    std::mem::size_of::<vx_int8>(),
+                );
+                crate::unified_c_api::vxCreateTensor(
+                    context,
+                    num_dims,
+                    dims.as_ptr(),
+                    data_type,
+                    fixed_point,
+                ) as vx_reference
+            }
             _ => std::ptr::null_mut(),
         }
     }
@@ -8953,7 +9022,6 @@ pub extern "C" fn vxCopyTensor(
 }
 
 #[no_mangle]
-#[no_mangle]
 pub extern "C" fn vxMapTensorPatch(
     tensor: vx_tensor,
     _num_dims: usize,
@@ -9037,7 +9105,6 @@ pub extern "C" fn vxMapTensorPatch(
 }
 
 #[no_mangle]
-#[no_mangle]
 pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
     if tensor.is_null() {
         return VX_ERROR_INVALID_REFERENCE;
@@ -9056,7 +9123,7 @@ pub extern "C" fn vxUnmapTensorPatch(tensor: vx_tensor, _map_id: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn vxCopyTensorPatch(
     tensor: vx_tensor,
-    number_of_dims: vx_size,
+    _number_of_dims: vx_size,
     _view_start: *const vx_size,
     _view_end: *const vx_size,
     _user_stride: *const vx_size,
@@ -9947,6 +10014,22 @@ fn create_node_with_params(graph: vx_graph, kernel_name: &str, params: &[vx_refe
     }
 
     node
+}
+
+/// Add a reference to the graph's owned-refs list so it gets released
+/// when the graph is freed.
+fn graph_add_owned_ref(graph: vx_graph, ref_val: vx_reference) {
+    if graph.is_null() || ref_val.is_null() {
+        return;
+    }
+    let graph_id = graph as u64;
+    if let Ok(graphs_data) = GRAPHS_DATA.lock() {
+        if let Some(g) = graphs_data.get(&graph_id) {
+            if let Ok(mut owned) = g.owned_refs.lock() {
+                owned.push(ref_val as u64);
+            }
+        }
+    }
 }
 
 #[no_mangle]
@@ -13643,6 +13726,7 @@ fn table_lookup_impl(input: vx_image, lut: vx_lut, output: vx_image) -> vx_statu
 
 const VX_ERROR_NOT_IMPLEMENTED: vx_status = -29;
 
+#[allow(unused_macros)]
 macro_rules! ev_node_stub {
     ($name:ident ( $($arg:ident : $ty:ty),* $(,)? )) => {
         #[no_mangle]
@@ -13653,6 +13737,7 @@ macro_rules! ev_node_stub {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! ev_vxu_stub {
     ($name:ident ( $($arg:ident : $ty:ty),* $(,)? )) => {
         #[no_mangle]
@@ -14067,7 +14152,7 @@ pub extern "C" fn vxHOGFeaturesNode(
     magnitudes: vx_tensor,
     bins: vx_tensor,
     params: *const c_void,
-    hog_param_size: vx_size,
+    _hog_param_size: vx_size,
     features: vx_tensor,
 ) -> vx_node {
     if graph.is_null() || input.is_null() || magnitudes.is_null() || bins.is_null() || features.is_null() {
@@ -14168,7 +14253,7 @@ pub extern "C" fn vxuHoughLinesP(
     input: vx_image,
     params: *const vx_hough_lines_p_t,
     lines_array: vx_array,
-    num_lines: vx_scalar,
+    _num_lines: vx_scalar,
 ) -> vx_status {
     unsafe {
         let ctx = crate::c_api::vxGetContext(input as vx_reference);
@@ -14221,23 +14306,77 @@ pub extern "C" fn vxuHoughLinesP(
 }
 
 // ---- Control flow ----
-ev_node_stub!(vxScalarOperationNode(
+#[no_mangle]
+pub extern "C" fn vxScalarOperationNode(
     graph: vx_graph,
     op: vx_enum,
     a: vx_scalar,
     b: vx_scalar,
     output: vx_scalar,
-));
-ev_node_stub!(vxSelectNode(
+) -> vx_node {
+    if graph.is_null() || a.is_null() || b.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Create an op scalar to pass as a parameter
+    let context = crate::c_api::vxGetContext(graph as vx_reference);
+    if context.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let mut op_scalar = vxCreateScalar(
+            context,
+            crate::c_api::VX_TYPE_ENUM,
+            &op as *const _ as *const c_void,
+        );
+        if op_scalar.is_null() {
+            return std::ptr::null_mut();
+        }
+        let node = create_node_with_params(
+            graph,
+            "org.khronos.openvx.scalar_operation",
+            &[
+                a as vx_reference,
+                b as vx_reference,
+                op_scalar as vx_reference,
+                output as vx_reference,
+            ],
+        );
+        if !node.is_null() {
+            // vxSetParameterByIndex retained op_scalar.  Release our
+            // creation ref so the graph owns the only one left.
+            let _ = vxReleaseScalar(&mut op_scalar);
+        } else {
+            // Node creation failed — clean up the op_scalar we created.
+            let _ = vxReleaseScalar(&mut op_scalar);
+        }
+        node
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vxSelectNode(
     graph: vx_graph,
     condition: vx_scalar,
     true_value: vx_reference,
     false_value: vx_reference,
     output: vx_reference,
-));
+) -> vx_node {
+    if graph.is_null() || condition.is_null() || true_value.is_null() || false_value.is_null() || output.is_null() {
+        return std::ptr::null_mut();
+    }
+    create_node_with_params(
+        graph,
+        "org.khronos.openvx.select",
+        &[
+            condition as vx_reference,
+            true_value,
+            false_value,
+            output,
+        ],
+    )
+}
 
 // ---- Tensor data-object handle APIs ----
-#[no_mangle]
 #[no_mangle]
 pub extern "C" fn vxCreateTensorFromHandle(
     context: vx_context,
@@ -14323,11 +14462,219 @@ pub extern "C" fn vxCreateImageObjectArrayFromTensor(
     jump: vx_size,
     image_format: vx_df_image,
 ) -> vx_object_array {
-    let _ = (tensor, rect, array_size, jump, image_format);
-    std::ptr::null_mut()
+    if tensor.is_null() || rect.is_null() || array_size == 0 {
+        return std::ptr::null_mut();
+    }
+
+    extern "C" {
+        fn vxCreateImage(ctx: vx_context, w: vx_uint32, h: vx_uint32, fmt: vx_df_image) -> vx_image;
+        fn vxMapImagePatch(
+            image: vx_image,
+            rect: *const c_void,
+            plane_index: u32,
+            map_id: *mut vx_map_id,
+            addr: *mut c_void,
+            ptr: *mut *mut c_void,
+            usage: vx_enum,
+            mem_type: vx_enum,
+            flags: u32,
+        ) -> vx_status;
+        fn vxUnmapImagePatch(image: vx_image, map_id: vx_map_id) -> vx_status;
+    }
+
+    unsafe {
+        let addr = tensor as usize;
+
+        // Query tensor info
+        let (num_dims, dims, data_type, context_id) = {
+            let tensors = match TENSORS.lock() {
+                Ok(g) => g,
+                Err(_) => return std::ptr::null_mut(),
+            };
+            let t = match tensors.get(&addr) {
+                Some(t) => t.clone(),
+                None => return std::ptr::null_mut(),
+            };
+            let ctx = match TENSOR_CONTEXTS.lock() {
+                Ok(g) => g,
+                Err(_) => return std::ptr::null_mut(),
+            };
+            let ctx_id = match ctx.get(&addr) {
+                Some(id) => *id,
+                None => return std::ptr::null_mut(),
+            };
+            (t.num_dims, t.dims.clone(), t.data_type, ctx_id)
+        };
+
+        if num_dims != 3 {
+            return std::ptr::null_mut();
+        }
+
+        let rect_ref = &*rect;
+        let img_width = (rect_ref.end_x - rect_ref.start_x) as usize;
+        let img_height = (rect_ref.end_y - rect_ref.start_y) as usize;
+
+        if img_width == 0 || img_height == 0 {
+            return std::ptr::null_mut();
+        }
+
+        // Validate array_size against tensor dims[2]
+        if array_size > dims[2] {
+            return std::ptr::null_mut();
+        }
+
+        // Validate image format matches tensor data type
+        let tensor_elem_size: usize = match data_type {
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => 1,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => 2,
+            _ => return std::ptr::null_mut(),
+        };
+
+        let expected_format = match data_type {
+            VX_TYPE_UINT8 | VX_TYPE_INT8 => crate::c_api::VX_DF_IMAGE_U8,
+            VX_TYPE_INT16 | VX_TYPE_UINT16 => crate::c_api::VX_DF_IMAGE_S16,
+            _ => return std::ptr::null_mut(),
+        };
+
+        if image_format != expected_format {
+            return std::ptr::null_mut();
+        }
+
+        // Get tensor data
+        let tensor_data = {
+            let data_map = match TENSOR_DATA.lock() {
+                Ok(g) => g,
+                Err(_) => return std::ptr::null_mut(),
+            };
+            match data_map.get(&addr) {
+                Some(d) => d.clone(),
+                None => return std::ptr::null_mut(),
+            }
+        };
+
+        // Calculate tensor strides (same logic as vxMapTensorPatch)
+        let mut strides = vec![0usize; num_dims];
+        strides[0] = tensor_elem_size;
+        for i in 1..num_dims {
+            strides[i] = strides[i - 1] * dims[i - 1];
+        }
+
+        // The "jump" parameter is the stride between channel data; verify it matches
+        // our computed stride[2] (or is compatible)
+        let _ = jump; // We use our computed strides for indexing
+
+        let context = context_id as vx_context;
+
+        // Create images and copy data
+        let mut items: Vec<usize> = Vec::new();
+        for ch in 0..array_size {
+            let img = vxCreateImage(context, img_width as vx_uint32, img_height as vx_uint32, image_format);
+            if img.is_null() {
+                // Cleanup already created items
+                for &item in &items {
+                    let mut r = item as vx_reference;
+                    let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                }
+                return std::ptr::null_mut();
+            }
+
+            // Map image patch for writing
+            let mut map_id: vx_map_id = 0;
+            let mut img_addr: crate::c_api::vx_imagepatch_addressing_t = std::mem::zeroed();
+            let mut img_ptr: *mut c_void = std::ptr::null_mut();
+
+            let map_rect = crate::c_api::vx_rectangle_t {
+                start_x: 0,
+                start_y: 0,
+                end_x: img_width as vx_uint32,
+                end_y: img_height as vx_uint32,
+            };
+
+            let map_status = vxMapImagePatch(
+                img,
+                &map_rect as *const _ as *const c_void,
+                0,
+                &mut map_id,
+                &mut img_addr as *mut _ as *mut c_void,
+                &mut img_ptr as *mut *mut c_void,
+                crate::c_api::VX_WRITE_ONLY,
+                crate::c_api::VX_MEMORY_TYPE_HOST,
+                0,
+            );
+            if map_status != VX_SUCCESS {
+                // Release this image and cleanup previous
+                let mut r = img as vx_reference;
+                let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                for &item in &items {
+                    let mut r = item as vx_reference;
+                    let _ = vxReleaseReference(&mut r as *mut vx_reference);
+                }
+                return std::ptr::null_mut();
+            }
+
+            // Copy data from tensor slice into image
+            // Tensor pixel (x,y,ch) offset = ch * strides[2] + y * strides[1] + x * strides[0]
+            // Image pixel (x,y) offset = y * stride_y + x * stride_x
+            let ch_offset = ch * strides[2];
+            for y in 0..img_height {
+                let img_row = (img_ptr as *mut u8).wrapping_add((y * img_addr.stride_y as usize) as usize);
+                let tensor_row_offset = ch_offset + y * strides[1];
+                for x in 0..img_width {
+                    let pixel_offset = tensor_row_offset + x * strides[0];
+                    if tensor_elem_size == 1 {
+                        *img_row.add((x * img_addr.stride_x as usize) as usize) =
+                            tensor_data[pixel_offset];
+                    } else {
+                        let img_pixel = img_row.add((x * img_addr.stride_x as usize) as usize) as *mut u16;
+                        let val = (tensor_data[pixel_offset] as u16)
+                            | ((tensor_data[pixel_offset + 1] as u16) << 8);
+                        *img_pixel = val;
+                    }
+                }
+            }
+
+            let _ = vxUnmapImagePatch(img, map_id);
+            items.push(img as usize);
+        }
+
+        let obj_array = Box::new(VxCObjectArray {
+            exemplar_type: VX_TYPE_IMAGE,
+            count: array_size as usize,
+            ref_count: AtomicUsize::new(1),
+            items: RwLock::new(items),
+            is_virtual: false,
+        });
+
+        let obj_array_ptr = Box::into_raw(obj_array) as vx_object_array;
+
+        if let Ok(mut counts) = REFERENCE_COUNTS.lock() {
+            counts.insert(obj_array_ptr as usize, AtomicUsize::new(1));
+        }
+        if let Ok(mut types) = REFERENCE_TYPES.lock() {
+            types.insert(obj_array_ptr as usize, VX_TYPE_OBJECT_ARRAY);
+        }
+        if let Ok(mut obj_arrays) = OBJECT_ARRAYS.lock() {
+            // Need to create an Arc version to store in OBJECT_ARRAYS.
+            // But the Box is the canonical owner. We'll store an Arc that
+            // shares the data, but we can't do that safely here.
+            // Instead, store a clone with the same items.
+            let arr_clone = VxCObjectArray {
+                exemplar_type: VX_TYPE_IMAGE,
+                count: array_size as usize,
+                ref_count: AtomicUsize::new(1),
+                items: RwLock::new({
+                    let guard = (*(obj_array_ptr as *const VxCObjectArray)).items.read().unwrap();
+                    guard.clone()
+                }),
+                is_virtual: false,
+            };
+            obj_arrays.insert(obj_array_ptr as usize, Arc::new(arr_clone));
+        }
+
+        obj_array_ptr
+    }
 }
 
-#[no_mangle]
 #[no_mangle]
 pub extern "C" fn vxSwapTensorHandle(
     tensor: vx_tensor,
@@ -14589,7 +14936,7 @@ pub extern "C" fn vxTensorTableLookupNode(
     }
     let node = create_node_with_params(
         graph,
-        "org.khronos.openvx.tensor_tablelookup",
+        "org.khronos.openvx.tensor_table_lookup",
         &[
             input1 as vx_reference,
             lut as vx_reference,

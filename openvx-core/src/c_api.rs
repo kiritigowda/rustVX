@@ -353,27 +353,26 @@ fn register_standard_kernels(context_id: u32) {
         ("org.khronos.openvx.laplacian_pyramid", 0x2A, 3),
         ("org.khronos.openvx.laplacian_reconstruct", 0x2B, 3),
         ("org.khronos.openvx.non_linear_filter", 0x2C, 4),
-        // Enhanced Vision kernels
-        ("org.khronos.openvx.copy", 0x35, 3),
-        ("org.khronos.openvx.non_max_suppression", 0x36, 4),
-        ("org.khronos.openvx.hough_lines_p", 0x34, 8),
+        // Enhanced Vision kernels (per OpenVX 1.3 spec)
         ("org.khronos.openvx.match_template", 0x2D, 4),
         ("org.khronos.openvx.lbp", 0x2E, 4),
-        ("org.khronos.openvx.hog_cells", 0x39, 6),
+        ("org.khronos.openvx.hough_lines_p", 0x2F, 8),
+        ("org.khronos.openvx.tensor_multiply", 0x30, 6),
+        ("org.khronos.openvx.tensor_add", 0x31, 4),
+        ("org.khronos.openvx.tensor_subtract", 0x32, 4),
+        ("org.khronos.openvx.tensor_table_lookup", 0x33, 3),
+        ("org.khronos.openvx.tensor_transpose", 0x34, 4),
+        ("org.khronos.openvx.tensor_convert_depth", 0x35, 5),
+        ("org.khronos.openvx.tensor_matrix_multiply", 0x36, 5),
+        ("org.khronos.openvx.copy", 0x37, 3),
+        ("org.khronos.openvx.non_max_suppression", 0x38, 4),
+        ("org.khronos.openvx.scalar_operation", 0x39, 4),
         ("org.khronos.openvx.hog_features", 0x3A, 7),
-        ("org.khronos.openvx.bilateral_filter", 0x38, 5),
+        ("org.khronos.openvx.hog_cells", 0x3B, 6),
+        ("org.khronos.openvx.bilateral_filter", 0x3C, 5),
+        ("org.khronos.openvx.select", 0x3D, 4),
         // OpenVX 1.0.2 addition
         ("org.khronos.openvx.weighted_average", 0x40, 4),
-        // OpenVX 1.1 extensions
-        ("org.khronos.openvx.sobel_5x5", 0x30, 3),
-        // Tensor operations (Enhanced Vision)
-        ("org.khronos.openvx.tensor_add", 0x41, 4),
-        ("org.khronos.openvx.tensor_subtract", 0x42, 4),
-        ("org.khronos.openvx.tensor_multiply", 0x43, 6),
-        ("org.khronos.openvx.tensor_convert_depth", 0x44, 5),
-        ("org.khronos.openvx.tensor_tablelookup", 0x45, 3),
-        ("org.khronos.openvx.tensor_transpose", 0x46, 4),
-        ("org.khronos.openvx.tensor_matrix_multiply", 0x47, 5),
     ];
 
     if let Ok(mut kernels) = KERNELS.lock() {
@@ -716,6 +715,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         ref_count: std::sync::atomic::AtomicUsize::new(1),
         run_count: std::sync::atomic::AtomicU64::new(0),
         replicated_nodes: std::sync::Mutex::new(std::collections::HashMap::new()),
+        owned_refs: std::sync::Mutex::new(Vec::new()),
     });
 
     if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
@@ -847,7 +847,7 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                     for param_val in params.iter() {
                                         if let Some(val) = param_val {
                                             if *val != 0 {
-                                                let _val_type =
+                                                let val_type =
                                                     if let Ok(types) = REFERENCE_TYPES.lock() {
                                                         types.get(&(*val as usize)).copied()
                                                     } else {
@@ -870,13 +870,6 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
                                                         } else if current == 1 {
                                                             // Last reference - free the object
                                                             let addr = *val as usize;
-                                                            let val_type = if let Ok(types) =
-                                                                REFERENCE_TYPES.lock()
-                                                            {
-                                                                types.get(&addr).copied()
-                                                            } else {
-                                                                None
-                                                            };
                                                             drop(counts);
                                                             if let Ok(mut counts2) =
                                                                 REFERENCE_COUNTS.lock()
@@ -930,6 +923,27 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             // Type-specific release for non-scalar params that reached ref count 0
             for addr in non_scalar_last_refs {
                 let mut r = addr as vx_reference;
+                crate::unified_c_api::vxReleaseReference(&mut r as *mut vx_reference);
+            }
+
+            // Release graph-owned references (internally-created scalars, etc.)
+            let owned: Vec<u64> = {
+                if let Ok(graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
+                    if let Some(g) = graphs_data.get(&id) {
+                        if let Ok(refs) = g.owned_refs.lock() {
+                            refs.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            };
+            for owned_ref in owned {
+                let mut r = owned_ref as vx_reference;
                 crate::unified_c_api::vxReleaseReference(&mut r as *mut vx_reference);
             }
 
@@ -2221,9 +2235,7 @@ pub extern "C" fn vxSetParameterByIndex(
                         let value_addr = value as usize;
                         if let Ok(counts) = REFERENCE_COUNTS.lock() {
                             if let Some(cnt) = counts.get(&value_addr) {
-                                let _current = cnt.load(std::sync::atomic::Ordering::SeqCst);
                                 cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            } else {
                             }
                         }
                     }
