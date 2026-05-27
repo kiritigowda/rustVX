@@ -52,6 +52,7 @@ use crate::c_api::{
     VX_TYPE_FLOAT64,
     VX_TYPE_BOOL,
     VX_TYPE_SIZE,
+    VX_TYPE_SCALAR,
     VX_ERROR_INVALID_TYPE,};
 use crate::unified_c_api::{vx_border_t, vx_distribution, vx_remap, VxCImage, VxCPyramid};
 use std::ffi::c_void;

@@ -5850,7 +5850,6 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
 
         let addr = inner_ref as usize;
         let addr_u64 = addr as u64;
-        let mut ref_count_was = 0;
         let mut should_remove = false;
 
         // Decrement reference count in unified registry
@@ -5859,10 +5858,8 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
                 let current = count.load(std::sync::atomic::Ordering::SeqCst);
                 if current > 1 {
                     count.store(current - 1, std::sync::atomic::Ordering::SeqCst);
-                    ref_count_was = current - 1;
                 } else {
                     should_remove = true;
-                    ref_count_was = 0;
                 }
             }
         }
@@ -5873,7 +5870,7 @@ pub extern "C" fn vxReleaseReference(ref_: *mut vx_reference) -> vx_status {
         // type-specific release are called.
 
         // Clean up unified registry if count reached zero
-        if should_remove || ref_count_was == 0 {
+        if should_remove {
             // Try to find and release the object by type
             // First check if it's a graph
             let mut found_and_released = false;
