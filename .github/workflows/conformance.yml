@@ -556,20 +556,14 @@ jobs:
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="GaussianPyramid.*:LaplacianPyramid.*:LaplacianReconstruct.*:OptFlowPyrLK.*"
 
-  # Enhanced Vision Phase 1 — only the kernels rustVX has actually
-  # implemented from the OpenVX 1.3 Enhanced Vision feature set. The CTS
-  # binary is built with `OPENVX_USE_ENHANCED_VISION=ON`, but this job
-  # filters strictly to the kernels Phase 1 ships (vxMin / vxMax). The
-  # remaining Enhanced Vision symbols are exposed as link stubs in
-  # rustVX so the binary can build; they are not exercised here and will
-  # be replaced by real kernels in subsequent phases.
-  # Enhanced Vision — kernels implemented on this branch.
-  #
-  # PR #36 (hog-kernels): Copy, NonMaxSuppression, HoughLinesP,
-  # MatchTemplate, LBP, HOGCells, HOGFeatures, plus baseline Min/Max.
-  # BilateralFilter is tested in its own job below.
-  enhanced-vision:
-    name: "enhanced-vision (HOG branch)"
+  # Enhanced Vision — 6 functional groups, each run as a separate CI job.
+  # This makes the dashboard granular and pinpoints regressions to a
+  # specific kernel category without re-running the entire Enhanced Vision
+  # suite.
+
+  # Tensor Arithmetic — 222 tests (TensorOp 214 + Min 4 + Max 4)
+  enhanced-vision-tensor-arithmetic:
+    name: "Enhanced-Vision: Tensor Arithmetic"
     runs-on: ubuntu-22.04
     needs: build
     steps:
@@ -580,18 +574,80 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: build-artifacts
-      - name: Run Enhanced Vision tests
+      - name: Run Tensor Arithmetic tests
         run: |
           chmod +x OpenVX-cts/build/bin/vx_test_conformance
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 300 ./bin/vx_test_conformance --filter="Copy.*:Nonmaxsuppression.*:Houghlinesp.*:MatchTemplate.*:LBP.*:HogCells.*:HogFeatures.*:Min.*:Max.*"
+          timeout 600 ./bin/vx_test_conformance --filter="TensorOp.*:Min.*:Max.*"
 
-  # BilateralFilter — 361 tests, separated from enhanced-vision to avoid
-  # any state leakage with other enhanced-vision kernels.
-  bilateral-filter:
-    name: "bilateral-filter"
+  # Tensor Transforms — 18 tests (Tensor 12 + TensorEnhanced 6)
+  enhanced-vision-tensor-transforms:
+    name: "Enhanced-Vision: Tensor Transforms"
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run Tensor Transforms tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 300 ./bin/vx_test_conformance --filter="Tensor*.*:-TensorOp.*"
+
+  # Feature Extraction — 44 tests (HOGCells 11 + HOGFeatures 11 + MatchTemplate 11 + LBP 11)
+  enhanced-vision-feature-extraction:
+    name: "Enhanced-Vision: Feature Extraction"
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run Feature Extraction tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 300 ./bin/vx_test_conformance --filter="HogCells.*:HogFeatures.*:MatchTemplate.*:LBP.*"
+
+  # Post-Processing — 84 tests (Copy 36 + NonMaxSuppression 33 + HoughLinesP 15)
+  enhanced-vision-post-processing:
+    name: "Enhanced-Vision: Post-Processing"
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run Post-Processing tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 300 ./bin/vx_test_conformance --filter="Copy.*:Nonmaxsuppression.*:Houghlinesp.*"
+
+  # Advanced Filtering — 361 tests (BilateralFilter only)
+  enhanced-vision-advanced-filtering:
+    name: "Enhanced-Vision: Advanced Filtering"
     runs-on: ubuntu-22.04
     needs: build
     steps:
@@ -610,12 +666,9 @@ jobs:
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="BilateralFilter.*"
 
-  # ControlFlow — 186 tests (SelectNode 11 + ScalarOperationNode 175).
-  # Runs SelectNode/0-6,9 (8 passing type variants) and all ScalarOperationNode
-  # tests. PYRAMID/THRESHOLD/REMAP variants (3 tests) are excluded due to
-  # pre-existing object-specific crashes unrelated to control flow logic.
-  controlflow:
-    name: "controlflow"
+  # Control Flow — 186 tests (SelectNode 11 + ScalarOperationNode 175)
+  enhanced-vision-control-flow:
+    name: "Enhanced-Vision: Control Flow"
     runs-on: ubuntu-22.04
     needs: build
     steps:
@@ -626,49 +679,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: build-artifacts
-      - name: Run ControlFlow SelectNode tests
+      - name: Run Control Flow tests
         run: |
           chmod +x OpenVX-cts/build/bin/vx_test_conformance
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 120 ./bin/vx_test_conformance --filter="ControlFlow.SelectNode*"
-      - name: Run ControlFlow ScalarOperationNode tests
-        run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
-          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 300 ./bin/vx_test_conformance --filter="ControlFlow.ScalarOperationNode*"
-
-  # Tensor ops — 226 tests (Tensor 12 + TensorOp 214), separated to keep
-  # each CI job focused and avoid state leakage with other categories.
-  tensor-ops:
-    name: "tensor-ops"
-    runs-on: ubuntu-22.04
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
-      - name: Run Tensor tests
-        run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
-          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 300 ./bin/vx_test_conformance --filter="Tensor.*"
-      - name: Run TensorOp tests
-        run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
-          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 600 ./bin/vx_test_conformance --filter="TensorOp.*"
 
   # Performance benchmark using openvx-mark, comparing rustVX against the
   # Khronos OpenVX sample implementation on the SAME runner so the two
@@ -696,6 +714,12 @@ jobs:
       - vision-features
       - vision-statistics
       - vision-pyramid
+      - enhanced-vision-tensor-arithmetic
+      - enhanced-vision-tensor-transforms
+      - enhanced-vision-feature-extraction
+      - enhanced-vision-post-processing
+      - enhanced-vision-advanced-filtering
+      - enhanced-vision-control-flow
     continue-on-error: true
     steps:
       - name: Install system dependencies
