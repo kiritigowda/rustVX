@@ -2270,12 +2270,11 @@ pub extern "C" fn vxSetParameterByIndex(
 
     // Also create/update parameter entry in unified_c_api for vxQueryParameter
     let param_id = (id << 32) | (index as u64);
-    crate::unified_c_api::create_or_update_parameter(
+    crate::unified_c_api::create_or_update_parameter_with_node(
         param_id,
         index,
         value as u64,
-        context_id,
-        kernel_id,
+        id,
     );
 
     // Check if the value is a delay slot reference and register it for delay parameter resolution
