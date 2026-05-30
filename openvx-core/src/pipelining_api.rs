@@ -255,7 +255,6 @@ pub extern "C" fn vxGraphParameterEnqueueReadyRef(
 
     let enqueued_count = ready_refs.len();
     drop(ready_refs);
-
     info!(
         "vxGraphParameterEnqueueReadyRef: enqueued {} refs at param {} (total ready: {})",
         num_refs,

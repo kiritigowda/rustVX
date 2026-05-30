@@ -2265,6 +2265,44 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 fn execute_graph_nodes(graph: vx_graph) -> vx_status {
     let graph_id = graph as u64;
 
+    // Check if pipelining is active — if so we must track active_executions
+    // so that vxWaitGraph can wait for this background thread to finish.
+    let pipe_state_opt = {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                let mode = pipe_state.schedule_mode.lock().unwrap();
+                if *mode != crate::pipelining::VxGraphScheduleMode::Normal {
+                    Some(pipe_state.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    // Guard that decrements active_executions (pre-incremented by vxScheduleGraph)
+    // and signals waiters on drop. Only applies in pipelining mode.
+    struct ActiveExecGuard {
+        pipe_state: Option<Arc<crate::pipelining::VxGraphPipeliningState>>,
+    }
+    impl Drop for ActiveExecGuard {
+        fn drop(&mut self) {
+            if let Some(ref pipe_state) = self.pipe_state {
+                let prev = pipe_state.active_executions.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if prev == 1 {
+                    let _guard = pipe_state.active_mutex.lock().unwrap();
+                    pipe_state.active_cv.notify_all();
+                }
+            }
+        }
+    }
+
+    let _active_guard = ActiveExecGuard { pipe_state: pipe_state_opt };
+
     // Get graph data
     let g = if let Ok(graphs) = GRAPHS_DATA.lock() {
         if let Some(g) = graphs.get(&graph_id) {
@@ -2339,8 +2377,48 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
         return VX_SUCCESS;
     }
 
-    // Execute each node in order
-    for (_i, node_id) in nodes.iter().enumerate() {
+    // For QUEUE_MANUAL mode, we need to execute the graph for every set of
+    // ready refs in the parameter queues. Loop until all queues are empty.
+    let mut loop_iter = 0;
+    loop {
+        loop_iter += 1;
+        // Check if any queues still have ready refs (only for pipelining mode)
+        let has_ready = {
+            if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                    let queues = pipe_state.parameter_queues.lock().unwrap();
+                    queues.values().any(|q| {
+                        let ready = q.ready_refs.lock().unwrap();
+                        !ready.is_empty()
+                    })
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        // If pipelining mode and no more ready refs, we're done
+        let is_pipelining = {
+            if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                    let mode = pipe_state.schedule_mode.lock().unwrap();
+                    *mode != crate::pipelining::VxGraphScheduleMode::Normal
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        if is_pipelining && !has_ready {
+            break;
+        }
+
+        // Execute each node in order
+        for (_i, node_id) in nodes.iter().enumerate() {
         let _node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
             if let Some(nd) = nodes_map.get(node_id) {
                 if let Ok(kernels) = crate::c_api::KERNELS.lock() {
@@ -2441,6 +2519,46 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
         }
     }
 
+    // After each graph execution iteration, move consumed refs to done.
+    // Note: move_refs_to_done is idempotent (pops all from consumed_refs),
+    // so calling it multiple times is safe and necessary in the loop.
+    {
+        let param_indices: Vec<u32> = {
+            if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                    let queues = pipe_state.parameter_queues.lock().unwrap();
+                    queues.keys().copied().collect()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        };
+        for param_idx in param_indices {
+            crate::pipelining_api::move_refs_to_done(graph_id, param_idx);
+        }
+        crate::pipelining_api::notify_graph_completed(graph_id, g.context_id);
+    }
+
+    // If not pipelining mode, only run once (the loop will break on next iteration)
+    let is_pipelining = {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                let mode = pipe_state.schedule_mode.lock().unwrap();
+                *mode != crate::pipelining::VxGraphScheduleMode::Normal
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !is_pipelining {
+        break;
+    }
+    } // end of loop
+
     // Mark as completed
     if let Ok(mut state) = g.state.lock() {
         *state = VxGraphState::VxGraphStateCompleted;
@@ -2452,9 +2570,6 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
 
     // Auto-age any registered delays
     auto_age_delays(graph_id);
-
-    // Run cleanup (moves consumed refs to done + emits events)
-    do_cleanup();
 
     VX_SUCCESS
 }
@@ -4838,10 +4953,15 @@ pub extern "C" fn vxWaitGraph(graph: vx_graph) -> vx_status {
                 let mode = pipe_state.schedule_mode.lock().unwrap();
                 if *mode != crate::pipelining::VxGraphScheduleMode::Normal {
                     // In pipelining mode, wait for all active executions to finish
+                    // CRITICAL: Clone the Arc and drop GRAPH_PIPELINING before waiting,
+                    // otherwise we deadlock with execute_graph_nodes which also needs
+                    // GRAPH_PIPELINING to check pipelining state.
                     drop(mode);
-                    let mut guard = pipe_state.active_mutex.lock().unwrap();
-                    while pipe_state.active_executions.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-                        guard = pipe_state.active_cv.wait(guard).unwrap();
+                    let pipe_clone = pipe_state.clone();
+                    drop(pipe_states);
+                    let mut guard = pipe_clone.active_mutex.lock().unwrap();
+                    while pipe_clone.active_executions.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                        guard = pipe_clone.active_cv.wait(guard).unwrap();
                     }
                     return VX_SUCCESS;
                 }
@@ -4946,12 +5066,35 @@ pub extern "C" fn vxScheduleGraph(graph: vx_graph) -> vx_status {
 
     // Run the graph asynchronously in a background thread
     // The state was already set to RUNNING, so vxWaitGraph will wait
+    //
+    // For pipelining mode, increment active_executions BEFORE spawning the
+    // thread so vxWaitGraph (which checks active_executions) never races.
+    let is_pipelining = {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                let mode = pipe_state.schedule_mode.lock().unwrap();
+                *mode != crate::pipelining::VxGraphScheduleMode::Normal
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if is_pipelining {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                pipe_state.active_executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
     let graph_ptr = graph as usize;
     std::thread::spawn(move || {
         let g = graph_ptr as vx_graph;
         // Execute the graph nodes directly
         // This will update the graph state to COMPLETED or ABANDONED
-        let _ = execute_graph_nodes(g);
+        let status = execute_graph_nodes(g);
     });
 
     VX_SUCCESS
