@@ -574,10 +574,42 @@ pub extern "C" fn vxRegisterEvent(
         Err(_) => return VX_ERROR_NOT_SUPPORTED,
     };
 
+    // Determine whether this is a graph or node reference by checking
+    // if ref_id exists in GRAPHS_DATA or NODES.
+    let (graph_id, node_id, graph_param_idx) = {
+        let mut gid: Option<u64> = None;
+        let mut nid: Option<u64> = None;
+        {
+            if let Ok(graphs) = GRAPHS_DATA.lock() {
+                if graphs.contains_key(&ref_id) {
+                    gid = Some(ref_id);
+                }
+            }
+            if gid.is_none() {
+                if let Ok(nodes_map) = crate::c_api::NODES.lock() {
+                    if nodes_map.contains_key(&ref_id) {
+                        nid = Some(ref_id);
+                        if let Some(node) = nodes_map.get(&ref_id) {
+                            gid = Some(node.graph_id);
+                        }
+                    }
+                }
+            }
+        }
+        let gparam = if evt_type == VxEventType::GraphParameterConsumed && param < 0xFFFFFFFF {
+            Some(param)
+        } else {
+            None
+        };
+        (gid, nid, gparam)
+    };
+
     let registration = VxEventRegistration {
         ref_id,
         event_type: evt_type,
-        param,
+        graph_id,
+        graph_parameter_index: graph_param_idx,
+        node_id,
         app_value,
     };
 
@@ -585,8 +617,8 @@ pub extern "C" fn vxRegisterEvent(
     registrations.push(registration);
 
     info!(
-        "vxRegisterEvent: ref {} type {:?} param {} app_value {}",
-        ref_id, evt_type, param, app_value
+        "vxRegisterEvent: ref {} type {:?} graph_id {:?} node_id {:?} graph_param_idx {:?} app_value {}",
+        ref_id, evt_type, graph_id, node_id, graph_param_idx, app_value
     );
 
     VX_SUCCESS
@@ -799,10 +831,26 @@ pub fn notify_node_completed(graph_id: u64, node_id: u64, context_id: u64) {
         return;
     }
 
+    // Look up app_value from registrations for NODE_COMPLETED events on this node
+    let registrations = event_system.registrations.lock().unwrap();
+    let app_value = registrations.iter().find_map(|reg| {
+        if reg.event_type == VxEventType::NodeCompleted && reg.node_id == Some(node_id) {
+            Some(reg.app_value)
+        } else {
+            None
+        }
+    });
+    drop(registrations);
+
+    // Only emit the event if someone registered for it
+    if app_value.is_none() {
+        return;
+    }
+
     let event = VxEvent {
         event_type: VxEventType::NodeCompleted,
         timestamp_ns: current_timestamp_ns(),
-        app_value: 0,
+        app_value: app_value.unwrap(),
         graph_id: Some(graph_id),
         node_id: Some(node_id),
         graph_parameter_index: None,
@@ -855,6 +903,23 @@ pub fn notify_graph_completed(graph_id: u64, context_id: u64) {
     push_event(context_id, event);
 }
 
+/// Look up the app_value for a graph parameter from event registrations.
+/// Returns Some(app_value) if a GRAPH_PARAMETER_CONSUMED event is registered
+/// for this graph/parameter, or None if no matching registration.
+fn lookup_app_value_for_param(context_id: u64, graph_id: u64, param_index: u32) -> Option<u32> {
+    let event_system = get_event_system(context_id);
+    let registrations = event_system.registrations.lock().unwrap();
+    for reg in registrations.iter() {
+        if reg.event_type == VxEventType::GraphParameterConsumed
+            && reg.graph_id == Some(graph_id)
+            && reg.graph_parameter_index == Some(param_index)
+        {
+            return Some(reg.app_value);
+        }
+    }
+    None
+}
+
 /// Called when a graph parameter is consumed to emit event
 pub fn notify_parameter_consumed(
     graph_id: u64,
@@ -903,4 +968,22 @@ pub fn move_refs_to_done(graph_id: u64, param_index: u32) {
 
     // Notify waiters
     queue.done_cv.notify_one();
+
+    // Emit parameter-consumed event (look up app_value from registrations)
+    {
+        let context_id = {
+            if let Ok(graphs) = GRAPHS_DATA.lock() {
+                if let Some(g) = graphs.get(&graph_id) {
+                    g.context_id
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        };
+        if let Some(app_value) = lookup_app_value_for_param(context_id, graph_id, param_index) {
+            notify_parameter_consumed(graph_id, param_index, app_value, context_id);
+        }
+    }
 }

@@ -123,7 +123,9 @@ pub struct VxEvent {
 pub struct VxEventRegistration {
     pub ref_id: u64,
     pub event_type: VxEventType,
-    pub param: u32,
+    pub graph_id: Option<u64>,
+    pub graph_parameter_index: Option<u32>,
+    pub node_id: Option<u64>,
     pub app_value: u32,
 }
 

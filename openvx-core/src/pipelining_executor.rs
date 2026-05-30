@@ -169,7 +169,10 @@ fn execute_pipelined_graph(graph_id: u64) -> i32 {
 
         match crate::unified_c_api::execute_node(*node_id) {
             Some(status) => {
-                if status != 0 {
+                if status == 0 {
+                    // Emit node completion event for pipelining
+                    crate::pipelining_api::notify_node_completed(graph_id, *node_id, g.context_id);
+                } else {
                     finish_pipelined_execution(graph_id, g.context_id);
                     return status;
                 }

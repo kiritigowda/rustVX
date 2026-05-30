@@ -2471,6 +2471,8 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
                                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         }
                     }
+                    // Emit node completion event for pipelining
+                    crate::pipelining_api::notify_node_completed(graph_id, *node_id, g.context_id);
                 }
                 if status != VX_SUCCESS {
                     if let Ok(mut state) = g.state.lock() {
