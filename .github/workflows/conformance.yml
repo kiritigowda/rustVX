@@ -397,23 +397,12 @@ jobs:
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 120 ./bin/vx_test_conformance --filter="UserDataObject.*"
 
-  # Pipelining, Streaming & Batch Processing KHR extension — runs the
-  # upstream Khronos `test_graph_pipeline.c` suite, gated at build time
-  # by `OPENVX_USE_PIPELINING=ON`. Covers all 12 functions from
-  # `include/VX/vx_khr_pipelining.h`:
-  #
-  #   * vxSetGraphScheduleConfig / vxGraphParameterEnqueueReadyRef /
-  #     vxGraphParameterDequeueDoneRef / vxGraphParameterCheckDoneRef
-  #   * vxEnableEvents / vxDisableEvents / vxWaitEvent / vxSendUserEvent / vxRegisterEvent
-  #   * vxEnableGraphStreaming / vxStartGraphStreaming / vxStopGraphStreaming
-  #
-  # plus graph pipeline integration paths (OneNode, TwoNodes, FourNodes,
-  # ManualSchedule, ScalarOutput, EventHandling, etc.).
+  # Pipelining, Streaming & Batch Processing KHR extension — fast
+  # tests (loop_count=0/1) run first for quick feedback.
   pipelining:
     name: "KHR extension: pipelining"
     runs-on: ubuntu-22.04
     needs: build
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -428,7 +417,30 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 1200 ./bin/vx_test_conformance --filter="GraphPipeline.*"
+          timeout 300 ./bin/vx_test_conformance --filter="GraphPipeline.*loop_count=0:GraphPipeline.*loop_count=1"
+
+  # Pipelining stress tests (loop_count=1000/100000) — run separately
+  # with a long timeout since they take ~15-20 min on CI runners.
+  pipelining-stress:
+    name: "KHR extension: pipelining (stress)"
+    runs-on: ubuntu-22.04
+    needs: build
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Run Pipelining stress tests
+        run: |
+          chmod +x OpenVX-cts/build/bin/vx_test_conformance
+          cd OpenVX-cts/build
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 1800 ./bin/vx_test_conformance --filter="GraphPipeline.*loop_count=1000:GraphPipeline.*loop_count=100000"
 
   image-ops:
     runs-on: ubuntu-22.04
