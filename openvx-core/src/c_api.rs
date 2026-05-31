@@ -963,6 +963,22 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
             }
+            // Clean up pipelining state
+            if let Ok(mut pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                pipe_states.remove(&id);
+            }
+            // Clean up auto-aging delay registry
+            if let Ok(mut registry) = crate::unified_c_api::GRAPH_AUTO_AGE_DELAYS.lock() {
+                registry.remove(&id);
+            }
+            // Clean up event registrations for this graph (from all contexts)
+            if let Ok(mut systems) = crate::pipelining_api::EVENT_SYSTEMS.lock() {
+                for (_, event_system) in systems.iter_mut() {
+                    if let Ok(mut registrations) = event_system.registrations.lock() {
+                        registrations.retain(|reg| reg.graph_id != Some(id));
+                    }
+                }
+            }
         }
 
         *graph = std::ptr::null_mut();

@@ -9893,7 +9893,7 @@ pub extern "C" fn vxReleaseDelay(delay: *mut vx_delay) -> vx_status {
 // ============================================================================
 
 /// Registry of delays registered for auto-aging with each graph
-static GRAPH_AUTO_AGE_DELAYS: Lazy<Mutex<HashMap<u64, Vec<usize>>>> =
+pub static GRAPH_AUTO_AGE_DELAYS: Lazy<Mutex<HashMap<u64, Vec<usize>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a delay for auto-aging with a graph
