@@ -562,10 +562,29 @@ pub extern "C" fn vxRegisterEvent(
 
     let ref_id = ref_ as u64;
 
-    // Need to find the context for this reference
-    // For now, we'll use a default context or search
-    // In a full implementation, references would track their context
-    let context_id = 1u64; // Default context - should be resolved from reference
+    // Resolve the actual context from the reference instead of hardcoding 1
+    let mut context_id = unsafe { crate::c_api::vxGetContext(ref_ as *mut _) as u64 };
+    if context_id == 0 {
+        // Fallback: if ref is a graph, look it up in GRAPHS_DATA
+        let mut fallback_ctx: Option<u64> = None;
+        if let Ok(graphs) = GRAPHS_DATA.lock() {
+            if let Some(g) = graphs.get(&ref_id) {
+                fallback_ctx = Some(g.context_id);
+            }
+        }
+        if fallback_ctx.is_none() {
+            if let Ok(nodes_map) = crate::c_api::NODES.lock() {
+                if let Some(node) = nodes_map.get(&ref_id) {
+                    fallback_ctx = Some(node.context_id as u64);
+                }
+            }
+        }
+        if let Some(ctx) = fallback_ctx {
+            context_id = ctx;
+        } else {
+            return VX_ERROR_INVALID_REFERENCE;
+        }
+    }
 
     let event_system = get_event_system(context_id);
 
