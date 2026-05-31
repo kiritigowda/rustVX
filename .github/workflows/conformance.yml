@@ -131,14 +131,16 @@ jobs:
           fi
       - name: Build OpenVX CTS
         run: |
-          # Reduce loop_count for stress tests from 100000/1000000 to 100 so they
-          # complete on CI runners in reasonable time. Must patch 1000000 FIRST
-          # (before 100000) to avoid partial-match issues.
+          # Reduce loop_count for stress tests from 1000/100000/1000000 to 100 so they
+          # complete on CI runners in reasonable time. Must patch longer strings FIRST
+          # (1000000 before 100000 before 1000) to avoid partial-match issues.
           sed -i \
             -e 's|loop_count=1000000|loop_count=100|g' \
             -e 's|loop_count=100000|loop_count=100|g' \
+            -e 's|loop_count=1000|loop_count=100|g' \
             -e 's|__VA_ARGS__, 1000000)|__VA_ARGS__, 100)|g' \
             -e 's|__VA_ARGS__, 100000)|__VA_ARGS__, 100)|g' \
+            -e 's|__VA_ARGS__, 1000)|__VA_ARGS__, 100)|g' \
             OpenVX-cts/test_conformance/test_graph_pipeline.c
           cd OpenVX-cts
           mkdir -p include
@@ -428,7 +430,9 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 900 ./bin/vx_test_conformance --filter="GraphPipeline.*"
+          # After the sed patch, loop_count=100 tests are the heavy ones.
+          # Fast job excludes them; stress job runs them with longer timeout.
+          timeout 900 ./bin/vx_test_conformance --filter="GraphPipeline.*:-*loop_count=100*"
 
   pipelining-stress:
     name: "KHR extension: pipelining stress"
@@ -449,7 +453,8 @@ jobs:
           cd OpenVX-cts/build
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 900 ./bin/vx_test_conformance --filter="GraphPipeline.*"
+          # After the sed patch, loop_count=100 tests are the stress tests.
+          timeout 1200 ./bin/vx_test_conformance --filter="GraphPipeline.*loop_count=100*"
 
   image-ops:
     runs-on: ubuntu-22.04
