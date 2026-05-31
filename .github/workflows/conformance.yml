@@ -398,8 +398,10 @@ jobs:
           timeout 120 ./bin/vx_test_conformance --filter="UserDataObject.*"
 
   # Pipelining, Streaming & Batch Processing KHR extension.
-  # Split into 4 parallel fast stages + 1 optional stress stage
-  # so no single job exceeds CI runner time limits.
+  # Split into 4 parallel fast stages so no single job exceeds CI runner
+  # time limits. Stress tests (loop_count=100000) take 1+ hours and are
+  # excluded from CI — run them locally when needed:
+  #   timeout 3600 ./bin/vx_test_conformance --filter="GraphPipeline.*loop_count=100000*"
   pipelining-stage1:
     name: "KHR: pipelining stage 1"
     runs-on: ubuntu-22.04
@@ -479,27 +481,6 @@ jobs:
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
           export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
           timeout 900 ./bin/vx_test_conformance --filter="GraphPipeline.ScalarOutput.*:GraphPipeline.EventHandling.*:GraphPipeline.EventHandlingDisableEvents"
-
-  pipelining-stress:
-    name: "KHR: pipelining (stress)"
-    runs-on: ubuntu-22.04
-    needs: build
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
-      - name: Run Pipelining stress tests
-        run: |
-          chmod +x OpenVX-cts/build/bin/vx_test_conformance
-          cd OpenVX-cts/build
-          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
-          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
-          timeout 3600 ./bin/vx_test_conformance --filter="GraphPipeline.*loop_count=100000*"
 
   image-ops:
     runs-on: ubuntu-22.04
