@@ -963,7 +963,8 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
             }
-            // Clean up pipelining state
+            // Clean up pipelining state: stop executor first, then remove state
+            crate::pipelining_executor::stop_queue_auto_executor(id);
             if let Ok(mut pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
                 pipe_states.remove(&id);
             }

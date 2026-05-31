@@ -94,6 +94,9 @@ fn executor_loop(graph_id: u64, pipe_state: Arc<VxGraphPipeliningState>) {
 /// This function is serialized per-graph via execution_mutex to prevent
 /// concurrent execution of the same graph.
 fn execute_pipelined_graph(graph_id: u64) -> i32 {
+    // Clear any stale reference substitutions from previous executions
+    crate::unified_c_api::clear_ref_substitutions();
+
     // Acquire per-graph execution lock to serialize executions
     let pipe_state = get_pipelining_state(graph_id);
     let _exec_lock = pipe_state.execution_mutex.lock().unwrap();

@@ -2263,6 +2263,9 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 /// Execute the graph nodes (assumes graph is already verified and state is set to RUNNING)
 /// Returns the final status and updates graph state accordingly.
 fn execute_graph_nodes(graph: vx_graph) -> vx_status {
+    // Clear any stale reference substitutions from previous executions
+    clear_ref_substitutions();
+
     let graph_id = graph as u64;
 
     // Check if pipelining is active — if so we must track active_executions
