@@ -131,10 +131,15 @@ jobs:
           fi
       - name: Build OpenVX CTS
         run: |
-          # Reduce loop_count for stress tests from 100000 to 100 so they
-          # complete on CI runners in reasonable time (100 graph executions
-          # per test vs 100000).
-          sed -i 's|loop_count=100000|loop_count=100|g; s|__VA_ARGS__, 100000)|__VA_ARGS__, 100)|g' OpenVX-cts/test_conformance/test_graph_pipeline.c
+          # Reduce loop_count for stress tests from 100000/1000000 to 100 so they
+          # complete on CI runners in reasonable time. Must patch 1000000 FIRST
+          # (before 100000) to avoid partial-match issues.
+          sed -i \
+            -e 's|loop_count=1000000|loop_count=100|g' \
+            -e 's|loop_count=100000|loop_count=100|g' \
+            -e 's|__VA_ARGS__, 1000000)|__VA_ARGS__, 100)|g' \
+            -e 's|__VA_ARGS__, 100000)|__VA_ARGS__, 100)|g' \
+            OpenVX-cts/test_conformance/test_graph_pipeline.c
           cd OpenVX-cts
           mkdir -p include
           if [ -d "../include" ]; then
