@@ -215,6 +215,9 @@ fn finish_pipelined_execution(graph_id: u64, context_id: u64) {
         move_refs_to_done(graph_id, param_idx);
     }
 
+    // Auto-age any registered delays
+    crate::unified_c_api::auto_age_delays(graph_id);
+
     // Emit graph completion event
     notify_graph_completed(graph_id, context_id);
 }

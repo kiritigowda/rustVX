@@ -9925,7 +9925,7 @@ pub extern "C" fn vxRegisterAutoAging(graph: vx_graph, delay: vx_delay) -> vx_st
 }
 
 /// Internal function to auto-age delays after graph execution
-fn auto_age_delays(graph_id: u64) {
+pub fn auto_age_delays(graph_id: u64) {
     if let Ok(registry) = GRAPH_AUTO_AGE_DELAYS.lock() {
         if let Some(delays) = registry.get(&graph_id) {
             for &delay_addr in delays {
