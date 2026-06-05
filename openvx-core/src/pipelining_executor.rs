@@ -83,6 +83,7 @@ fn executor_loop(graph_id: u64, pipe_state: Arc<VxGraphPipeliningState>) {
         let status = execute_pipelined_graph(graph_id);
         
         if status != 0 {
+            eprintln!("[DEBUG] execute_pipelined_graph returned {}", status);
         } else {
         }
     }
@@ -149,7 +150,15 @@ fn execute_pipelined_graph(graph_id: u64) -> i32 {
         }
     }
 
-    // Get nodes
+    // Get topological waves for multicore execution
+    let waves = match g.topo_waves.lock() {
+        Ok(w) => w.clone(),
+        Err(_) => {
+            finish_pipelined_execution(graph_id, g.context_id);
+            return -1;
+        }
+    };
+
     let nodes = match g.nodes.read() {
         Ok(n) => n.clone(),
         Err(_) => {
@@ -163,32 +172,111 @@ fn execute_pipelined_graph(graph_id: u64) -> i32 {
         return 0;
     }
 
-    // Execute each node
-    for node_id in nodes.iter() {
-        if *node_id == 0 {
-            finish_pipelined_execution(graph_id, g.context_id);
-            return -1; // VX_ERROR_INVALID_NODE
+    let context_id = g.context_id;
+
+    // Execute nodes wave by wave
+    for wave in waves.iter() {
+        if wave.is_empty() {
+            continue;
         }
 
-        match crate::unified_c_api::execute_node(*node_id) {
-            Some(status) => {
-                if status == 0 {
-                    // Emit node completion event for pipelining
-                    crate::pipelining_api::notify_node_completed(graph_id, *node_id, g.context_id);
-                } else {
-                    finish_pipelined_execution(graph_id, g.context_id);
-                    return status;
+        if wave.len() == 1 {
+            // Fast path: single node, execute on caller thread
+            let node_id = wave[0];
+            if node_id == 0 {
+                finish_pipelined_execution(graph_id, context_id);
+                return -1;
+            }
+            match crate::unified_c_api::execute_node(node_id) {
+                Some(status) => {
+                    if status == 0 {
+                        crate::pipelining_api::notify_node_completed(graph_id, node_id, context_id);
+                    } else {
+                        finish_pipelined_execution(graph_id, context_id);
+                        return status;
+                    }
+                }
+                None => {
+                    finish_pipelined_execution(graph_id, context_id);
+                    return -1;
                 }
             }
-            None => {
-                finish_pipelined_execution(graph_id, g.context_id);
+        } else {
+            // Parallel path: use global thread pool for wave execution
+            let (tx, rx) = std::sync::mpsc::channel::<(u64, Option<i32>)>();
+            let pool = crate::thread_pool::get_global_pool();
+            let remaining = wave.len();
+            
+            for &node_id in wave.iter() {
+                if node_id == 0 {
+                    finish_pipelined_execution(graph_id, context_id);
+                    return -1;
+                }
+                let nid = node_id;
+                let tx2 = tx.clone();
+                if let Some(ref p) = pool {
+                    p.execute(move || {
+                        let result = crate::unified_c_api::execute_node(nid);
+                        let _ = tx2.send((nid, result));
+                    });
+                } else {
+                    // No pool available — fall back to sequential for safety
+                    let result = crate::unified_c_api::execute_node(nid);
+                    let _ = tx.send((nid, result));
+                }
+            }
+            drop(tx); // close sender so recv knows when done
+
+            // Wait for all nodes in wave and check for errors
+            for _ in 0..remaining {
+                match rx.recv() {
+                    Ok((node_id, Some(status))) => {
+                        if status == 0 {
+                            crate::pipelining_api::notify_node_completed(graph_id, node_id, context_id);
+                        } else {
+                            finish_pipelined_execution(graph_id, context_id);
+                            return status;
+                        }
+                    }
+                    Ok((_, None)) => {
+                        finish_pipelined_execution(graph_id, context_id);
+                        return -1;
+                    }
+                    Err(_) => {
+                        finish_pipelined_execution(graph_id, context_id);
+                        return -1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: if waves were empty but nodes exist (shouldn't happen), execute sequentially
+    if waves.is_empty() {
+        for node_id in nodes.iter() {
+            if *node_id == 0 {
+                finish_pipelined_execution(graph_id, context_id);
                 return -1;
+            }
+            match crate::unified_c_api::execute_node(*node_id) {
+                Some(status) => {
+                    if status == 0 {
+                        crate::pipelining_api::notify_node_completed(graph_id, *node_id, context_id);
+                    } else {
+                        finish_pipelined_execution(graph_id, context_id);
+                        return status;
+                    }
+                }
+                None => {
+                    finish_pipelined_execution(graph_id, context_id);
+                    return -1;
+                }
             }
         }
     }
 
     // Success: move consumed refs to done, emit events
-    finish_pipelined_execution(graph_id, g.context_id);
+    finish_pipelined_execution(graph_id, context_id);
 
     // Increment run count
     g.run_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

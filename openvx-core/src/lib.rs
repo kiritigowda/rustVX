@@ -12,6 +12,7 @@ pub mod kernel_fast_paths;
 pub mod pipelining;
 pub mod pipelining_api;
 pub mod pipelining_executor;
+pub mod thread_pool;
 
 pub use c_api::vx_status;
 pub use context::{Context, KernelTrait};
