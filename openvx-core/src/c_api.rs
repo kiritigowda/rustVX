@@ -6,7 +6,7 @@
 #![allow(unused_comparisons, unused_unsafe)]
 
 use std::ffi::{c_void, CStr};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Import the unified CONTEXTS registry
@@ -962,6 +962,31 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             }
             if let Ok(mut names) = REFERENCE_NAMES.lock() {
                 names.remove(&addr);
+            }
+            // Clean up pipelining state: stop executor first, then remove state
+            crate::pipelining_executor::stop_queue_auto_executor(id);
+            let was_pipelining = if let Ok(mut pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                let was = pipe_states.get(&id).map(|s| {
+                    let mode = s.schedule_mode.lock().unwrap();
+                    *mode != crate::pipelining::VxGraphScheduleMode::Normal
+                }).unwrap_or(false);
+                pipe_states.remove(&id);
+                was
+            } else { false };
+            if was_pipelining {
+                crate::pipelining_api::ACTIVE_PIPELINING_GRAPHS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Clean up auto-aging delay registry
+            if let Ok(mut registry) = crate::unified_c_api::GRAPH_AUTO_AGE_DELAYS.lock() {
+                registry.remove(&id);
+            }
+            // Clean up event registrations for this graph (from all contexts)
+            if let Ok(mut systems) = crate::pipelining_api::EVENT_SYSTEMS.lock() {
+                for (_, event_system) in systems.iter_mut() {
+                    if let Ok(mut registrations) = event_system.registrations.lock() {
+                        registrations.retain(|reg| reg.graph_id != Some(id));
+                    }
+                }
             }
         }
 
@@ -2270,12 +2295,11 @@ pub extern "C" fn vxSetParameterByIndex(
 
     // Also create/update parameter entry in unified_c_api for vxQueryParameter
     let param_id = (id << 32) | (index as u64);
-    crate::unified_c_api::create_or_update_parameter(
+    crate::unified_c_api::create_or_update_parameter_with_node(
         param_id,
         index,
         value as u64,
-        context_id,
-        kernel_id,
+        id,
     );
 
     // Check if the value is a delay slot reference and register it for delay parameter resolution

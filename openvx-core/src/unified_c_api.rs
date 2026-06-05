@@ -23,10 +23,40 @@ use crate::c_api_data::vx_pixel_value_t;
 // Include the image C API functions directly
 // These are duplicated here to ensure proper symbol export
 use log::error;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
+
+// ============================================================================
+// Per-execution reference substitution map (for pipelining mode)
+// ============================================================================
+
+thread_local! {
+    static REF_SUBSTITUTIONS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+}
+
+/// Record a reference substitution for the current graph execution.
+/// When a queued ref replaces a graph parameter, internal node params
+/// that point to the *original* ref must also use the substituted ref.
+fn set_ref_substitution(original: u64, substituted: u64) {
+    REF_SUBSTITUTIONS.with(|s| {
+        s.borrow_mut().insert(original, substituted);
+    });
+}
+
+/// Look up a substituted reference for the current execution.
+fn get_substituted_ref(original: u64) -> Option<u64> {
+    REF_SUBSTITUTIONS.with(|s| s.borrow().get(&original).copied())
+}
+
+/// Clear all substitutions at the start of a graph execution.
+pub(crate) fn clear_ref_substitutions() {
+    REF_SUBSTITUTIONS.with(|s| {
+        s.borrow_mut().clear();
+    });
+}
 
 // ============================================================================
 // Graph State and Management
@@ -676,7 +706,8 @@ fn is_data_reference(ref_id: u64) -> bool {
                 || *ref_type == VX_TYPE_MATRIX
                 || *ref_type == VX_TYPE_CONVOLUTION
                 || *ref_type == VX_TYPE_OBJECT_ARRAY
-                || *ref_type == VX_TYPE_TENSOR;
+                || *ref_type == VX_TYPE_TENSOR
+                || *ref_type == VX_TYPE_SCALAR;
         }
     }
     // Fallback: check if it's at least an image
@@ -1131,19 +1162,43 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             .cloned()
             .collect();
 
+            // Helper: get output indices for any kernel (built-in or user)
+            let get_output_indices = |kernel_name: &str, kernel_enum: i32| -> Option<Vec<usize>> {
+                // First check built-in kernels by name
+                if let Some(indices) = kernel_output_indices.get(kernel_name) {
+                    return Some(indices.clone());
+                }
+                // Then check user kernels by enumeration
+                if let Ok(params_map) = USER_KERNEL_PARAMS.lock() {
+                    if let Some(params) = params_map.get(&kernel_enum) {
+                        let mut out_indices = Vec::new();
+                        for (idx, param) in params.iter().enumerate() {
+                            if param.direction == crate::c_api::VX_OUTPUT as i32 {
+                                out_indices.push(idx);
+                            }
+                        }
+                        return Some(out_indices);
+                    }
+                }
+                None
+            };
+
             for (node_id, params) in &node_params {
                 let kernel_name = node_kernel_names
                     .get(node_id)
                     .map(|s| s.as_str())
                     .unwrap_or("");
-                let output_indices = kernel_output_indices.get(kernel_name);
+                let node_kernel_enum = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
+                    nodes_data.get(node_id).map(|nd| nd.kernel_id as i32).unwrap_or(0)
+                } else { 0 };
+                let output_indices = get_output_indices(kernel_name, node_kernel_enum);
 
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
-                        // Check if this is a data-carrying reference (image, array, pyramid, etc.)
+                        // Check if this is a data-carrying reference (image, array, pyramid, scalar, etc.)
                         if is_data_reference(*param_ref) {
                             // Determine if this parameter is an output based on kernel signature
-                            let is_output = output_indices.map_or_else(
+                            let is_output = output_indices.as_ref().map_or_else(
                                 || idx > 0, // fallback: assume first is input, rest output
                                 |indices| indices.contains(&idx),
                             );
@@ -1177,13 +1232,16 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     .get(node_id)
                     .map(|s| s.as_str())
                     .unwrap_or("");
-                let output_indices = kernel_output_indices.get(kernel_name);
+                let node_kernel_enum = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
+                    nodes_data.get(node_id).map(|nd| nd.kernel_id as i32).unwrap_or(0)
+                } else { 0 };
+                let output_indices = get_output_indices(kernel_name, node_kernel_enum);
                 let mut outputs = Vec::new();
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         if is_data_reference(*param_ref) {
-                            let is_output = output_indices
-                                .map_or_else(|| idx > 0, |indices| indices.contains(&idx));
+                            let is_output = output_indices.as_ref().map_or_else(
+                                || idx > 0, |indices| indices.contains(&idx));
                             if is_output {
                                 outputs.push(*param_ref);
                             }
@@ -1203,12 +1261,15 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     .get(node_id)
                     .map(|s| s.as_str())
                     .unwrap_or("");
-                let output_indices = kernel_output_indices.get(kernel_name);
+                let node_kernel_enum = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
+                    nodes_data.get(node_id).map(|nd| nd.kernel_id as i32).unwrap_or(0)
+                } else { 0 };
+                let output_indices = get_output_indices(kernel_name, node_kernel_enum);
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         if is_data_reference(*param_ref) {
-                            let is_output = output_indices
-                                .map_or_else(|| idx > 0, |indices| indices.contains(&idx));
+                            let is_output = output_indices.as_ref().map_or_else(
+                                || idx > 0, |indices| indices.contains(&idx));
                             if !is_output {
                                 image_to_consumers
                                     .entry(*param_ref)
@@ -2233,7 +2294,51 @@ pub extern "C" fn vxProcessGraph(graph: vx_graph) -> vx_status {
 /// Execute the graph nodes (assumes graph is already verified and state is set to RUNNING)
 /// Returns the final status and updates graph state accordingly.
 fn execute_graph_nodes(graph: vx_graph) -> vx_status {
+    // Clear any stale reference substitutions from previous executions
+    clear_ref_substitutions();
+
     let graph_id = graph as u64;
+
+    // Fast path: skip pipelining checks if no graph is in pipelining mode.
+    // Non-pipelining benchmarks execute graphs in tight loops; avoiding the
+    // GRAPH_PIPELINING mutex entirely recovers the original performance.
+    let pipe_state_opt = if crate::pipelining_api::any_pipelining_active() {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                let mode = pipe_state.schedule_mode.lock().unwrap();
+                if *mode != crate::pipelining::VxGraphScheduleMode::Normal {
+                    Some(pipe_state.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Guard that decrements active_executions (pre-incremented by vxScheduleGraph)
+    // and signals waiters on drop. Only applies in pipelining mode.
+    struct ActiveExecGuard {
+        pipe_state: Option<Arc<crate::pipelining::VxGraphPipeliningState>>,
+    }
+    impl Drop for ActiveExecGuard {
+        fn drop(&mut self) {
+            if let Some(ref pipe_state) = self.pipe_state {
+                let prev = pipe_state.active_executions.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if prev == 1 {
+                    let _guard = pipe_state.active_mutex.lock().unwrap();
+                    pipe_state.active_cv.notify_all();
+                }
+            }
+        }
+    }
+
+    let _active_guard = ActiveExecGuard { pipe_state: pipe_state_opt };
 
     // Get graph data
     let g = if let Ok(graphs) = GRAPHS_DATA.lock() {
@@ -2271,16 +2376,86 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
         }
     };
 
+    // Helper to run cleanup for pipelining on all exit paths
+    let graph_id_for_cleanup = graph_id;
+    let context_id_for_cleanup = g.context_id;
+    let mut cleanup_done = false;
+    let mut do_cleanup = || {
+        if !cleanup_done {
+            cleanup_done = true;
+            // Pipelining: collect param indices WITHOUT holding GRAPH_PIPELINING,
+            // then move references to done for each parameter.
+            let param_indices: Vec<u32> = {
+                if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                    if let Some(pipe_state) = pipe_states.get(&graph_id_for_cleanup) {
+                        let queues = pipe_state.parameter_queues.lock().unwrap();
+                        queues.keys().copied().collect()
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                }
+            };
+            for param_idx in param_indices {
+                crate::pipelining_api::move_refs_to_done(graph_id_for_cleanup, param_idx);
+            }
+            // Pipelining: emit completion events
+            crate::pipelining_api::notify_graph_completed(graph_id_for_cleanup, context_id_for_cleanup);
+        }
+    };
+
     // Check if there are any nodes to execute
     if nodes.is_empty() {
         if let Ok(mut state) = g.state.lock() {
             *state = VxGraphState::VxGraphStateCompleted;
         }
+        do_cleanup();
         return VX_SUCCESS;
     }
 
-    // Execute each node in order
-    for (_i, node_id) in nodes.iter().enumerate() {
+    // For QUEUE_MANUAL mode, we need to execute the graph for every set of
+    // ready refs in the parameter queues. Loop until all queues are empty.
+    let mut loop_iter = 0;
+    loop {
+        loop_iter += 1;
+        // Check if any queues still have ready refs (only for pipelining mode)
+        let has_ready = {
+            if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                    let queues = pipe_state.parameter_queues.lock().unwrap();
+                    queues.values().any(|q| {
+                        let ready = q.ready_refs.lock().unwrap();
+                        !ready.is_empty()
+                    })
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        // If pipelining mode and no more ready refs, we're done
+        let is_pipelining = {
+            if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                    let mode = pipe_state.schedule_mode.lock().unwrap();
+                    *mode != crate::pipelining::VxGraphScheduleMode::Normal
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        if is_pipelining && !has_ready {
+            break;
+        }
+
+        // Execute each node in order
+        for (_i, node_id) in nodes.iter().enumerate() {
         let _node_kernel_name = if let Ok(nodes_map) = crate::c_api::NODES.lock() {
             if let Some(nd) = nodes_map.get(node_id) {
                 if let Ok(kernels) = crate::c_api::KERNELS.lock() {
@@ -2302,6 +2477,7 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
             if let Ok(mut state) = g.state.lock() {
                 *state = VxGraphState::VxGraphStateAbandoned;
             }
+            do_cleanup();
             return VX_ERROR_INVALID_NODE;
         }
 
@@ -2332,11 +2508,14 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
                                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         }
                     }
+                    // Emit node completion event for pipelining
+                    crate::pipelining_api::notify_node_completed(graph_id, *node_id, g.context_id);
                 }
                 if status != VX_SUCCESS {
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
+                    do_cleanup();
                     return status;
                 }
                 // Call node callback if one is registered
@@ -2365,6 +2544,7 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
                     if let Ok(mut state) = g.state.lock() {
                         *state = VxGraphState::VxGraphStateAbandoned;
                     }
+                    do_cleanup();
                     return VX_ERROR_GRAPH_ABANDONED;
                 }
             }
@@ -2372,10 +2552,51 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
                 if let Ok(mut state) = g.state.lock() {
                     *state = VxGraphState::VxGraphStateAbandoned;
                 }
+                do_cleanup();
                 return VX_ERROR_INVALID_NODE;
             }
         }
     }
+
+    // After each graph execution iteration, move consumed refs to done.
+    // Note: move_refs_to_done is idempotent (pops all from consumed_refs),
+    // so calling it multiple times is safe and necessary in the loop.
+    {
+        let param_indices: Vec<u32> = {
+            if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                    let queues = pipe_state.parameter_queues.lock().unwrap();
+                    queues.keys().copied().collect()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        };
+        for param_idx in param_indices {
+            crate::pipelining_api::move_refs_to_done(graph_id, param_idx);
+        }
+        crate::pipelining_api::notify_graph_completed(graph_id, g.context_id);
+    }
+
+    // If not pipelining mode, only run once (the loop will break on next iteration)
+    let is_pipelining = {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                let mode = pipe_state.schedule_mode.lock().unwrap();
+                *mode != crate::pipelining::VxGraphScheduleMode::Normal
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !is_pipelining {
+        break;
+    }
+    } // end of loop
 
     // Mark as completed
     if let Ok(mut state) = g.state.lock() {
@@ -2404,6 +2625,40 @@ fn get_node_graph_id(node_id: u64) -> Result<u64, ()> {
 
 /// Helper function to resolve a graph parameter to its actual value
 fn resolve_graph_parameter(graph_id: u64, graph_param_index: usize) -> Option<u64> {
+    // FIRST: Check if pipelining is active and there's a queued reference
+    if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+        if let Some(pipe_state) = pipe_states.get(&graph_id) {
+            let queues = pipe_state.parameter_queues.lock().unwrap();
+            if let Some(queue) = queues.get(&(graph_param_index as u32)) {
+                let mut ready_refs = queue.ready_refs.lock().unwrap();
+                if let Some(ref_addr) = ready_refs.pop_front() {
+                    // Move to consumed_refs for tracking
+                    drop(ready_refs);
+                    let mut consumed = queue.consumed_refs.lock().unwrap();
+                    consumed.push_back(ref_addr);
+
+                    // Record substitution: any node param that originally pointed
+                    // to the "default" ref (first element of refs_list) should now
+                    // use this substituted ref for this execution.
+                    let valid_refs = queue.valid_refs.read().unwrap();
+                    if let Some(&original_addr) = valid_refs.first() {
+                        set_ref_substitution(original_addr as u64, ref_addr as u64);
+                    }
+
+                    return Some(ref_addr as u64);
+                }
+                drop(ready_refs);
+                // If empty, check if already consumed in current execution
+                // (intermediate output consumed by earlier node, now needed as input)
+                let consumed = queue.consumed_refs.lock().unwrap();
+                if let Some(&ref_addr) = consumed.back() {
+                    return Some(ref_addr as u64);
+                }
+            }
+        }
+    }
+
+    // FALLBACK: Standard graph parameter resolution (existing logic)
     // First, look up the graph parameter binding to get the parameter handle
     let graph_params = if let Ok(graphs) = GRAPHS_DATA.lock() {
         if let Some(g) = graphs.get(&graph_id) {
@@ -2461,18 +2716,13 @@ fn resolve_graph_parameter(graph_id: u64, graph_param_index: usize) -> Option<u6
 }
 
 /// Execute a single node by looking up its kernel and parameters
-fn execute_node(node_id: u64) -> Option<vx_status> {
+pub(crate) fn execute_node(node_id: u64) -> Option<vx_status> {
     // Get node data including border mode
     let (kernel_id, param_ids, node_border) = {
         if let Ok(nodes) = crate::c_api::NODES.lock() {
             if let Some(node_data) = nodes.get(&node_id) {
                 let params = node_data.parameters.lock().ok()?;
                 let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
-                for (_i, p) in param_refs.iter().enumerate() {
-                    if let Some(_v) = p {
-                    } else {
-                    }
-                }
                 let border = node_data.border_mode.lock().ok()?;
                 (node_data.kernel_id, param_refs, *border)
             } else {
@@ -2544,42 +2794,44 @@ fn execute_node(node_id: u64) -> Option<vx_status> {
     }
 
     for (idx, param_id_opt) in param_ids.iter().enumerate() {
-        if let Some(param_id) = param_id_opt {
-            // Validate parameter is not null pointer (unless it's an optional param)
-            let is_hog_features_optional = kernel_name.contains("hog_features") && idx == 4;
-            let is_tensor_matrix_optional = kernel_name.contains("tensor_matrix_multiply") && idx == 2;
-            if *param_id == 0 && !is_channel_combine && !(is_nms && idx == 1) && !is_hog_features_optional && !is_tensor_matrix_optional {
-                return Some(VX_ERROR_INVALID_PARAMETERS);
-            }
-            params.push(*param_id as vx_reference);
+        // ALWAYS check for graph binding first (needed for pipelining)
+        let binding_key = (node_id, idx);
+        let graph_binding = if let Ok(bindings) = NODE_PARAMETER_BINDINGS.lock() {
+            bindings.get(&binding_key).copied()
         } else {
-            // Parameter not directly set - check if it has a graph binding
+            None
+        };
 
-            // Check NODE_PARAMETER_BINDINGS for (node_id, param_index) -> graph binding
-            let binding_key = (node_id, idx);
-            let graph_binding = if let Ok(bindings) = NODE_PARAMETER_BINDINGS.lock() {
-                bindings.get(&binding_key).copied()
-            } else {
-                None
-            };
-
-            if let Some(NodeParamBinding::GraphParam(graph_param_index)) = graph_binding {
-                // This parameter is bound to a graph parameter
-                // Get the graph parameter's actual value
-                if let Ok(graph_id) = get_node_graph_id(node_id) {
-                    if let Some(resolved_value) =
-                        resolve_graph_parameter(graph_id, graph_param_index)
-                    {
-                        params.push(resolved_value as vx_reference);
-                    } else {
-                        return Some(VX_ERROR_INVALID_PARAMETERS);
-                    }
+        if let Some(NodeParamBinding::GraphParam(graph_param_index)) = graph_binding {
+            // This parameter is bound to a graph parameter
+            // ALWAYS resolve dynamically (for pipelining queue support)
+            if let Ok(graph_id) = get_node_graph_id(node_id) {
+                if let Some(resolved_value) =
+                    resolve_graph_parameter(graph_id, graph_param_index)
+                {
+                    params.push(resolved_value as vx_reference);
+                    continue;
                 } else {
                     return Some(VX_ERROR_INVALID_PARAMETERS);
                 }
             } else {
-                params.push(std::ptr::null_mut());
+                return Some(VX_ERROR_INVALID_PARAMETERS);
             }
+        }
+
+        // No graph binding - use stored parameter value
+        if let Some(param_id) = param_id_opt {
+            // Validate parameter is not null pointer (unless it's an optional param)
+            let is_hog_features_optional = kernel_name.contains("hog_features") && idx == 4;
+            let is_tensor_matrix_optional = kernel_name.contains("tensor_matrix_multiply") && idx == 2;
+            // Check if this ref was substituted due to pipelining (intermediate nodes)
+            let actual_ref = get_substituted_ref(*param_id).unwrap_or(*param_id);
+            if actual_ref == 0 && !is_channel_combine && !(is_nms && idx == 1) && !is_hog_features_optional && !is_tensor_matrix_optional {
+                return Some(VX_ERROR_INVALID_PARAMETERS);
+            }
+            params.push(actual_ref as vx_reference);
+        } else {
+            params.push(std::ptr::null_mut());
         }
     }
 
@@ -4728,6 +4980,29 @@ pub extern "C" fn vxWaitGraph(graph: vx_graph) -> vx_status {
 
     let graph_id = graph as u64;
 
+    // Check if graph is in pipelining mode
+    {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                let mode = pipe_state.schedule_mode.lock().unwrap();
+                if *mode != crate::pipelining::VxGraphScheduleMode::Normal {
+                    // In pipelining mode, wait for all active executions to finish
+                    // CRITICAL: Clone the Arc and drop GRAPH_PIPELINING before waiting,
+                    // otherwise we deadlock with execute_graph_nodes which also needs
+                    // GRAPH_PIPELINING to check pipelining state.
+                    drop(mode);
+                    let pipe_clone = pipe_state.clone();
+                    drop(pipe_states);
+                    let mut guard = pipe_clone.active_mutex.lock().unwrap();
+                    while pipe_clone.active_executions.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                        guard = pipe_clone.active_cv.wait(guard).unwrap();
+                    }
+                    return VX_SUCCESS;
+                }
+            }
+        }
+    }
+
     // Clone the Arc<VxCGraphData> so we can drop the GRAPHS_DATA lock
     // before entering the poll loop. This avoids deadlock: the background
     // thread spawned by vxScheduleGraph also needs GRAPHS_DATA to execute nodes.
@@ -4825,12 +5100,37 @@ pub extern "C" fn vxScheduleGraph(graph: vx_graph) -> vx_status {
 
     // Run the graph asynchronously in a background thread
     // The state was already set to RUNNING, so vxWaitGraph will wait
+    //
+    // For pipelining mode, increment active_executions BEFORE spawning the
+    // thread so vxWaitGraph (which checks active_executions) never races.
+    let is_pipelining = if crate::pipelining_api::any_pipelining_active() {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                let mode = pipe_state.schedule_mode.lock().unwrap();
+                *mode != crate::pipelining::VxGraphScheduleMode::Normal
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if is_pipelining {
+        if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            if let Some(pipe_state) = pipe_states.get(&graph_id) {
+                pipe_state.active_executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
     let graph_ptr = graph as usize;
     std::thread::spawn(move || {
         let g = graph_ptr as vx_graph;
         // Execute the graph nodes directly
         // This will update the graph state to COMPLETED or ABANDONED
-        let _ = execute_graph_nodes(g);
+        let status = execute_graph_nodes(g);
     });
 
     VX_SUCCESS
@@ -5323,9 +5623,18 @@ pub fn create_or_update_parameter(
     _context_id: u32,
     _kernel_id: u64,
 ) {
+    create_or_update_parameter_with_node(param_id, index, value, 0);
+}
+
+pub fn create_or_update_parameter_with_node(
+    param_id: u64,
+    index: vx_uint32,
+    value: u64,
+    node_id: u64,
+) {
     if let Ok(params) = PARAMETERS.lock() {
         if params.contains_key(&param_id) {
-            // Update existing parameter
+            // Update existing parameter - preserve existing node_id, only update value
             drop(params);
             if let Ok(params_mut) = PARAMETERS.lock() {
                 if let Some(param_data) = params_mut.get(&param_id) {
@@ -5335,12 +5644,12 @@ pub fn create_or_update_parameter(
                 }
             }
         } else {
-            // Create new parameter
+            // Create new parameter with correct node_id
             drop(params);
             if let Ok(mut params_mut) = PARAMETERS.lock() {
                 let param = Arc::new(VxCParameter {
                     id: param_id,
-                    node_id: 0, // Created via vxSetParameterByIndex, no associated node
+                    node_id,
                     index,
                     direction: VX_INPUT,
                     data_type: 0,
@@ -9264,8 +9573,8 @@ pub extern "C" fn vxAddParameterToGraph(graph: vx_graph, parameter: vx_parameter
         // Try c_api registry
         if let Ok(c_api_params) = crate::c_api::PARAMETERS.lock() {
             if let Some(param) = c_api_params.get(&param_id) {
-                // c_api::ParameterData has different fields - just use the param_id
-                node_id = 0; // Will determine from the parameter ID
+                // param_id from c_api vxGetParameterByIndex is (node_id << 32) | index
+                node_id = param_id >> 32;
                 param_index = param.index;
                 found = true;
             }
@@ -9618,7 +9927,7 @@ pub extern "C" fn vxReleaseDelay(delay: *mut vx_delay) -> vx_status {
 // ============================================================================
 
 /// Registry of delays registered for auto-aging with each graph
-static GRAPH_AUTO_AGE_DELAYS: Lazy<Mutex<HashMap<u64, Vec<usize>>>> =
+pub static GRAPH_AUTO_AGE_DELAYS: Lazy<Mutex<HashMap<u64, Vec<usize>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a delay for auto-aging with a graph
@@ -9650,7 +9959,7 @@ pub extern "C" fn vxRegisterAutoAging(graph: vx_graph, delay: vx_delay) -> vx_st
 }
 
 /// Internal function to auto-age delays after graph execution
-fn auto_age_delays(graph_id: u64) {
+pub fn auto_age_delays(graph_id: u64) {
     if let Ok(registry) = GRAPH_AUTO_AGE_DELAYS.lock() {
         if let Some(delays) = registry.get(&graph_id) {
             for &delay_addr in delays {
@@ -15059,3 +15368,4 @@ pub extern "C" fn vxuTensorConvertDepth(
     }
     crate::vxu_impl::vxu_tensor_convert_depth_impl(input as crate::c_api::vx_tensor, policy, norm, offset, output as crate::c_api::vx_tensor)
 }
+// CI trigger check
