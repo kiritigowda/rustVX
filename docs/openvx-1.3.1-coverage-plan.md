@@ -51,7 +51,7 @@ rustVX currently exports **~300 of 361** OpenVX 1.3.1 `VX_API_ENTRY` functions (
 | `vx_compatibility.h`         |  26 |   1 | 25  | 3.8%  |
 | `vx_khr_nn.h`                |   8 |   0 | 8   | 0%    |
 | `vx_khr_xml.h`               |   6 |   3 | 3   | 50%   |
-| `vx_khr_pipelining.h`        |  12 |   0 | 12  | 0%    |
+| `vx_khr_pipelining.h`        |  12 |  **12** | 0   | **100%** |
 | `vx_khr_class.h`             |   3 |   0 | 3   | 0%    |
 | `vx_khr_icd.h`               |   3 |   0 | 3   | 0%    |
 | `vx_khr_buffer_aliasing.h`   |   2 |   0 | 2   | 0%    |
@@ -61,7 +61,7 @@ rustVX currently exports **~300 of 361** OpenVX 1.3.1 `VX_API_ENTRY` functions (
 | `vx_khr_import_kernel.h`     |   1 |   0 | 1   | 0%    |
 | `vx_khr_opencl_interop.h`    |   1 |   0 | 1   | 0%    |
 | `vx_khr_tiling.h`            |   1 |   0 | 1   | 0%    |
-| **TOTAL**                    | **361** | **~300** | **~61** | **~83%** |
+| **TOTAL**                    | **361** | **~312** | **~49** | **~86%** |
 
 *Note: The 300 implemented count is approximate; the P2–P4 + P5a additions (+40 functions) were landed incrementally. A fresh re-audit of the FFI surface is recommended before declaring P5–P8 complete.*
 

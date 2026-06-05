@@ -9,6 +9,9 @@ pub mod types;
 pub mod unified_c_api;
 pub mod vxu_impl;
 pub mod kernel_fast_paths;
+pub mod pipelining;
+pub mod pipelining_api;
+pub mod pipelining_executor;
 
 pub use c_api::vx_status;
 pub use context::{Context, KernelTrait};

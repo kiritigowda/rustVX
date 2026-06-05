@@ -22,9 +22,10 @@ rustVX passes the full [Khronos OpenVX 1.3.1 Conformance Test Suite](https://git
 | Vision conformance profile | 5923 | **5923 / 5923** | ✅ |
 | Enhanced Vision conformance profile | 1235 | **1235 / 1235** | ✅ |
 | User Data Object extension | 14 | **14 / 14** | ✅ |
-| **Total** | **6786** | **6786 / 6786** | ✅ **100%** |
+| Pipelining extension | 81 | **81 / 81** | ✅ |
+| **Total** | **6867** | **6867 / 6867** | ✅ **100%** |
 
-All implemented kernels are exercised in CI with `-DOPENVX_CONFORMANCE_VISION=ON -DOPENVX_USE_ENHANCED_VISION=ON -DOPENVX_USE_USER_DATA_OBJECT=ON`.
+All implemented kernels are exercised in CI with `-DOPENVX_CONFORMANCE_VISION=ON -DOPENVX_USE_ENHANCED_VISION=ON -DOPENVX_USE_USER_DATA_OBJECT=ON -DOPENVX_USE_PIPELINING=ON`.
 
 Latest CTS run results are published on each push and pull request via the [Actions tab](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml).
 
@@ -164,7 +165,8 @@ cmake .. \
   -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.so;m" \
   -DOPENVX_CONFORMANCE_VISION=ON \
   -DOPENVX_USE_ENHANCED_VISION=ON \
-  -DOPENVX_USE_USER_DATA_OBJECT=ON
+  -DOPENVX_USE_USER_DATA_OBJECT=ON \
+  -DOPENVX_USE_PIPELINING=ON
 make -j$(nproc)
 
 # Run all tests
@@ -188,7 +190,8 @@ cmake .. \
   -DOPENVX_LIBRARIES="$(pwd)/../../target/release/libopenvx_ffi.dylib" \
   -DOPENVX_CONFORMANCE_VISION=ON \
   -DOPENVX_USE_ENHANCED_VISION=ON \
-  -DOPENVX_USE_USER_DATA_OBJECT=ON
+  -DOPENVX_USE_USER_DATA_OBJECT=ON \
+  -DOPENVX_USE_PIPELINING=ON
 make -j$(sysctl -n hw.ncpu)
 
 # Run all tests
@@ -212,7 +215,8 @@ cmake .. `
   -DOPENVX_LIBRARIES="$PWD\..\..\target\release\openvx_ffi.dll.lib" `
   -DOPENVX_CONFORMANCE_VISION=ON `
   -DOPENVX_USE_ENHANCED_VISION=ON `
-  -DOPENVX_USE_USER_DATA_OBJECT=ON
+  -DOPENVX_USE_USER_DATA_OBJECT=ON `
+  -DOPENVX_USE_PIPELINING=ON
 cmake --build . --config Release
 
 # Run all tests
@@ -277,6 +281,8 @@ GitHub Actions builds and runs the full CTS on every push and pull request. The 
 | **vision-statistics** | MeanStdDev, MinMaxLoc, Integral | [![vision-statistics](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-statistics&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **vision-pyramid** | GaussianPyramid, LaplacianPyramid, LaplacianReconstruct, OptFlowPyrLK | [![vision-pyramid](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=vision-pyramid&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **user-data-object** | UserDataObject (14 tests) | [![user-data-object](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=user-data-object&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **KHR: pipelining fast** | GraphPipeline (fast) | [![KHR extension: pipelining fast](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=KHR%20extension%3A%20pipelining%20fast&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
+| **KHR: pipelining stress** | GraphPipeline (stress) | [![KHR extension: pipelining stress](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=KHR%20extension%3A%20pipelining%20stress&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **Enhanced-Vision: Feature Extraction** | HOGCells, HOGFeatures, MatchTemplate, LBP (44 tests) | [![Enhanced-Vision: Feature Extraction](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=Enhanced-Vision%3A%20Feature%20Extraction&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **Enhanced-Vision: Post-Processing** | Copy, NonMaxSuppression, HoughLinesP (84 tests) | [![Enhanced-Vision: Post-Processing](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=Enhanced-Vision%3A%20Post-Processing&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |
 | **Enhanced-Vision: Tensor Arithmetic** | TensorOp, Min, Max (222 tests) | [![Enhanced-Vision: Tensor Arithmetic](https://img.shields.io/github/check-runs/kiritigowda/rustVX/main?nameFilter=Enhanced-Vision%3A%20Tensor%20Arithmetic&label=)](https://github.com/kiritigowda/rustVX/actions/workflows/conformance.yml?query=branch%3Amain) |

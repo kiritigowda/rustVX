@@ -9,6 +9,8 @@
 pub use openvx_core::c_api::*;
 pub use openvx_core::c_api_data::*;
 pub use openvx_core::unified_c_api::*;
+pub use openvx_core::pipelining_api::*;
+pub use openvx_core::pipelining::*;
 
 // Re-export from buffer and image crates to ensure symbols are included
 pub use openvx_buffer::c_api::*;
