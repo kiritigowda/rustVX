@@ -13,7 +13,7 @@ use crate::unified_c_api::GRAPHS_DATA;
 use crate::pipelining_executor;
 use log::{error, info, warn};
 use std::ffi::c_void;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -32,6 +32,11 @@ pub static EVENT_SYSTEMS: Lazy<Mutex<StdHashMap<u64, Arc<VxEventSystem>>>> =
 pub static GRAPH_PIPELINING: Lazy<Mutex<StdHashMap<u64, Arc<VxGraphPipeliningState>>>> =
     Lazy::new(|| Mutex::new(StdHashMap::new()));
 
+/// Fast-path counter: number of graphs with non-Normal schedule mode.
+/// Non-pipelining code paths check this with Relaxed ordering first;
+/// if zero, the GRAPH_PIPELINING lock can be skipped entirely.
+pub static ACTIVE_PIPELINING_GRAPHS: AtomicUsize = AtomicUsize::new(0);
+
 /// Get or create event system for a context
 fn get_event_system(context_id: u64) -> Arc<VxEventSystem> {
     let mut systems = EVENT_SYSTEMS.lock().unwrap();
@@ -48,6 +53,12 @@ pub(crate) fn get_pipelining_state(graph_id: u64) -> Arc<VxGraphPipeliningState>
         .entry(graph_id)
         .or_insert_with(|| Arc::new(VxGraphPipeliningState::new()))
         .clone()
+}
+
+/// Fast-path helper: return true if any graph is in pipelining mode.
+/// Uses Relaxed ordering — the caller still validates with a proper lock.
+pub fn any_pipelining_active() -> bool {
+    ACTIVE_PIPELINING_GRAPHS.load(Ordering::Relaxed) != 0
 }
 
 /// Get current timestamp in nanoseconds
@@ -123,7 +134,14 @@ pub extern "C" fn vxSetGraphScheduleConfig(
     // Set schedule mode
     {
         let mut mode = pipe_state.schedule_mode.lock().unwrap();
+        let old_mode = *mode;
         *mode = schedule_mode;
+        // Update fast-path counter when mode transitions into/out of Normal
+        if old_mode == VxGraphScheduleMode::Normal && schedule_mode != VxGraphScheduleMode::Normal {
+            ACTIVE_PIPELINING_GRAPHS.fetch_add(1, Ordering::Relaxed);
+        } else if old_mode != VxGraphScheduleMode::Normal && schedule_mode == VxGraphScheduleMode::Normal {
+            ACTIVE_PIPELINING_GRAPHS.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     // Clear existing queues

@@ -6,7 +6,7 @@
 #![allow(unused_comparisons, unused_unsafe)]
 
 use std::ffi::{c_void, CStr};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Import the unified CONTEXTS registry
@@ -965,8 +965,16 @@ pub extern "C" fn vxReleaseGraph(graph: *mut vx_graph) -> vx_status {
             }
             // Clean up pipelining state: stop executor first, then remove state
             crate::pipelining_executor::stop_queue_auto_executor(id);
-            if let Ok(mut pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+            let was_pipelining = if let Ok(mut pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
+                let was = pipe_states.get(&id).map(|s| {
+                    let mode = s.schedule_mode.lock().unwrap();
+                    *mode != crate::pipelining::VxGraphScheduleMode::Normal
+                }).unwrap_or(false);
                 pipe_states.remove(&id);
+                was
+            } else { false };
+            if was_pipelining {
+                crate::pipelining_api::ACTIVE_PIPELINING_GRAPHS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
             // Clean up auto-aging delay registry
             if let Ok(mut registry) = crate::unified_c_api::GRAPH_AUTO_AGE_DELAYS.lock() {

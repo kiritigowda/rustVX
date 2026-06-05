@@ -706,7 +706,8 @@ fn is_data_reference(ref_id: u64) -> bool {
                 || *ref_type == VX_TYPE_MATRIX
                 || *ref_type == VX_TYPE_CONVOLUTION
                 || *ref_type == VX_TYPE_OBJECT_ARRAY
-                || *ref_type == VX_TYPE_TENSOR;
+                || *ref_type == VX_TYPE_TENSOR
+                || *ref_type == VX_TYPE_SCALAR;
         }
     }
     // Fallback: check if it's at least an image
@@ -1161,19 +1162,43 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
             .cloned()
             .collect();
 
+            // Helper: get output indices for any kernel (built-in or user)
+            let get_output_indices = |kernel_name: &str, kernel_enum: i32| -> Option<Vec<usize>> {
+                // First check built-in kernels by name
+                if let Some(indices) = kernel_output_indices.get(kernel_name) {
+                    return Some(indices.clone());
+                }
+                // Then check user kernels by enumeration
+                if let Ok(params_map) = USER_KERNEL_PARAMS.lock() {
+                    if let Some(params) = params_map.get(&kernel_enum) {
+                        let mut out_indices = Vec::new();
+                        for (idx, param) in params.iter().enumerate() {
+                            if param.direction == crate::c_api::VX_OUTPUT as i32 {
+                                out_indices.push(idx);
+                            }
+                        }
+                        return Some(out_indices);
+                    }
+                }
+                None
+            };
+
             for (node_id, params) in &node_params {
                 let kernel_name = node_kernel_names
                     .get(node_id)
                     .map(|s| s.as_str())
                     .unwrap_or("");
-                let output_indices = kernel_output_indices.get(kernel_name);
+                let node_kernel_enum = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
+                    nodes_data.get(node_id).map(|nd| nd.kernel_id as i32).unwrap_or(0)
+                } else { 0 };
+                let output_indices = get_output_indices(kernel_name, node_kernel_enum);
 
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
-                        // Check if this is a data-carrying reference (image, array, pyramid, etc.)
+                        // Check if this is a data-carrying reference (image, array, pyramid, scalar, etc.)
                         if is_data_reference(*param_ref) {
                             // Determine if this parameter is an output based on kernel signature
-                            let is_output = output_indices.map_or_else(
+                            let is_output = output_indices.as_ref().map_or_else(
                                 || idx > 0, // fallback: assume first is input, rest output
                                 |indices| indices.contains(&idx),
                             );
@@ -1207,13 +1232,16 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     .get(node_id)
                     .map(|s| s.as_str())
                     .unwrap_or("");
-                let output_indices = kernel_output_indices.get(kernel_name);
+                let node_kernel_enum = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
+                    nodes_data.get(node_id).map(|nd| nd.kernel_id as i32).unwrap_or(0)
+                } else { 0 };
+                let output_indices = get_output_indices(kernel_name, node_kernel_enum);
                 let mut outputs = Vec::new();
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         if is_data_reference(*param_ref) {
-                            let is_output = output_indices
-                                .map_or_else(|| idx > 0, |indices| indices.contains(&idx));
+                            let is_output = output_indices.as_ref().map_or_else(
+                                || idx > 0, |indices| indices.contains(&idx));
                             if is_output {
                                 outputs.push(*param_ref);
                             }
@@ -1233,12 +1261,15 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                     .get(node_id)
                     .map(|s| s.as_str())
                     .unwrap_or("");
-                let output_indices = kernel_output_indices.get(kernel_name);
+                let node_kernel_enum = if let Ok(nodes_data) = crate::c_api::NODES.lock() {
+                    nodes_data.get(node_id).map(|nd| nd.kernel_id as i32).unwrap_or(0)
+                } else { 0 };
+                let output_indices = get_output_indices(kernel_name, node_kernel_enum);
                 for (idx, param_opt) in params.iter().enumerate() {
                     if let Some(param_ref) = param_opt {
                         if is_data_reference(*param_ref) {
-                            let is_output = output_indices
-                                .map_or_else(|| idx > 0, |indices| indices.contains(&idx));
+                            let is_output = output_indices.as_ref().map_or_else(
+                                || idx > 0, |indices| indices.contains(&idx));
                             if !is_output {
                                 image_to_consumers
                                     .entry(*param_ref)
@@ -2268,9 +2299,10 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
 
     let graph_id = graph as u64;
 
-    // Check if pipelining is active — if so we must track active_executions
-    // so that vxWaitGraph can wait for this background thread to finish.
-    let pipe_state_opt = {
+    // Fast path: skip pipelining checks if no graph is in pipelining mode.
+    // Non-pipelining benchmarks execute graphs in tight loops; avoiding the
+    // GRAPH_PIPELINING mutex entirely recovers the original performance.
+    let pipe_state_opt = if crate::pipelining_api::any_pipelining_active() {
         if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
             if let Some(pipe_state) = pipe_states.get(&graph_id) {
                 let mode = pipe_state.schedule_mode.lock().unwrap();
@@ -2285,6 +2317,8 @@ fn execute_graph_nodes(graph: vx_graph) -> vx_status {
         } else {
             None
         }
+    } else {
+        None
     };
 
     // Guard that decrements active_executions (pre-incremented by vxScheduleGraph)
@@ -2689,11 +2723,6 @@ pub(crate) fn execute_node(node_id: u64) -> Option<vx_status> {
             if let Some(node_data) = nodes.get(&node_id) {
                 let params = node_data.parameters.lock().ok()?;
                 let param_refs: Vec<Option<u64>> = params.iter().cloned().collect();
-                for (_i, p) in param_refs.iter().enumerate() {
-                    if let Some(_v) = p {
-                    } else {
-                    }
-                }
                 let border = node_data.border_mode.lock().ok()?;
                 (node_data.kernel_id, param_refs, *border)
             } else {
@@ -5074,7 +5103,7 @@ pub extern "C" fn vxScheduleGraph(graph: vx_graph) -> vx_status {
     //
     // For pipelining mode, increment active_executions BEFORE spawning the
     // thread so vxWaitGraph (which checks active_executions) never races.
-    let is_pipelining = {
+    let is_pipelining = if crate::pipelining_api::any_pipelining_active() {
         if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
             if let Some(pipe_state) = pipe_states.get(&graph_id) {
                 let mode = pipe_state.schedule_mode.lock().unwrap();
@@ -5085,6 +5114,8 @@ pub extern "C" fn vxScheduleGraph(graph: vx_graph) -> vx_status {
         } else {
             false
         }
+    } else {
+        false
     };
     if is_pipelining {
         if let Ok(pipe_states) = crate::pipelining_api::GRAPH_PIPELINING.lock() {
@@ -15337,3 +15368,4 @@ pub extern "C" fn vxuTensorConvertDepth(
     }
     crate::vxu_impl::vxu_tensor_convert_depth_impl(input as crate::c_api::vx_tensor, policy, norm, offset, output as crate::c_api::vx_tensor)
 }
+// CI trigger check
