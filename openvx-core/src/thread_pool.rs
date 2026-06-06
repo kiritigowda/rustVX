@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -87,14 +86,40 @@ pub fn init_global_pool(size: usize) {
 
 /// Get a reference to the global thread pool, initializing with default
 /// size (hardware concurrency or 4) if not already set.
+/// Respects `OPENVX_PIPELINING_THREADS` environment variable:
+///   - unset / "0" / "" → auto-detect core count
+///   - "1" → single-threaded (sequential fallback)
+///   - "N" → exactly N threads, capped at 64
 pub fn get_global_pool() -> Option<Arc<ThreadPool>> {
     let pool = GLOBAL_POOL.get_or_init(|| {
-        let size = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        let size = compute_pool_size();
         Arc::new(ThreadPool::new(size))
     });
     Some(Arc::clone(pool))
+}
+
+/// Compute thread pool size from environment and hardware.
+fn compute_pool_size() -> usize {
+    if let Ok(val) = std::env::var("OPENVX_PIPELINING_THREADS") {
+        if !val.is_empty() {
+            if let Ok(n) = val.parse::<usize>() {
+                if n == 0 {
+                    // Auto-detect
+                    let auto = std::thread::available_parallelism()
+                        .map(|p| p.get())
+                        .unwrap_or(4);
+                    return auto.max(1).min(64);
+                } else {
+                    return n.max(1).min(64);
+                }
+            }
+        }
+    }
+    // Default: auto-detect
+    let auto = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+    auto.max(1).min(64)
 }
 
 /// Set a custom pool size (for testing or tuning). Returns false if pool

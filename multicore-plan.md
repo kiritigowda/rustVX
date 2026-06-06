@@ -14,69 +14,18 @@ The topological sort now correctly orders nodes including scalar dependencies (f
 
 ## Plan
 
-### Step 1: [DOCUMENT] Document current single-threaded architecture
-**Dependencies:** None
-**Approach:**
-- Write `docs/pipelining_architecture.md` describing:
-  - How QUEUE_AUTO executor thread works
-  - How `execute_pipelined_graph` currently works (sequential node dispatch)
-  - How `finish_pipelined_execution` works (moving refs to done, emitting events)
-  - Where synchronization points are (`execution_mutex`, `active_executions`, `active_cv`)
-  - Why current approach is safe but not parallel
-**Verification:** Document is clear enough for another engineer to understand
-**Files:** `docs/pipelining_architecture.md`
+### Step 1: [DOCUMENT] Document current single-threaded architecture ✅ DONE
+**Status:** `docs/pipelining_architecture.md` written
 
-### Step 2: [DESIGN] Design wave-based parallel execution model
-**Dependencies:** Step 1
-**Approach:**
-- Design a wave-based execution model:
-  - **Wave 0:** All nodes with in-degree 0 execute in parallel
-  - **Wave 1:** After all wave-0 nodes finish, nodes whose dependencies are satisfied execute in parallel
-  - Continue until all waves complete
-- Determine synchronization strategy:
-  - Per-wave barrier (all nodes in wave N must finish before wave N+1 starts)
-  - Or per-node notification (each node notifies its dependents when done)
-- Decide thread pool model:
-  - Global thread pool (shared across all graphs) vs per-graph thread pool
-  - Configuration via environment variable or build flag
-- Define memory model for shared state:
-  - `REF_SUBSTITUTIONS` is thread-local — safe for parallel reads, needs coordination for writes
-  - Node output refs are written by producer, read by consumers in later waves
-  - `NODE_PARAMETER_BINDINGS` / `GRAPH_PARAMETER_BINDINGS` are read-only during execution
-**Verification:** Design doc covers edge cases (cyclic graphs, error handling, graph release during execution)
-**Files:** `docs/multicore_pipeline_design.md`
+### Step 2: [DESIGN] Design wave-based parallel execution model ✅ DONE
+**Status:** `docs/multicore_pipeline_design.md` written
 
-### Step 3: [IMPLEMENT] Create global thread pool for node dispatch
-**Dependencies:** Step 2
-**Approach:**
-- Create `openvx-core/src/thread_pool.rs`:
-  - `ThreadPool` struct with configurable worker count
-  - `spawn` method that accepts closures
-  - `join` or `wait_all` for barrier synchronization
-  - Use `std::thread` + channels (or `crossbeam` if available)
-- Configuration:
-  - Default thread count = `num_cpus::get()` or env var `OPENVX_PIPELINING_THREADS`
-  - Minimum 1, maximum 64 (sanity cap)
-- Lazy initialization: thread pool created on first use, shared across all graphs
-**Verification:** Thread pool compiles, basic spawn/join test passes
-**Files:** `openvx-core/src/thread_pool.rs`, update `openvx-core/src/lib.rs`
+### Step 3: [IMPLEMENT] Create global thread pool for node dispatch ✅ DONE
+**Status:** `openvx-core/src/thread_pool.rs` created and tested
 
-### Step 4: [IMPLEMENT] Wave-based node execution in `execute_pipelined_graph`
-**Dependencies:** Step 3
-**Approach:**
-- Modify `execute_pipelined_graph` in `pipelining_executor.rs`:
-  1. Build wave map: group nodes by topological depth (already computed by `vxVerifyGraph`)
-  2. For each wave:
-     a. Spawn all nodes in wave to thread pool
-     b. Wait for all wave nodes to complete
-     c. Check for errors — if any node failed, abort remaining waves
-  3. After all waves: run `finish_pipelined_execution`
-- Key changes:
-  - `execute_node` must be safe to call from multiple threads concurrently (verify no shared mutable state)
-  - Error propagation: collect status from all nodes in wave, fail fast
-  - Keep thread-local `REF_SUBSTITUTIONS` per worker thread (already thread-local)
-**Verification:** Single-graph pipelining tests pass, no regressions in non-pipelining tests
-**Files:** `openvx-core/src/pipelining_executor.rs`
+### Step 4: [IMPLEMENT] Wave-based node execution in `execute_pipelined_graph` ✅ DONE
+**Status:** `pipelining_executor.rs` modified with wave-based dispatch
+**Tests:** All 9 UserKernel tests pass, 12 representative tests pass
 
 ### Step 5: [IMPLEMENT] Per-node execution wrapper with error propagation
 **Dependencies:** Step 4
