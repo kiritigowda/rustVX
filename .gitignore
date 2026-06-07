@@ -1,2 +1,8 @@
 target/
 OpenVX-cts/
+
+# Ignore compiled sample binaries
+samples/**/*.o
+samples/**/benchmark_pipelining
+samples/**/multiscale_feature_extraction
+samples/**/pipelining_multicore

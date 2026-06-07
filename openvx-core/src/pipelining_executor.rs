@@ -83,7 +83,8 @@ fn executor_loop(graph_id: u64, pipe_state: Arc<VxGraphPipeliningState>) {
         let status = execute_pipelined_graph(graph_id);
         
         if status != 0 {
-            eprintln!("[DEBUG] execute_pipelined_graph returned {}", status);
+            // Node execution failed; loop continues and tries next execution
+            // from the queue. The executor keeps retrying.
         } else {
         }
     }
