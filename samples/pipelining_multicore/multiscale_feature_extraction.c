@@ -7,25 +7,21 @@
  * fuses them into a single confidence map.
  *
  * Pipeline:
- *   Input Image (1920×1080 RGB)
- *      ├──→ ColorConvert → Y plane (grayscale)
- *      │       ├──→ Gaussian3x3 → tmp_0
- *      │       ├──→ HalfScaleGaussian → half
- *      │       │       └──→ Gaussian3x3 → tmp_1
- *      │       └──→ HalfScaleGaussian(half) → quarter
- *      │               └──→ Gaussian3x3 → tmp_2
+ *   Input Image (1280×720 U8)
+ *      ├──→ Gaussian3x3 → tmp_0
+ *      ├──→ HalfScaleGaussian → half
+ *      │       └──→ Gaussian3x3 → tmp_1
+ *      └──→ HalfScaleGaussian(half) → quarter
+ *              └──→ Gaussian3x3 → tmp_2
  *      │
  *      └──→ [Parallel Wave]
- *              ├──→ Canny(tmp_0)  → edges_0
- *              ├──→ Canny(tmp_1)  → edges_1
- *              └──→ Canny(tmp_2)  → edges_2
- *                      └──→ [Fuse]
- *                              ├──→ Or(edges_0, edges_1) → fuse_a
- *                              └──→ Or(fuse_a, edges_2) → Output
+ *              ├──→ Sobel3x3 → Magnitude (full)  ──┐
+ *              ├──→ Sobel3x3 → Magnitude (half)  ──→ ScaleUp ──┤→ OR → OR → Output
+ *              └──→ Sobel3x3 → Magnitude (quarter) ──→ ScaleUp ──┘
  *
  * Why this is realistic:
  *   - Multi-scale processing is standard in detection pipelines (YOLO, SSD)
- *   - Three Canny detectors run in parallel on independent scales
+ *   - Three Sobel+Magnitude run in parallel on independent scales
  *   - The wave-based executor maps naturally to CPU cores
  *
  * Build:
@@ -40,12 +36,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <vx/vx.h>
+#include <VX/vx.h>
+#include <VX/vx_khr_pipelining.h>
 
-#define WIDTH       1920
-#define HEIGHT      1080
-#define ITERS       30
-#define NUM_BUF     3
+#define WIDTH       1280
+#define HEIGHT       720
+#define ITERS         30
+#define NUM_BUF        3
 
 double now_ms(void)
 {
@@ -55,23 +52,18 @@ double now_ms(void)
 }
 
 static vx_graph build_multiscale_graph(vx_context ctx,
-                                        vx_image input_rgb,
-                                        vx_image output,
+                                        vx_image in_ref,
+                                        vx_image out_ref,
                                         int use_pipelining,
                                         vx_image **in_bufs,
                                         vx_image **out_bufs)
 {
     vx_graph graph = vxCreateGraph(ctx);
 
-    /* Convert RGB → Y (grayscale).  In a real app you'd also keep U/V. */
-    vx_image gray = vxCreateVirtualImage(graph, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
-    vx_node n_color = vxColorConvertNode(graph, input_rgb, gray);
-    (void)n_color; /* graph param registered below */
-
     /* Scale pyramid */
-    vx_image half   = vxCreateVirtualImage(graph, WIDTH/2, HEIGHT/2, VX_DF_IMAGE_U8);
+    vx_image half    = vxCreateVirtualImage(graph, WIDTH/2, HEIGHT/2, VX_DF_IMAGE_U8);
     vx_image quarter = vxCreateVirtualImage(graph, WIDTH/4, HEIGHT/4, VX_DF_IMAGE_U8);
-    vx_node n_half   = vxHalfScaleGaussianNode(graph, gray, half, 3);
+    vx_node n_half   = vxHalfScaleGaussianNode(graph, in_ref, half, 3);
     vx_node n_quarter = vxHalfScaleGaussianNode(graph, half, quarter, 3);
     (void)n_half; (void)n_quarter;
 
@@ -80,32 +72,34 @@ static vx_graph build_multiscale_graph(vx_context ctx,
     vx_image tmp_1 = vxCreateVirtualImage(graph, WIDTH/2,   HEIGHT/2,   VX_DF_IMAGE_U8);
     vx_image tmp_2 = vxCreateVirtualImage(graph, WIDTH/4,   HEIGHT/4,   VX_DF_IMAGE_U8);
 
-    vx_node n_blur0 = vxGaussian3x3Node(graph, gray,    tmp_0);
+    vx_node n_blur0 = vxGaussian3x3Node(graph, in_ref,  tmp_0);
     vx_node n_blur1 = vxGaussian3x3Node(graph, half,    tmp_1);
     vx_node n_blur2 = vxGaussian3x3Node(graph, quarter, tmp_2);
 
-    /* Parallel wave: Canny edge detection at each scale */
+    /* Parallel wave: Sobel edge detection at each scale */
     vx_image edges_0 = vxCreateVirtualImage(graph, WIDTH,     HEIGHT,     VX_DF_IMAGE_U8);
     vx_image edges_1 = vxCreateVirtualImage(graph, WIDTH/2,   HEIGHT/2,   VX_DF_IMAGE_U8);
     vx_image edges_2 = vxCreateVirtualImage(graph, WIDTH/4,   HEIGHT/4,   VX_DF_IMAGE_U8);
 
-    vx_threshold thresh0 = vxCreateThreshold(ctx, VX_THRESHOLD_TYPE_RANGE, VX_TYPE_UINT8);
-    vx_threshold thresh1 = vxCreateThreshold(ctx, VX_THRESHOLD_TYPE_RANGE, VX_TYPE_UINT8);
-    vx_threshold thresh2 = vxCreateThreshold(ctx, VX_THRESHOLD_TYPE_RANGE, VX_TYPE_UINT8);
-    vxSetThresholdAttribute(thresh0, VX_THRESHOLD_THRESHOLD_LOWER, &(vx_int32){80},  sizeof(vx_int32));
-    vxSetThresholdAttribute(thresh0, VX_THRESHOLD_THRESHOLD_UPPER, &(vx_int32){150}, sizeof(vx_int32));
-    vxSetThresholdAttribute(thresh1, VX_THRESHOLD_THRESHOLD_LOWER, &(vx_int32){60},  sizeof(vx_int32));
-    vxSetThresholdAttribute(thresh1, VX_THRESHOLD_THRESHOLD_UPPER, &(vx_int32){120}, sizeof(vx_int32));
-    vxSetThresholdAttribute(thresh2, VX_THRESHOLD_THRESHOLD_LOWER, &(vx_int32){40},  sizeof(vx_int32));
-    vxSetThresholdAttribute(thresh2, VX_THRESHOLD_THRESHOLD_UPPER, &(vx_int32){100}, sizeof(vx_int32));
+    /* Sobel3x3 returns S16; use magnitude to get U8 edges */
+    vx_image sobel_0_a = vxCreateVirtualImage(graph, WIDTH,   HEIGHT,   VX_DF_IMAGE_S16);
+    vx_image sobel_0_b = vxCreateVirtualImage(graph, WIDTH,   HEIGHT,   VX_DF_IMAGE_S16);
+    vx_image sobel_1_a = vxCreateVirtualImage(graph, WIDTH/2, HEIGHT/2, VX_DF_IMAGE_S16);
+    vx_image sobel_1_b = vxCreateVirtualImage(graph, WIDTH/2, HEIGHT/2, VX_DF_IMAGE_S16);
+    vx_image sobel_2_a = vxCreateVirtualImage(graph, WIDTH/4, HEIGHT/4, VX_DF_IMAGE_S16);
+    vx_image sobel_2_b = vxCreateVirtualImage(graph, WIDTH/4, HEIGHT/4, VX_DF_IMAGE_S16);
 
-    vx_node n_canny0 = vxCannyEdgeDetectorNode(graph, tmp_0, thresh0, 3, VX_NORM_L1, edges_0);
-    vx_node n_canny1 = vxCannyEdgeDetectorNode(graph, tmp_1, thresh1, 3, VX_NORM_L1, edges_1);
-    vx_node n_canny2 = vxCannyEdgeDetectorNode(graph, tmp_2, thresh2, 3, VX_NORM_L1, edges_2);
-    (void)n_canny0; (void)n_canny1; (void)n_canny2;
+    vx_node n_sobel0 = vxSobel3x3Node(graph, tmp_0, sobel_0_a, sobel_0_b);
+    vx_node n_sobel1 = vxSobel3x3Node(graph, tmp_1, sobel_1_a, sobel_1_b);
+    vx_node n_sobel2 = vxSobel3x3Node(graph, tmp_2, sobel_2_a, sobel_2_b);
+    (void)n_sobel0; (void)n_sobel1; (void)n_sobel2;
 
-    /* Fuse: OR all three edge maps (need to resize smaller maps to full resolution) */
-    /* For simplicity, just OR the full-res edges with resized versions */
+    vx_node n_mag0 = vxMagnitudeNode(graph, sobel_0_a, sobel_0_b, edges_0);
+    vx_node n_mag1 = vxMagnitudeNode(graph, sobel_1_a, sobel_1_b, edges_1);
+    vx_node n_mag2 = vxMagnitudeNode(graph, sobel_2_a, sobel_2_b, edges_2);
+    (void)n_mag0; (void)n_mag1; (void)n_mag2;
+
+    /* Fuse: OR all three edge maps. Need to resize smaller maps to full resolution. */
     vx_image edges_1_up = vxCreateVirtualImage(graph, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
     vx_image edges_2_up = vxCreateVirtualImage(graph, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
     vx_node n_scale1 = vxScaleImageNode(graph, edges_1, edges_1_up, VX_INTERPOLATION_BILINEAR);
@@ -114,12 +108,12 @@ static vx_graph build_multiscale_graph(vx_context ctx,
 
     vx_image fuse_a = vxCreateVirtualImage(graph, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
     vx_node n_or1 = vxOrNode(graph, edges_0, edges_1_up, fuse_a);
-    vx_node n_or2 = vxOrNode(graph, fuse_a, edges_2_up, output);
+    vx_node n_or2 = vxOrNode(graph, fuse_a, edges_2_up, out_ref);
     (void)n_or1; (void)n_or2;
 
-    /* Graph parameters */
-    vxAddParameterToGraph(graph, (vx_parameter)vxGetParameterByIndex(n_color, 0)); /* input_rgb */
-    vxAddParameterToGraph(graph, (vx_parameter)vxGetParameterByIndex(n_or2,   2)); /* output    */
+    /* Graph parameters: input + output */
+    vxAddParameterToGraph(graph, (vx_parameter)vxGetParameterByIndex(n_blur0, 0)); /* input  */
+    vxAddParameterToGraph(graph, (vx_parameter)vxGetParameterByIndex(n_or2,   2)); /* output */
 
     if (vxVerifyGraph(graph) != VX_SUCCESS) {
         fprintf(stderr, "Graph verification failed\n");
@@ -131,7 +125,7 @@ static vx_graph build_multiscale_graph(vx_context ctx,
         *in_bufs  = malloc(NUM_BUF * sizeof(vx_image));
         *out_bufs = malloc(NUM_BUF * sizeof(vx_image));
         for (int i = 0; i < NUM_BUF; i++) {
-            (*in_bufs)[i]  = vxCreateImage(ctx, WIDTH, HEIGHT, VX_DF_IMAGE_RGB);
+            (*in_bufs)[i]  = vxCreateImage(ctx, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
             (*out_bufs)[i] = vxCreateImage(ctx, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
         }
 
@@ -146,16 +140,12 @@ static vx_graph build_multiscale_graph(vx_context ctx,
         vxSetGraphScheduleConfig(graph, VX_GRAPH_SCHEDULE_MODE_QUEUE_AUTO, 2, qp);
     }
 
-    vxReleaseThreshold(&thresh0);
-    vxReleaseThreshold(&thresh1);
-    vxReleaseThreshold(&thresh2);
-
     return graph;
 }
 
 static double bench(vx_context ctx, int use_pipelining)
 {
-    vx_image input0  = vxCreateImage(ctx, WIDTH, HEIGHT, VX_DF_IMAGE_RGB);
+    vx_image input0  = vxCreateImage(ctx, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
     vx_image output0 = vxCreateImage(ctx, WIDTH, HEIGHT, VX_DF_IMAGE_U8);
     vx_image *in_bufs = NULL, *out_bufs = NULL;
 
@@ -180,8 +170,8 @@ static double bench(vx_context ctx, int use_pipelining)
 
         /* Prime pipeline */
         for (int i = 0; i < NUM_BUF; i++) {
-            vx_graph_parameter_enqueue_ready_ref(graph, 0, (vx_reference)&in_bufs[i], 1);
-            vx_graph_parameter_enqueue_ready_ref(graph, 1, (vx_reference)&out_bufs[i], 1);
+            vxGraphParameterEnqueueReadyRef(graph, 0, (vx_reference*)&in_bufs[i], 1);
+            vxGraphParameterEnqueueReadyRef(graph, 1, (vx_reference*)&out_bufs[i], 1);
         }
 
         /* Steady state */
@@ -189,9 +179,9 @@ static double bench(vx_context ctx, int use_pipelining)
         for (int i = 0; i < ITERS - NUM_BUF; i++) {
             vx_reference ref = NULL;
             vx_uint32 num = 0;
-            vx_graph_parameter_dequeue_done_ref(graph, 1, &ref, 1, &num);
-            vx_graph_parameter_enqueue_ready_ref(graph, 0, (vx_reference)&in_bufs[idx % NUM_BUF], 1);
-            vx_graph_parameter_enqueue_ready_ref(graph, 1, (vx_reference)&out_bufs[idx % NUM_BUF], 1);
+            vxGraphParameterDequeueDoneRef(graph, 1, &ref, 1, &num);
+            vxGraphParameterEnqueueReadyRef(graph, 0, (vx_reference*)&in_bufs[idx % NUM_BUF], 1);
+            vxGraphParameterEnqueueReadyRef(graph, 1, (vx_reference*)&out_bufs[idx % NUM_BUF], 1);
             idx++;
         }
 
@@ -221,20 +211,13 @@ int main(int argc, char **argv)
     (void)argc; (void)argv;
     vx_context ctx = vxCreateContext();
 
-    vx_bool pipelining = vx_false_e;
-    vxQueryContext(ctx, VX_CONTEXT_EXTENSIONS, &pipelining, sizeof(pipelining));
-    if (!pipelining) {
-        fprintf(stderr, "Pipelining extension not available. Build with -DOPENVX_USE_PIPELINING=ON\n");
-        return 1;
-    }
-
     printf("=== Multi-Scale Feature Extraction (Real-World Pipeline) ===\n\n");
     printf("Graph:\n");
-    printf("  RGB Input → ColorConvert → Y plane\n");
-    printf("              ├──→ Gaussian3x3 ──→ Canny(full)   ──┐\n");
-    printf("              ├──→ HalfScale → Gaussian3x3 ──→ Canny(half) ──→ ScaleUp ──┤→ OR → OR → Output\n");
-    printf("              └──→ HalfScale → HalfScale → Gaussian3x3 ──→ Canny(quarter) ──→ ScaleUp ──┘\n\n");
-    printf("Resolution: %dx%d RGB | Iterations: %d | Queue depth: %d\n\n",
+    printf("  U8 Input (1280x720)\n");
+    printf("    ├──→ Gaussian3x3 ──→ tmp_0 ──→ Sobel3x3 ──→ Magnitude ──→ edges_0 ──┐\n");
+    printf("    ├──→ HalfScale → Gaussian3x3 ──→ tmp_1 ──→ Sobel3x3 ──→ Magnitude ──→ edges_1 ──→ ScaleUp ──┤→ OR → OR → Output\n");
+    printf("    └──→ HalfScale → HalfScale → Gaussian3x3 ──→ tmp_2 ──→ Sobel3x3 ──→ Magnitude ──→ edges_2 ──→ ScaleUp ──┘\n\n");
+    printf("Resolution: %dx%d U8 | Iterations: %d | Queue depth: %d\n\n",
            WIDTH, HEIGHT, ITERS, NUM_BUF);
 
     /* Warmup to stabilise caches */
