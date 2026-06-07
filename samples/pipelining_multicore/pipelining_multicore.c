@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <vx/vx.h>
+#include <VX/vx.h>
 
 #define WIDTH   640
 #define HEIGHT  480
