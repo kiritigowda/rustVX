@@ -1,109 +1,143 @@
-# OpenVX Pipelining Multicore Sample
+# OpenVX Pipelining Multicore Samples
 
 Demonstrates wave-based parallel execution using the OpenVX Pipelining extension on multicore CPUs.
 
-## What It Shows
+## Samples
 
-- **4 parallel image-processing branches** (Gaussian blur, Box filter, Dilate, Erode)
-- **2 execution waves** computed automatically by `vxVerifyGraph`:
-  - Wave 0: All 4 filter nodes (no dependencies → run in parallel)
-  - Wave 1: All 4 fill nodes (depend on Wave 0 → run in parallel after barrier)
-- **QUEUE_AUTO mode** for overlapping graph executions
-- **Environment variable** `OPENVX_PIPELINING_THREADS` to tune parallelism
+### 1. `pipelining_multicore` — Basic Wave-Parallel Demo
+
+A minimal 4-branch parallel filter graph showing how the wave executor works.
+
+```
+Input
+  ├──→ Gaussian3x3 → Fill → out_a
+  ├──→ Box3x3      → Fill → out_b
+  ├──→ Dilate3x3   → Fill → out_c
+  └──→ Erode3x3    → Fill → out_d
+```
+
+- **Wave 0**: All 4 filters execute in parallel
+- **Wave 1**: All 4 fills execute in parallel after barrier
+
+### 2. `pipelining_vs_nonpipelining` — Throughput Comparison
+
+Runs the *same* graph twice to measure the performance benefit:
+
+```
+Input
+  ├──→ Gaussian3x3 ──→ tmp_a ─┐
+  ├──→ Erode3x3    ──→ tmp_b ─┤→ AND → AND → Output
+  └──→ Dilate3x3  ──→ tmp_c ─┘
+```
+
+- **Non-pipelining mode**: `vxProcessGraph`, one frame at a time
+- **Pipelining mode**: `QUEUE_AUTO` with 3-deep buffer queue, overlapping execution
+
+Prints throughput (FPS) and speedup ratio.
+
+### 3. `multiscale_feature_extraction` — Real-World CV Pipeline
+
+A realistic preprocessing stage inspired by object-detection networks (YOLO, SSD):
+
+```
+RGB Input (1920×1080)
+    └──→ ColorConvert → Y (grayscale)
+            ├──→ Gaussian3x3 ──→ Canny(full-res)   ──┐
+            ├──→ HalfScale → Gaussian3x3 ──→ Canny(half) ──→ ScaleUp ──┤→ OR → OR → Confidence Map
+            └──→ HalfScale → HalfScale → Gaussian3x3 ──→ Canny(quarter) ──→ ScaleUp ──┘
+```
+
+- **Wave 0**: ColorConvert + 3 Gaussian blurs (parallel)
+- **Wave 1**: 2 HalfScale (sequential dependency)
+- **Wave 2**: 3 Canny edge detectors (parallel, independent scales)
+- **Wave 3**: 2 ScaleUp + 2 OR (fusion)
+
+This is where multicore pipelining shines — the 3 Canny detectors are expensive and embarrassingly parallel.
 
 ## Requirements
 
 - rustVX built with `-DOPENVX_USE_PIPELINING=ON`
-- GCC or Clang
-- OpenVX headers (from rustVX `include/` directory)
+- GCC or Clang with POSIX support (`-D_POSIX_C_SOURCE=200809L`)
+- OpenVX headers (from rustVX `include/`)
 
 ## Build
 
 ```bash
 cd samples/pipelining_multicore
-make OPENVX_INCLUDE=/path/to/rustVX/include OPENVX_LIB=/path/to/rustVX/target/release
+make OPENVX_INCLUDE=../../include OPENVX_LIB=../../target/release
 ```
 
-Or manually:
-```bash
-gcc -O3 -o pipelining_multicore pipelining_multicore.c \
-    -I/path/to/rustVX/include \
-    -L/path/to/rustVX/target/release \
-    -lopenvx -Wl,-rpath,/path/to/rustVX/target/release
-```
+Builds all three samples.
 
 ## Run
 
+### Basic demo
 ```bash
-# Auto-detect thread pool size (hardware cores, capped at 64)
-./pipelining_multicore
-
-# Force single-threaded (sequential fallback)
-OPENVX_PIPELINING_THREADS=1 ./pipelining_multicore
-
-# Use exactly 4 threads
-OPENVX_PIPELINING_THREADS=4 ./pipelining_multicore
-
-# Debug: show thread pool size being used (rustVX logs at init)
-RUST_LOG=info OPENVX_PIPELINING_THREADS=4 ./pipelining_multicore
+./pipelining_multicore                    # auto-detect threads
+OPENVX_PIPELINING_THREADS=1 ./pipelining_multicore   # single-threaded
+OPENVX_PIPELINING_THREADS=4 ./pipelining_multicore   # 4 threads
 ```
 
-## Expected Output
-
+### Throughput comparison
+```bash
+./pipelining_vs_nonpipelining
 ```
-✓ OpenVX Pipelining Extension available
-✓ Graph verified (topological waves computed)
-✓ Pipelining mode set to QUEUE_AUTO
-✓ Graph scheduled (executor thread started)
-Warming up...
-Running benchmark (100 iterations)...
 
-=== Results ===
-Total time:  245.32 ms
-Iterations:   100
-Throughput:   407.63 FPS
-
-Notes:
-- Nodes in Wave 0 (Gaussian, Box, Dilate, Erode) execute in parallel
-- Nodes in Wave 1 (4× Fill) execute in parallel after Wave 0
-- Set OPENVX_PIPELINING_THREADS=N to control thread pool size
+Expected output:
 ```
+[1/2] NON-PIPELINING (vxProcessGraph)...
+      12.345 ms/frame = 81.01 FPS
+
+[2/2] PIPELINING (QUEUE_AUTO + enqueue/dequeue)...
+      7.234 ms/frame = 138.24 FPS
+
+=== Summary ===
+Non-pipelining throughput:  81.01 FPS
+Pipelining throughput:      138.24 FPS
+Throughput speedup:         1.71x
+```
+
+### Real-world pipeline
+```bash
+./multiscale_feature_extraction
+OPENVX_PIPELINING_THREADS=4 ./multiscale_feature_extraction
+```
+
+## Performance Tips
+
+1. **More parallel branches = more speedup** — add independent nodes
+2. **`OPENVX_PIPELINING_THREADS`** — match CPU core count (or slightly less)
+3. **Queue depth** — `NUM_BUF=3` is a good default; increase for bursty inputs
+4. **Avoid false dependencies** — use virtual images for intermediates
+5. **Large nodes benefit most** — Canny, GaussianPyramid, OpticalFlow
 
 ## Architecture
 
 ```
-Input Image (640×480)
-    │
-    ├──→ [Gaussian3x3] ──→ tmp_a ──→ [Fill] ──→ out_a
-    ├──→ [Box3x3]      ──→ tmp_b ──→ [Fill] ──→ out_b
-    ├──→ [Dilate3x3]   ──→ tmp_c ──→ [Fill] ──→ out_c
-    └──→ [Erode3x3]    ──→ tmp_d ──→ [Fill] ──→ out_d
+┌─────────────────────────────────────┐
+│         Wave Scheduler              │
+│  (computed by vxVerifyGraph)        │
+├─────────────────────────────────────┤
+│  Wave 0: Node A │ Node B │ Node C  │  ← parallel on thread pool
+│  ───────────────────────────────────│  ← barrier
+│  Wave 1: Node D │ Node E            │  ← parallel on thread pool
+│  ───────────────────────────────────│  ← barrier
+│  Wave 2: Node F                     │  ← single node, fast path
+└─────────────────────────────────────┘
 ```
-
-### Wave Schedule
-
-| Wave | Nodes | Why Parallel? |
-|------|-------|---------------|
-| 0 | Gaussian, Box, Dilate, Erode | All read same input, no inter-dependencies |
-| 1 | Fill A, Fill B, Fill C, Fill D | All depend only on Wave 0 outputs |
-
-Between waves: barrier ensures Wave 0 completes before Wave 1 starts.
-
-## Performance Tips
-
-1. **More parallel branches = more speedup** — add more independent nodes
-2. **`OPENVX_PIPELINING_THREADS`** — match your CPU core count (or slightly less to leave cores for OS)
-3. **Queue depth** — enqueue multiple frames ahead to hide latency
-4. **Avoid false dependencies** — use virtual images for intermediates
 
 ## Files
 
-- `pipelining_multicore.c` — main sample
-- `Makefile` — build automation
-- `README.md` — this file
+| File | Description |
+|------|-------------|
+| `pipelining_multicore.c` | Basic parallel-branch demo |
+| `pipelining_vs_nonpipelining.c` | Head-to-head throughput benchmark |
+| `multiscale_feature_extraction.c` | Real-world multi-scale CV pipeline |
+| `Makefile` | Build all three samples |
+| `README.md` | This file |
 
 ## See Also
 
 - `docs/pipelining_architecture.md` — rustVX pipelining internals
 - `docs/multicore_pipeline_design.md` — wave-based execution design
-- OpenVX 1.3 Specification — Pipelining Extension (khronos.org)
+- OpenVX 1.3 Pipelining Extension Spec — khronos.org
