@@ -57,7 +57,7 @@ fn executor_loop(graph_id: u64, pipe_state: Arc<VxGraphPipeliningState>) {
         }
         
         // Wait until ALL queue parameters have at least one ready ref
-        let (all_ready, num_params, ready_counts) = {
+        let (all_ready, num_params, _ready_counts) = {
             let queues = pipe_state.parameter_queues.lock().unwrap();
             let n = queues.len();
             let mut ready = true;

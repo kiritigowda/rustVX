@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <VX/vx.h>
+#include <VX/vx_khr_pipelining.h>
 
 #define WIDTH   640
 #define HEIGHT  480
