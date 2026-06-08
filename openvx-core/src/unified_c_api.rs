@@ -89,6 +89,10 @@ pub struct VxCGraphData {
     /// Node-owned references (e.g. internally-created scalars) that must be
     /// released when the graph is freed.
     pub owned_refs: Mutex<Vec<u64>>,
+    /// Topological waves for multicore pipelining execution.
+    /// Each wave is a list of node IDs that can execute in parallel.
+    /// Computed during vxVerifyGraph, immutable thereafter.
+    pub topo_waves: Mutex<Vec<Vec<u64>>>,
 }
 
 /// Context data
@@ -1591,24 +1595,42 @@ pub extern "C" fn vxVerifyGraph(graph: vx_graph) -> vx_status {
                 // Kahn's algorithm with stack gives correct topological order
                 // No need to reverse
 
-                // Update the graph's node list
-                if topo_order.len() == node_params.len() {
-                    if let Ok(mut nodes_list) = g.nodes.write() {
-                        *nodes_list = topo_order;
-                    }
-                } else {
-                    // Topological sort didn't include all nodes - this means there's a cycle
-                    // or disconnected nodes. Include all nodes by appending missing ones.
-                    let topo_set: std::collections::HashSet<u64> =
-                        topo_order.iter().copied().collect();
-                    for (node_id, _) in &node_params {
-                        if !topo_set.contains(node_id) {
-                            topo_order.push(*node_id);
+                // Compute topological waves for multicore pipelining execution.
+                // A wave is a set of nodes whose dependencies are all in earlier waves.
+                // Nodes within a wave can execute in parallel.
+                let mut wave_map: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+                for node_id in topo_order.iter() {
+                    let mut max_dep_wave = 0usize;
+                    // Check all dependencies of this node
+                    for param_opt in node_params.iter().find(|(nid, _)| nid == node_id).map(|(_, p)| p).unwrap_or(&vec![]) {
+                        if let Some(param_ref) = param_opt {
+                            if let Some(&producer) = param_to_producer.get(param_ref) {
+                                if producer != *node_id {
+                                    if let Some(&w) = wave_map.get(&producer) {
+                                        max_dep_wave = max_dep_wave.max(w + 1);
+                                    }
+                                }
+                            }
                         }
                     }
-                    if let Ok(mut nodes_list) = g.nodes.write() {
-                        *nodes_list = topo_order;
-                    }
+                    wave_map.insert(*node_id, max_dep_wave);
+                }
+
+                // Group nodes by wave
+                let num_waves = wave_map.values().max().copied().unwrap_or(0) + 1;
+                let mut topo_waves: Vec<Vec<u64>> = vec![Vec::new(); num_waves];
+                for (node_id, wave) in wave_map {
+                    topo_waves[wave].push(node_id);
+                }
+
+                // Update the graph's node list
+                if let Ok(mut nodes_list) = g.nodes.write() {
+                    *nodes_list = topo_order.clone();
+                }
+
+                // Store waves in GraphData (g is already accessible from current scope)
+                if let Ok(mut waves_lock) = g.topo_waves.lock() {
+                    *waves_lock = topo_waves;
                 }
             }
 

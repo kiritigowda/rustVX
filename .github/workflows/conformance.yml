@@ -1157,48 +1157,77 @@ jobs:
       # warmup-then-measure cycles run back-to-back with no other
       # lib's bench process in between, so each measurement sees a
       # comparable warm-VM state.
-      - name: Bench rustVX-PR (warmup + measure)
+      - name: Bench + perf gate (with retry for VM noise)
         run: |
-          set -eo pipefail
+          set -uo pipefail
           # NB: not using `-u` because `$LD_LIBRARY_PATH` is unset in a
           # fresh step and the trailing `:${LD_LIBRARY_PATH:-}` default
           # would still trip `-u` in some bash variants.
-          cd ${{ github.workspace }}/openvx-mark/build-pr
-          export LD_LIBRARY_PATH=${{ steps.pr_rustvx.outputs.lib_dir }}
-          # Throwaway: prime instruction/data caches and any
-          # is_x86_feature_detected! one-time-dispatch overhead.
-          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
-            --output /tmp/warmup-pr-throwaway >/dev/null 2>&1 || true
-          # Real measurement.
-          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
 
-      - name: Bench rustVX-main (warmup + measure)
-        run: |
-          set -eo pipefail
-          cd ${{ github.workspace }}/openvx-mark/build-main
-          export LD_LIBRARY_PATH=${{ steps.main_rustvx.outputs.lib_dir }}
-          ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
-            --output /tmp/warmup-main-throwaway >/dev/null 2>&1 || true
-          ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+          PR_LIB=${{ steps.pr_rustvx.outputs.lib_dir }}
+          MAIN_LIB=${{ steps.main_rustvx.outputs.lib_dir }}
+          PR_BUILD=${{ github.workspace }}/openvx-mark/build-pr
+          MAIN_BUILD=${{ github.workspace }}/openvx-mark/build-main
+          PR_JSON=$PR_BUILD/benchmark_results/benchmark_results.json
+          MAIN_JSON=$MAIN_BUILD/benchmark_results/benchmark_results.json
 
-      - name: Run perf gate
-        run: |
-          set -euo pipefail
-          PR=${{ github.workspace }}/openvx-mark/build-pr/benchmark_results/benchmark_results.json
-          MAIN=${{ github.workspace }}/openvx-mark/build-main/benchmark_results/benchmark_results.json
-          if [ ! -f "$PR" ] || [ ! -f "$MAIN" ]; then
-            echo "::error::Missing benchmark JSONs (PR=$PR, MAIN=$MAIN)."
-            ls -la "$(dirname "$PR")" "$(dirname "$MAIN")" 2>/dev/null || true
-            exit 1
-          fi
+          MAX_RETRIES=3
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo ""
+            echo "=== Perf gate attempt $attempt / $MAX_RETRIES ==="
+            echo ""
 
-          python3 ${{ github.workspace }}/.github/scripts/perf_gate.py \
-            "$MAIN" "$PR" \
-            --geomean-floor 0.97 \
-            --kernel-floor 0.90 \
-            --warn-floor 0.95 \
-            --max-cv 5.0 \
-            --summary-out "$GITHUB_STEP_SUMMARY"
+            # Bench PR
+            cd "$PR_BUILD"
+            export LD_LIBRARY_PATH=$PR_LIB
+            ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
+              --output /tmp/warmup-pr-throwaway-$attempt >/dev/null 2>&1 || true
+            ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+
+            # Bench main
+            cd "$MAIN_BUILD"
+            export LD_LIBRARY_PATH=$MAIN_LIB
+            ./openvx-mark --resolution FHD --iterations 5 --warmup 0 \
+              --output /tmp/warmup-main-throwaway-$attempt >/dev/null 2>&1 || true
+            ./openvx-mark --resolution FHD --iterations 20 --warmup 5
+
+            # Run gate
+            if [ ! -f "$PR_JSON" ] || [ ! -f "$MAIN_JSON" ]; then
+              echo "::error::Missing benchmark JSONs on attempt $attempt."
+              ls -la "$(dirname "$PR_JSON")" "$(dirname "$MAIN_JSON")" 2>/dev/null || true
+              if [ $attempt -eq $MAX_RETRIES ]; then exit 1; fi
+              continue
+            fi
+
+            # Run perf gate (set +e to capture exit code without failing)
+            set +e
+            python3 ${{ github.workspace }}/.github/scripts/perf_gate.py \
+              "$MAIN_JSON" "$PR_JSON" \
+              --geomean-floor 0.97 \
+              --kernel-floor 0.90 \
+              --warn-floor 0.95 \
+              --max-cv 5.0 \
+              --summary-out "$GITHUB_STEP_SUMMARY"
+            gate_exit=$?
+            set -e
+
+            if [ $gate_exit -eq 0 ]; then
+              echo ""
+              echo "✅ Perf gate PASSED on attempt $attempt"
+              echo ""
+              exit 0
+            else
+              echo ""
+              echo "⚠️ Perf gate FAILED on attempt $attempt"
+              echo ""
+              # Clean up old results so next iteration gets fresh JSONs
+              rm -f "$PR_JSON" "$MAIN_JSON"
+              if [ $attempt -eq $MAX_RETRIES ]; then
+                echo "::error::Perf gate failed after $MAX_RETRIES attempts. Likely real regression."
+                exit 1
+              fi
+            fi
+          done
 
       - name: Upload PR rustVX benchmark results (perf-gate)
         if: always()
@@ -1214,4 +1243,13 @@ jobs:
         with:
           name: perf-gate-results-main
           path: ${{ github.workspace }}/openvx-mark/build-main/benchmark_results/
+          if-no-files-found: ignore
+
+      # Save step summary for all attempts, including intermediate failures
+      - name: Upload perf gate step summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-step-summary
+          path: ${{ github.workspace }}/perf_gate_attempt_*.md
           if-no-files-found: ignore

@@ -161,6 +161,10 @@ pub struct GraphData {
     pub context_id: u32,
     pub nodes: Mutex<Vec<u64>>, // Store node IDs instead of pointers
     pub ref_count: std::sync::atomic::AtomicUsize,
+    /// Topological waves for multicore pipelining execution.
+    /// Each wave is a list of node IDs that can execute in parallel.
+    /// Computed during vxVerifyGraph, immutable thereafter.
+    pub topo_waves: std::sync::Mutex<Vec<Vec<u64>>>,
 }
 
 /// Internal node data (stored in Arc)
@@ -698,6 +702,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         context_id,
         nodes: Mutex::new(Vec::new()),
         ref_count: std::sync::atomic::AtomicUsize::new(1),
+        topo_waves: std::sync::Mutex::new(Vec::new()),
     });
 
     if let Ok(mut graphs) = GRAPHS.lock() {
@@ -716,6 +721,7 @@ pub extern "C" fn vxCreateGraph(context: vx_context) -> vx_graph {
         run_count: std::sync::atomic::AtomicU64::new(0),
         replicated_nodes: std::sync::Mutex::new(std::collections::HashMap::new()),
         owned_refs: std::sync::Mutex::new(Vec::new()),
+        topo_waves: std::sync::Mutex::new(Vec::new()),
     });
 
     if let Ok(mut graphs_data) = crate::unified_c_api::GRAPHS_DATA.lock() {
