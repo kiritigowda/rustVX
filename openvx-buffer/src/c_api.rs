@@ -31,7 +31,7 @@ pub struct VxCArray {
     num_items: RwLock<vx_size>,
     data: RwLock<Vec<u8>>,
     context: vx_context,
-    mapped_ranges: RwLock<HashMap<vx_map_id, (vx_size, vx_size, Box<[u8]>)>>,
+    mapped_ranges: RwLock<HashMap<vx_map_id, (vx_size, vx_size, Box<[u8]>, vx_enum)>>,
     is_virtual: bool,
 }
 
@@ -461,7 +461,7 @@ pub extern "C" fn vxMapArrayRange(
 
     {
         let mut mapped = array.mapped_ranges.write().unwrap();
-        mapped.insert(id, (start, end, mapped_box));
+        mapped.insert(id, (start, end, mapped_box, _usage));
     }
 
     unsafe {
@@ -485,23 +485,25 @@ pub extern "C" fn vxUnmapArrayRange(arr: vx_array, map_id: vx_map_id) -> vx_stat
     let array = unsafe { &*(arr as *const VxCArray) };
     let mut mapped = array.mapped_ranges.write().unwrap();
 
-    if let Some((start, end, data)) = mapped.remove(&map_id) {
-        // Copy data back if it was a write
-        let range_size = end
-            .checked_sub(start)
-            .and_then(|len| len.checked_mul(array.item_size))
-            .unwrap_or(0);
-        let offset = start.checked_mul(array.item_size).unwrap_or(0);
+    if let Some((start, end, data, usage)) = mapped.remove(&map_id) {
+        // Only copy data back if the map was for writing (either WRITE_ONLY or READ_WRITE)
+        if usage != VX_READ_ONLY {
+            let range_size = end
+                .checked_sub(start)
+                .and_then(|len| len.checked_mul(array.item_size))
+                .unwrap_or(0);
+            let offset = start.checked_mul(array.item_size).unwrap_or(0);
 
-        let mut array_data = array.data.write().unwrap();
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                array_data.as_mut_ptr().add(offset),
-                range_size,
-            );
+            let mut array_data = array.data.write().unwrap();
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    array_data.as_mut_ptr().add(offset),
+                    range_size,
+                );
+            }
         }
-        // data Vec is automatically dropped when it goes out of scope
+        // data Box is automatically dropped when it goes out of scope
     }
 
     VX_SUCCESS
