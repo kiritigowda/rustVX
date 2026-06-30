@@ -1,0 +1,408 @@
+name: OpenVX Full Conformance CI
+
+# Full OpenVX 1.3 + KHR extension conformance test matrix for rustVX.
+#
+# The existing `conformance.yml` workflow deliberately builds the CTS with
+# a conservative feature set and splits the resulting suites across many
+# focused jobs. This workflow is complementary: it turns on *every* Khronos
+# conformance feature set and KHR extension that rustVX claims (or is
+# working toward), builds a single conformance binary, and runs the complete
+# upstream test suite category by category. The goal is to expose gaps that
+# the conservative workflow does not exercise — in particular Neural Networks,
+# NNEF import, the Import/Export (IX) extension, Streaming, and the full
+# User-Kernel / Graph feature set.
+#
+# Jobs that are expected to fail because the corresponding rustVX feature is
+# not yet complete are marked `continue-on-error: true`. As rustVX matures,
+# flip those to required and remove the `|| true` fallbacks.
+
+on:
+  push:
+    branches: [master, main, develop]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.editorconfig'
+      - '**/*.svg'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.webp'
+  pull_request:
+    branches: [master, main, develop]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.editorconfig'
+      - '**/*.svg'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.webp'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Phase 1 — Build rustVX release library with all claimed extensions.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build rustVX (full conformance)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake lcov
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source $HOME/.cargo/env
+          rustc --version
+          cargo --version
+
+      - name: Build rustVX
+        # Keep the same explicit x86-64-v3 / AVX2 configuration used by the
+        # existing conformance workflow so performance characteristics and
+        # symbol availability are deterministic across CI runners.
+        run: |
+          set -euo pipefail
+          source $HOME/.cargo/env
+          case "$(uname -m)" in
+            x86_64|amd64)
+              FEATURES="openvx-core/sse2 openvx-core/avx2 openvx-vision/sse2 openvx-vision/avx2"
+              export RUSTFLAGS="-C target-cpu=x86-64-v3 -C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=4"
+              ;;
+            aarch64|arm64)
+              FEATURES="openvx-core/neon openvx-vision/neon"
+              export RUSTFLAGS=""
+              ;;
+            *)
+              FEATURES=""
+              export RUSTFLAGS=""
+              ;;
+          esac
+          echo "Architecture: $(uname -m)"
+          echo "Cargo features: ${FEATURES:-<none>}"
+          echo "RUSTFLAGS    : ${RUSTFLAGS:-<none>}"
+          if [ -n "$FEATURES" ]; then
+            cargo build --release -p openvx-ffi --features "$FEATURES"
+          else
+            cargo build --release -p openvx-ffi
+          fi
+
+      - name: Build OpenVX CTS (full feature set)
+        run: |
+          set -euo pipefail
+          # Reduce pipeline stress-test loop counts so CI completes in
+          # reasonable time. The existing conformance.yml does the same.
+          sed -i \
+            -e 's|loop_count=1000000|loop_count=100|g' \
+            -e 's|loop_count=100000|loop_count=100|g' \
+            -e 's|loop_count=1000|loop_count=100|g' \
+            -e 's|__VA_ARGS__, 1000000)|__VA_ARGS__, 100)|g' \
+            -e 's|__VA_ARGS__, 100000)|__VA_ARGS__, 100)|g' \
+            -e 's|__VA_ARGS__, 1000)|__VA_ARGS__, 100)|g' \
+            OpenVX-cts/test_conformance/test_graph_pipeline.c
+
+          cd OpenVX-cts
+          mkdir -p include
+          if [ -d "../include" ]; then
+            cp -r ../include/* include/ 2>/dev/null || true
+          fi
+          mkdir -p build-full
+          cd build-full
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-fno-strict-aliasing" \
+            -DCMAKE_CXX_FLAGS="-fno-strict-aliasing" \
+            -DCMAKE_C_STANDARD_LIBRARIES="-lm" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-lm" \
+            -DOPENVX_INCLUDES="${{ github.workspace }}/include;${{ github.workspace }}/OpenVX-cts/include" \
+            -DOPENVX_LIBRARIES="${{ github.workspace }}/target/release/libopenvx_ffi.so;m" \
+            -DOPENVX_CONFORMANCE_VISION=ON \
+            -DOPENVX_USE_ENHANCED_VISION=ON \
+            -DOPENVX_CONFORMANCE_NEURAL_NETWORKS=ON \
+            -DOPENVX_USE_NN=ON \
+            -DOPENVX_USE_NN_16=ON \
+            -DOPENVX_CONFORMANCE_NNEF_IMPORT=ON \
+            -DOPENVX_USE_IX=ON \
+            -DOPENVX_USE_PIPELINING=ON \
+            -DOPENVX_USE_STREAMING=ON \
+            -DOPENVX_USE_USER_DATA_OBJECT=ON \
+            -DOPENVX_USE_U1=ON
+          make -j$(nproc)
+
+      - name: Upload full-conformance build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-conformance-build
+          path: |
+            target/release/libopenvx_ffi.so
+            OpenVX-cts/build-full/bin/vx_test_conformance
+            OpenVX-cts/test_data/
+            include/
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — CTS smoke / baseline + coverage (Debug build)
+  # ---------------------------------------------------------------------------
+  cts-baseline:
+    name: CTS baseline + coverage
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Install lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov
+
+      - name: Run baseline tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 300 ./bin/vx_test_conformance \
+            --filter="GraphBase.*:SmokeTestBase.*:SmokeTest.*:TargetBase.*:Target.*:Logging.*" \
+            --verbose || true
+
+      - name: Collect coverage
+        run: |
+          if [ -d "${{ github.workspace }}/target/release" ]; then
+            # Rust coverage is not enabled in this release build; collect
+            # what lcov can find and store it as an artifact for later.
+            lcov --directory ${{ github.workspace }}/target/release --capture --output-file coverage.info || true
+            lcov --remove coverage.info '/usr/*' --output-file coverage.info || true
+            lcov --list coverage.info || true
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-conformance-coverage
+          path: coverage.info
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — CTS Vision feature set (core + enhanced)
+  # ---------------------------------------------------------------------------
+  cts-vision:
+    name: CTS Vision
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Run Vision tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 1200 ./bin/vx_test_conformance \
+            --filter="Array.*:Image.*:Scalar.*:Matrix.*:Distribution.*:LUT.*:Remap.*:Tensor.*:ObjectArray.*:UserDataObject.*" \
+            --verbose || true
+
+  cts-vision-kernels:
+    name: CTS Vision kernels
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Run Vision kernel tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          # Core vision kernels exercised in the upstream OpenVX-sample-impl workflow.
+          timeout 1200 ./bin/vx_test_conformance \
+            --filter="Box3x3.*:Gaussian3x3.*:Median3x3.*:Dilate3x3.*:Erode3x3.*:Sobel3x3.*:Magnitude.*:Phase.*:NonLinearFilter.*:Convolve.*:EqualizeHistogram.*:ColorConvert.*:ChannelExtract.*:ChannelCombine.*:vxConvertDepth.*:vxuConvertDepth.*:vxAddSub.*:vxuAddSub.*:vxMultiply.*:vxuMultiply.*:vxBinOp8u.*:vxuBinOp8u.*:vxBinOp16s.*:vxuBinOp16s.*:vxNot.*:vxuNot.*:WeightedAverage.*:Threshold.*:Scale.*:WarpAffine.*:WarpPerspective.*:Remap.*:HalfScaleGaussian.*:HarrisCorners.*:FastCorners.*:vxCanny.*:vxuCanny.*:MeanStdDev.*:MinMaxLoc.*:Integral.*:GaussianPyramid.*:LaplacianPyramid.*:LaplacianReconstruct.*:OptFlowPyrLK.*" \
+            --verbose || true
+
+  cts-enhanced-vision:
+    name: CTS Enhanced Vision
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Run Enhanced Vision tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 1200 ./bin/vx_test_conformance \
+            --filter="Graph/Conv*:Graph/HoG*:Graph/Nonmax*:Graph/HoughLinesP*:Graph/Weighted*:HogCells.*:HogFeatures.*:MatchTemplate.*:LBP.*:Copy.*:Nonmaxsuppression.*:Houghlinesp.*:BilateralFilter.*:ControlFlow.*:TensorOp.*:Min.*:Max.*:Tensor.*:TensorEnhanced.*" \
+            --verbose || true
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — CTS Neural Networks
+  # NOTE: TensorNetworks.AlexNetTestNetwork needs ImageNet weights that are
+  #       not shipped in the public CTS submodule; this is a known upstream
+  #       limitation. The job is therefore allowed to fail while the remaining
+  #       NN layer tests (TensorNN.*) are exercised.
+  # ---------------------------------------------------------------------------
+  cts-neural-networks:
+    name: CTS Neural Networks
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Run Neural Network tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 1200 ./bin/vx_test_conformance \
+            --filter="TensorNetworks.*:-TensorNetworks.AlexNetTestNetwork:*NN*:VxKernelOfNNAndNNEF.*:VxParameterOfNNAndNNEF.*:MetaFormatOfNNAndNNEF.*:UserKernelsOfNNAndNNEF.*" \
+            --verbose || true
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — CTS NNEF Import
+  # ---------------------------------------------------------------------------
+  cts-nnef-import:
+    name: CTS NNEF Import
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Run NNEF import tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 1200 ./bin/vx_test_conformance \
+            --filter="TensorNNEFImport.*" \
+            --verbose || true
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — CTS Import / Export (IX)
+  # ---------------------------------------------------------------------------
+  cts-ix:
+    name: CTS Import/Export (IX)
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Run IX tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 1200 ./bin/vx_test_conformance \
+            --filter="Graph/ExportImport*:*IX*:ExtensionObject.*" \
+            --verbose || true
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — CTS Graph features (delay, ROI, callback, pipeline, streaming)
+  # ---------------------------------------------------------------------------
+  cts-graph-features:
+    name: CTS Graph features
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download full-conformance build
+        uses: actions/download-artifact@v4
+        with:
+          name: full-conformance-build
+
+      - name: Run graph feature tests
+        run: |
+          chmod +x OpenVX-cts/build-full/bin/vx_test_conformance
+          cd OpenVX-cts/build-full
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release
+          export VX_TEST_DATA_PATH=${{ github.workspace }}/OpenVX-cts/test_data/
+          timeout 1200 ./bin/vx_test_conformance \
+            --filter="GraphDelay.*:GraphROI.*:GraphCallback.*:GraphPipeline.*:GraphStreaming.*:GraphPipe*:UserNode.*:UserKernel.*" \
+            --verbose || true
